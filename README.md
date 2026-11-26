@@ -11,9 +11,11 @@ status effect.
 | Red X | All of them already have it. Casting again changes nothing. |
 | No icon | There is no enemy to judge, or the spell applies no status effect. |
 
-Version 0.1.0 is a first draft. It has been run against a simulated game client
-(see [Development](#development)) but not yet inside the real one, so expect a
-few rough edges and please report what `/se debug` prints.
+Version 0.1.1 is an early draft. It loads and draws its icons in the real
+client, but most of its testing has been against a simulated one (see
+[Development](#development)), and how much the client reveals in combat is not
+confirmed yet. Expect a few rough edges and please report what `/se debug`
+prints.
 
 ## Install
 
@@ -35,7 +37,10 @@ few rough edges and please report what `/se debug` prints.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.1.0 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.1.1 loaded."
+
+To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
+A full restart is only needed when a new version adds files.
 
 ## Using it
 
@@ -52,6 +57,9 @@ account.
 
 - **Icon position.** Click one of nine spots on the pretend button: the four
   corners, the four edges, or the middle.
+- **Icon size.** The minus and plus buttons make the icon a step smaller or
+  larger. **Auto** sizes it from the button it sits on, at about a third of the
+  button's width, which is 16 on a standard button.
 - **Icon for each indication.** Each of the three indications (no enemy has it,
   some enemies have it, every enemy has it) can use any of 21 icons: the three
   defaults, coloured dots, a plus, an exclamation mark, a stop sign, a ring, the
@@ -59,8 +67,8 @@ account.
 - **Your own texture.** Type a file ID such as `136243`, or a path such as
   `Interface\Icons\Spell_Nature_Slow`, into the box beside an indication and
   press Enter. Empty the box and press Enter to go back.
-- **Reset position and icons** puts those two things back to the defaults and
-  leaves your spell choices alone.
+- **Reset position, size and icons** puts those three things back to the
+  defaults and leaves your spell choices alone.
 
 ### Commands
 
@@ -80,7 +88,7 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se single <spell>` | Judge the spell against your target only. |
 | `/se duration <spell> <seconds>` | Say how long the effect lasts. `auto` goes back to the addon's own figure. |
 | `/se corner <where>` | Moves the icon: `tl`, `top`, `tr`, `left`, `center`, `right`, `bl`, `bottom`, `br`. |
-| `/se size <pixels>` | Icon size from 8 to 128. `auto` sizes it from the button. |
+| `/se size <pixels>` | Icon size from 8 to 128. `auto` sizes it from the button again. |
 | `/se icons` | Lists the icon names and what each indication uses now. |
 | `/se icon <green\|yellow\|red> <icon>` | Sets the icon for one indication: an icon name, a file ID, a texture path, or `default`. |
 | `/se debug` | Shows what the game lets the addon see right now. Paste this into a bug report. |

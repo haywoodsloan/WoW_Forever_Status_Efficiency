@@ -34,6 +34,13 @@ local CORNERS = {
 }
 ns.CORNERS = CORNERS
 
+-- The icon's size in pixels when one is chosen. With none chosen it follows the
+-- button, taking this share of its width.
+local SIZE_MIN, SIZE_MAX = 8, 128
+local AUTO_SHARE = 0.36
+local STANDARD_BUTTON = 45 -- an action button's width, for when one cannot be measured
+ns.SIZE_MIN, ns.SIZE_MAX = SIZE_MIN, SIZE_MAX
+
 local function Defaults()
     return {
         version = 1,
@@ -68,7 +75,7 @@ local function LoadSettings()
     if saved.interval < 0.05 or saved.interval > 2 then
         saved.interval = 0.2
     end
-    if saved.size < 0 or saved.size > 128 then
+    if saved.size ~= 0 and (saved.size < SIZE_MIN or saved.size > SIZE_MAX) then
         saved.size = 0
     end
     ns.db = saved
@@ -178,16 +185,31 @@ local function Visible(frame)
     return ns.Flag(ns.Field(frame, "IsVisible"), frame) == true
 end
 
+--- The size an icon gets on this button when no size has been chosen.
+local function AutoSize(frame)
+    local width = frame and ns.Call(ns.Field(frame, "GetWidth"), frame)
+    if type(width) ~= "number" or width <= 0 then
+        width = STANDARD_BUTTON
+    end
+    return max(10, min(40, floor(width * AUTO_SHARE + 0.5)))
+end
+
 local function IconSize(entry)
     local size = ns.db.size
     if size > 0 then
         return size
     end
-    local width = ns.Call(ns.Field(entry.frame, "GetWidth"), entry.frame)
-    if type(width) ~= "number" or width <= 0 then
-        width = 40
+    return AutoSize(entry.frame)
+end
+
+--- The size "auto" comes to on a typical button: the first one on screen.
+function ns.AutoIconSize()
+    for i = 1, #entries do
+        if Visible(entries[i].frame) then
+            return AutoSize(entries[i].frame)
+        end
     end
-    return max(10, min(40, floor(width * 0.45 + 0.5)))
+    return AutoSize(nil)
 end
 
 local function Layout(entry)

@@ -1,6 +1,7 @@
 -- Status Efficiency: the settings panel.
 --
--- Where the icon sits on a button, and which icon each indication uses.
+-- Where the icon sits on a button, how big it is, and which icon each
+-- indication uses.
 --
 -- The panel is drawn with plain frames, textures and text only, so it does not
 -- depend on any of the game's widget templates. It appears in two places: in the
@@ -15,12 +16,13 @@ local Options = {}
 ns.Options = Options
 
 local pcall, type, tostring, pairs = pcall, type, tostring, pairs
-local floor = math.floor
+local floor, min, max = math.floor, math.min, math.max
 
 local TITLE = "Status Efficiency"
 local WIDTH, HEIGHT = 640, 506
 local ROW_HEIGHT = 104
 local SWATCH, STEP, PER_LINE = 30, 34, 11
+local SIZE_STEP = 2 -- pixels per click on the smaller and larger buttons
 
 local GRID = {
     { "TOPLEFT", "TOP", "TOPRIGHT" },
@@ -204,8 +206,8 @@ end
 -- The panel
 --------------------------------------------------------------------------------
 
---- Fills `host` with the controls and returns a view: { zones, swatches, inputs,
---- reset, Refresh }.
+--- Fills `host` with the controls and returns a view: { size, zones, swatches,
+--- inputs, reset, Refresh }.
 local function Build(host, withTitle)
     local view = { zones = {}, swatches = {}, inputs = {} }
 
@@ -215,11 +217,51 @@ local function Build(host, withTitle)
     end
 
     local blurb = Text(host, "GameFontHighlightSmall",
-        "A small icon on each action button shows whether casting that spell again would spread "
-            .. "its status effect. Choose where the icon sits and what each indication looks like. "
-            .. "Changes apply straight away.")
+        "Choose where the icon sits on each action button, how big it is, and which icon each "
+            .. "indication uses. Changes apply straight away.")
     blurb:SetPoint("TOPLEFT", host, "TOPLEFT", 16, withTitle and -42 or -18)
     blurb:SetWidth(370)
+
+    -- Size: a step smaller, a step larger, or back to following the button.
+    local sizeTop = -92
+    local sizeLabel = Text(host, "GameFontNormal", "Icon size")
+    sizeLabel:SetPoint("TOPLEFT", host, "TOPLEFT", 16, sizeTop - 5)
+
+    local function Resize(step)
+        Click(function()
+            local size = ns.db.size > 0 and ns.db.size or ns.AutoIconSize()
+            ns.db.size = max(ns.SIZE_MIN, min(ns.SIZE_MAX, size + step))
+        end)
+    end
+
+    local smaller = TextButton(host, 22, 22, "-")
+    smaller:SetPoint("TOPLEFT", host, "TOPLEFT", 96, sizeTop)
+    smaller:SetScript("OnClick", function()
+        Resize(-SIZE_STEP)
+    end)
+    Tip(smaller, "Smaller")
+
+    local readout = Text(host, "GameFontHighlight")
+    readout:SetJustifyH("CENTER")
+    readout:SetPoint("CENTER", host, "TOPLEFT", 159, sizeTop - 11)
+
+    local larger = TextButton(host, 22, 22, "+")
+    larger:SetPoint("TOPLEFT", host, "TOPLEFT", 200, sizeTop)
+    larger:SetScript("OnClick", function()
+        Resize(SIZE_STEP)
+    end)
+    Tip(larger, "Larger")
+
+    local auto = TextButton(host, 56, 22, "Auto")
+    auto:SetPoint("TOPLEFT", host, "TOPLEFT", 230, sizeTop)
+    auto:SetScript("OnClick", function()
+        Click(function()
+            ns.db.size = 0
+        end)
+    end)
+    Tip(auto, "Size the icon from the button it sits on")
+
+    view.size = { smaller = smaller, larger = larger, auto = auto, readout = readout }
 
     -- Position: a pretend action button with nine spots to click.
     local where = Text(host, "GameFontNormal", "Icon position")
@@ -317,17 +359,21 @@ local function Build(host, withTitle)
         top = top - ROW_HEIGHT
     end
 
-    local reset = TextButton(host, 190, 22, "Reset position and icons")
+    local reset = TextButton(host, 210, 22, "Reset position, size and icons")
     reset:SetPoint("TOPLEFT", host, "TOPLEFT", 16, top - 4)
     reset:SetScript("OnClick", function()
         Click(function()
             ns.db.corner = "TOPLEFT"
+            ns.db.size = 0
             Icons.ResetAll()
         end, "none")
     end)
     view.reset = reset
 
     function view.Refresh()
+        local size = ns.db.size
+        readout:SetText(size > 0 and tostring(size) or ("Auto (" .. ns.AutoIconSize() .. ")"))
+
         local art = Icons.Texture(shownState)
         for position, zone in pairs(view.zones) do
             local chosen = ns.db.corner == position

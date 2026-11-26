@@ -892,14 +892,47 @@ end)
 test("/se size and corner move the icon", function()
     local w = Simple()
     local overlay = w:overlay("ActionButton1")
-    eq(overlay.width, 20, "45% of a 45 pixel button")
+    eq(overlay.width, 16, "about a third of a 45 pixel button")
     eq(overlay.point[1], "TOPLEFT")
     w:slash("size 30")
     w:slash("corner br")
     eq(overlay.width, 30)
+    eq(overlay.height, 30)
     eq(overlay.point[1], "BOTTOMRIGHT")
     w:slash("size auto")
-    eq(overlay.width, 20)
+    eq(overlay.width, 16)
+
+    w:drain()
+    w:slash("size 4")
+    check(w:drain():find("Usage: /se size <8 to 128 | auto>", 1, true), "too small is refused with the usage line")
+    w:slash("size huge")
+    eq(w.ns.db.size, 0, "and changes nothing")
+    Clean(w)
+end)
+
+test("with no size chosen the icon follows the size of its button", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    local small = w.env.CreateFrame("CheckButton", "BT4Button7", nil)
+    small.width = 36
+    small._state_action = 7
+    w.actions[7] = { kind = "spell", id = REND }
+    local tiny = w.env.CreateFrame("CheckButton", "BT4Button8", nil)
+    tiny.width = 20
+    tiny._state_action = 8
+    w.actions[8] = { kind = "spell", id = REND }
+    local ns = w:load()
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:overlay("ActionButton1").width, 16, "standard button")
+    eq(w:overlay("BT4Button7").width, 13, "smaller button, smaller icon")
+    eq(w:overlay("BT4Button8").width, 10, "but never too small to read")
+    eq(ns.AutoIconSize(), 16, "the size quoted for auto is the first button's")
+
+    w:slash("size 22")
+    eq(w:overlay("ActionButton1").width, 22)
+    eq(w:overlay("BT4Button7").width, 22, "a chosen size is the same on every button")
     Clean(w)
 end)
 
@@ -963,6 +996,20 @@ test("saved settings are loaded, and damaged ones repaired", function()
     Clean(w)
 end)
 
+test("a saved icon size that makes no sense goes back to following the button", function()
+    for _, bad in ipairs({ 3, 500, -4 }) do
+        local w = World()
+        w:addButton("ActionButton1", 1, REND)
+        local ns = w:load({ size = bad })
+        eq(ns.db.size, 0, "saved size " .. bad)
+        local boar = w:addMob("Boar")
+        w:target(boar)
+        w:advance(0.3)
+        eq(w:overlay("ActionButton1").width, 16)
+        Clean(w)
+    end
+end)
+
 --------------------------------------------------------------------------------
 -- The settings panel
 --------------------------------------------------------------------------------
@@ -997,6 +1044,60 @@ test("settings: clicking a spot moves the icon on every button", function()
 
     w:click(view.zones.TOP)
     eq(w:overlay("ActionButton1").point[1], "TOP", "edges work as well as corners")
+    Clean(w)
+end)
+
+test("settings: the size buttons make the icon smaller and larger", function()
+    local w, ns = Simple()
+    local view = w:openSettings().view
+    local overlay = w:overlay("ActionButton1")
+    eq(view.size.readout:GetText(), "Auto (16)", "starts out following the button")
+
+    w:click(view.size.smaller)
+    eq(ns.db.size, 14, "one step down from what auto gives")
+    eq(overlay.width, 14, "the real icon shrinks straight away")
+    eq(view.size.readout:GetText(), "14")
+
+    w:click(view.size.smaller)
+    w:click(view.size.smaller)
+    w:click(view.size.smaller)
+    w:click(view.size.smaller)
+    eq(ns.db.size, 8, "and stops at the smallest size")
+    eq(overlay.width, 8)
+
+    w:click(view.size.larger)
+    w:click(view.size.larger)
+    eq(ns.db.size, 12)
+    eq(overlay.width, 12)
+
+    w:click(view.size.auto)
+    eq(ns.db.size, 0)
+    eq(overlay.width, 16, "auto follows the button again")
+    eq(view.size.readout:GetText(), "Auto (16)")
+
+    w:click(view.size.larger)
+    eq(ns.db.size, 18, "one step up from what auto gives")
+
+    ns.db.size = 127
+    w:click(view.size.larger)
+    w:click(view.size.larger)
+    eq(ns.db.size, 128, "and stops at the largest size")
+    Clean(w)
+end)
+
+test("settings: the size shown follows /se size, in both copies of the panel", function()
+    local w, ns = Simple()
+    w:slash("options")
+    local window = w.env.StatusEfficiencyOptions.view
+    local inOptions = w:openSettings().view
+    w:slash("size 24")
+    eq(window.size.readout:GetText(), "24")
+    eq(inOptions.size.readout:GetText(), "24")
+    w:click(window.size.smaller)
+    eq(inOptions.size.readout:GetText(), "22", "a click in one copy shows in the other")
+    w:slash("size auto")
+    eq(window.size.readout:GetText(), "Auto (16)")
+    eq(ns.db.size, 0)
     Clean(w)
 end)
 
@@ -1065,15 +1166,19 @@ test("settings: your own texture, by file ID or by path", function()
     eq(ns.lastError, nil)
 end)
 
-test("settings: the reset button restores position and icons only", function()
+test("settings: the reset button restores position, size and icons only", function()
     local w, ns = Simple()
     local view = w:openSettings().view
     w:slash("track heroic strike")
     w:click(view.zones.CENTER)
+    w:click(view.size.larger)
     w:click(view.swatches.some.ring)
     w:type(view.inputs.all, "136243")
     w:click(view.reset)
     eq(ns.db.corner, "TOPLEFT")
+    eq(ns.db.size, 0)
+    eq(w:overlay("ActionButton1").width, 16)
+    eq(view.size.readout:GetText(), "Auto (16)")
     eq(next(ns.db.icons), nil)
     eq(next(ns.db.custom), nil)
     eq(w:icon("ActionButton1"), "check")

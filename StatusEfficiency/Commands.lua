@@ -89,7 +89,7 @@ local commands = {}
 local HELP = {
     "icons on your action buttons show whether casting again is worth it.",
     "  green check = no enemy it would hit has the effect, yellow half circle = some do, red X = all do.",
-    "  /se options - the settings window: icon position and which icon means what",
+    "  /se options - the settings window: icon position, icon size and which icon means what",
     "  /se on | off",
     "  /se list - the spells on your bars and how each is treated",
     "  /se track <spell> | ignore <spell> | auto <spell>",
@@ -187,16 +187,18 @@ function commands.size(rest)
     local value = Trim(rest):lower()
     local pixels = tonumber(value)
     if value == "auto" then
-        ns.db.size = 0
-        Print("icon size follows the button.")
-    elseif pixels and pixels >= 8 and pixels <= 128 then
-        ns.db.size = floor(pixels + 0.5)
+        ns.Options.Change(function()
+            ns.db.size = 0
+        end)
+        Print("icon size follows the button again.")
+    elseif pixels and pixels >= ns.SIZE_MIN and pixels <= ns.SIZE_MAX then
+        ns.Options.Change(function()
+            ns.db.size = floor(pixels + 0.5)
+        end)
         Print("icon size is " .. ns.db.size .. ".")
     else
-        Print("Usage: /se size <8 to 128 | auto>")
-        return
+        Print("Usage: /se size <" .. ns.SIZE_MIN .. " to " .. ns.SIZE_MAX .. " | auto>")
     end
-    ns.Relayout()
 end
 
 local CORNER_WORDS = {

@@ -2,7 +2,7 @@
 ## Title: Status Efficiency
 ## Notes: Marks each action button to show whether casting it again would put its status effect on enemies that do not already have it.
 ## Author: haywoodsloan
-## Version: 0.1.0
+## Version: 0.1.1
 ## SavedVariables: StatusEfficiencyDB
 ## IconTexture: Interface\AddOns\StatusEfficiency\Media\Check.tga
 ## Category: Combat
