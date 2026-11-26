@@ -15,7 +15,7 @@ it is a debuff and there is no enemy to judge. Out of the box the icons also
 stay away until you target an enemy, and from a skill you cannot use right now
 (too close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.3.5 is an early draft. It loads and draws its icons in the real
+Version 0.3.6 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -42,7 +42,7 @@ few rough edges.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.3.5 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.3.6 loaded."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -209,8 +209,16 @@ A spell on your bars is treated as a status effect when, strongest first:
 4. casting it has repeatedly been followed by a new effect of yours: six
    casts or more, and at least four in five of them. In combat, where the
    addon cannot see whose effect it was, a change the enemy reports right
-   after the cast counts. Every spell on your bars is watched for this, icon
-   or not, unless you set it to **Never**.
+   after the cast counts, as long as the enemy is still there afterwards. One
+   that died or went out of sight in that moment says nothing about the
+   skill: a dying enemy's effects all go, and that is a change too. So a
+   finishing move does not earn an icon one kill at a time. Every spell on
+   your bars is watched for this, icon or not, unless you set it to **Never**.
+
+   Versions before 0.3.6 did count those kills. What they saved is taken down
+   once, when 0.3.6 first loads it: a skill that nothing else speaks for (no
+   tooltip, no effect read by name) has to be seen leaving something a few
+   more times before it gets an icon.
 
 Whether a spell is a debuff or a buff follows from the same facts. Seeing wins:
 a spell whose buff has been read off you is a buff, even an attack that leaves
@@ -254,10 +262,17 @@ client still allows, best first:
    the enemy, nothing is reported, and the button stays green. The addon waits
    up to three seconds for the report: the full three for a spell cast from a
    distance, a second and a half for a skill used at arm's length, and less
-   once it has timed a few of that skill's landings. One change it knows for
-   what it is: the one that comes just when an effect of your own on that unit
-   was due to run out. That is the effect ending, and is not counted for a
-   cast.
+   once it has timed a few of that skill's landings.
+
+   Only a change that could be the cast's effect arriving counts. The client
+   this was checked against (build 71139) hides what is in a report but not
+   what kind of change it was: an effect added, one renewed, or one taken
+   away. A report that only took effects away is never a cast landing,
+   whatever went: the enemy died, an effect of its own or of another player's
+   ran out, or one of yours did. On a client that does not show the kind, one
+   change is still known for what it is: the one that comes just when an
+   effect of your own on that unit was due to run out. That is put down to
+   the effect ending, by its timing, and is not counted for a cast.
 5. **Your own casts and a timer.** As a last resort a cast is assumed to land on
    the unit it was aimed at and to last as long as its tooltip says. That is
    only done for a unit the game reports nothing about, and on a client that
@@ -285,12 +300,15 @@ goes back to judging by reports the moment one arrives.
 
 It also keeps a short record of what your client really sent: how many changes
 were reported and through what, what came with them (described in words, such
-as "sealed table"; nothing is read out of it), how many were put down to an
-effect of yours running out, which requests the game refused, how each of the
-last 40 casts was judged ("changed", "silent", and so on), how the casts
-of spells without an icon came out, and for each spell you cast which words of
-its tooltip were read as an effect's length and which time was passed over.
-`/se debug` prints the summary. The full
+as "sealed table"; nothing is read out of it), what kind of change each said
+it was (an effect arriving, one going, both, or nothing said), how many were
+put down to an effect of yours running out, how many only took effects away
+and how many of those came while a cast was waiting to be judged, which
+requests the game refused, how each of the last 40 casts was judged
+("changed", "silent", and so on), how the casts of spells without an icon came
+out, and for each spell you cast which words of its tooltip were read as an
+effect's length and which time was passed over. `/se debug` prints the
+summary. The full
 record is saved with the addon's settings at the next `/reload` or logout,
 under `report` in `WTF\Account\<account>\SavedVariables\StatusEfficiency.lua`,
 and is the thing to send with a bug report. It holds spell names, counts and
@@ -306,16 +324,24 @@ window gave the page.
 ## Known limitations
 
 - **In combat the addon is told that a unit's effects changed, not which
-  effect or whose.** The game seals what comes with that report from addons,
-  so there is nothing more to read. A cast counts as landed when the unit's
-  effects change within moments of it. Something else changing on that unit in
-  the same moment (another player's debuff landing, an effect of the enemy's
-  own) passes for your cast, so a miss can still show a red X now and then,
-  more often in a group than alone. On your own buffs this is weaker still,
-  because your effects come and go all through a fight.
-- **One of your own effects running out is told from a cast landing only by
-  its timing.** A change that comes just when an effect of yours on the unit
-  was due to end is put down to that, and not to a cast. Three things follow:
+  effect or whose.** The game hides what is in that report from addons. The
+  most a client lets through is the kind of change: an effect arriving, being
+  renewed, or going. So a cast counts as landed when an effect arrives or is
+  renewed on the unit within moments of it. Another effect arriving there in
+  the same moment (another player's debuff landing, an effect the enemy puts
+  on itself, an effect of your own that a talent or a weapon adds) passes for
+  your cast, so a miss can still show a red X now and then, more often in a
+  group than alone. On your own buffs this is weaker still, because your
+  effects come and go all through a fight.
+- **On a client that does not show what kind of change a report is, an effect
+  going is told from a cast landing only by its timing.** Build 71139 shows
+  the kind, so there this is left for the rare report that says nothing (one
+  that says everything on the unit may have changed). Elsewhere any change on
+  the unit within moments of a cast passes for the cast: an effect of the
+  enemy's own or another player's running out as much as one arriving. One of
+  your own effects running out is known by when it happens: a change that
+  comes just when an effect of yours on the unit was due to end is put down
+  to that, and not to a cast. Three things follow:
   - It needs the effect's length to be right, and the game to report the
     ending when it happens. The addon keeps count, and stops doing this for a
     spell whose endings went unreported twice and more than one time in three.
@@ -330,8 +356,9 @@ window gave the page.
     cast, shows a green check until the next cast.
 - **An effect that ends early in combat is not noticed.** A debuff that is
   dispelled or used up, or a buff that is removed, keeps its red X until its
-  timer runs out or the fight ends. A buff you already had when the fight began
-  keeps its real end time.
+  timer runs out or the fight ends. The game says that an effect went from the
+  unit, and not which one. A buff you already had when the fight began keeps
+  its real end time.
 - **A cast is still assumed to land where the addon has nothing to go on.**
   There a miss shows a red X for the length of the effect. That covers three
   cases:
@@ -435,16 +462,20 @@ unchanged into a Lua 5.1 runtime where `tests/wow_mock.lua` stands in for the
 game. The mock imitates secret values (they throw when compared, indexed or
 used in arithmetic), the different ways a client might restrict aura queries
 in combat, and the reports a client sends when a unit's effects change. By
-default it behaves like the documented client: every aura query is refused in
-combat and only those reports get through. It can also be told to lack or
+default every aura query is refused in combat, as the documentation has it,
+and only those reports get through. What comes with a report is played two
+ways, and every scenario is run under both: the way build 71139 was seen to
+send it, where the kind of change shows, and the way the documentation
+describes it, where nothing does. It can also be told to lack or
 break the game's controls, fonts and art, to draw text wider, to give the
 Options page less room, and to keep back what it says about using a skill, so
 that each thing the addon does by itself has a scenario.
 
 ```
 pip install lupa
-python3 tests/run_tests.py            # everything
-python3 tests/run_tests.py settings   # only scenarios with "settings" in the name
+python3 tests/run_tests.py                # everything, both ways a client reports changes
+python3 tests/run_tests.py settings       # only scenarios with "settings" in the name
+python3 tests/run_tests.py --only lists   # only the way build 71139 reports them ("sealed": the documented way)
 ```
 
 To redraw the icons (needs Pillow):

@@ -19,7 +19,8 @@
 -- In combat the client hides what effects a unit has, but still reports the
 -- moment they change. A cast only counts as applied once the unit it went to
 -- reports such a change: a miss, a dodge or a resist changes nothing, so the
--- icon stays green.
+-- icon stays green. Where the client shows that a report only took effects
+-- away, it is not such a change: nothing arrived.
 
 local ADDON_NAME, ns = ...
 
@@ -63,9 +64,13 @@ local APPEAR = { always = true, target = true, combat = true }
 local APPEAR_DEFAULT = "target"
 ns.APPEAR_DEFAULT = APPEAR_DEFAULT
 
+-- The layout of what is saved. 2 (0.3.6): the cast counts under `learned` no
+-- longer take an enemy's death for a skill leaving something.
+local SETTINGS_VERSION = 2
+
 local function Defaults()
     return {
-        version = 1,
+        version = SETTINGS_VERSION,
         enabled = true,
         appear = APPEAR_DEFAULT,
         usableOnly = true, -- an icon only on a skill that can be used right now
@@ -92,6 +97,8 @@ local function LoadSettings()
         saved = {}
         StatusEfficiencyDB = saved
     end
+    -- What an earlier version saved. Settings with no version at all are new.
+    local version = type(saved.version) == "number" and saved.version or SETTINGS_VERSION
     for key, value in pairs(Defaults()) do
         if type(saved[key]) ~= type(value) then
             saved[key] = value
@@ -111,6 +118,10 @@ local function LoadSettings()
     elseif saved.size ~= 0 and (saved.size < SIZE_MIN or saved.size > SIZE_MAX) then
         saved.size = 0
     end
+    if version < 2 then
+        Spells.DiscountEarlier(saved.learned)
+    end
+    saved.version = SETTINGS_VERSION
     ns.db = saved
 end
 
@@ -702,6 +713,12 @@ local function Journal()
             sameFrame = 0, -- ignored: the token was handed to another unit that very frame
             handover = 0, -- ignored: only a token the unit had just been given reported it
             ended = 0, -- put down to an effect of yours running out just then
+            gone = 0, -- only took effects away, and none of yours was due: never a cast landing
+            spared = 0, -- of those, the changes a cast was waiting on that unit to be judged by
+            -- What kind of change the reports made with details hidden said
+            -- they were: an effect added or renewed, one taken away, both at
+            -- once, or nothing said.
+            kinds = { came = 0, went = 0, both = 0, unsaid = 0 },
         },
         payload = {}, -- what came with the reports, in words: description -> how often
         verdicts = {}, -- how casts made with details hidden came out, by verdict
@@ -785,10 +802,40 @@ local function NotePayload(journal, shape, secret)
     payload[text] = (payload[text] or 0) + 1
 end
 
+local goneAt, goneOn = nil, {} -- the units that reported an effect going at this very moment
+
+--- A report only took effects away, and none of yours was due. True when a
+--- cast was waiting on that unit to be judged: where the kind of a change
+--- cannot be told, this report would have passed for the cast landing. A
+--- change counts once, however many names the unit reported it under.
+local function Spared(token, now)
+    local key = ns.Exists(token) and ns.UnitKey(token)
+    if not key then
+        return false
+    end
+    if goneAt ~= now then
+        goneAt = now
+        ns.Wipe(goneOn)
+    end
+    if goneOn[key] then
+        return false
+    end
+    goneOn[key] = true
+    return Tracker:Judging(key)
+end
+
 --- The client reported that the effects on the unit behind a token changed.
 --- `shape` is Compat's description of the details that came with the report:
---- "secret" when they are a value an addon may not look at.
-local function OnAuraChange(token, shape)
+--- "secret" when they are a value an addon may not look at. `came` is true
+--- when the details show that an effect was added or renewed and `went` when
+--- they show that one was taken away. Both are nil when they do not say.
+---
+--- A cast is judged by a report that could be its effect arriving. One that
+--- only took effects away never is: the enemy died, an effect of its own or
+--- of another player's ran out, or one of yours did. Where the client does
+--- not say which it was, a report at the moment one of your effects was due
+--- to run out is put down to that, going by the timing alone.
+local function OnAuraChange(token, shape, came, went)
     local now = ns.Now()
     local journal = Journal()
     local counts = journal.reports
@@ -818,16 +865,43 @@ local function OnAuraChange(token, shape)
             Kept("doubt")[kind] = nil
             ns.Log("the client reports changes through \"%s\" in combat: casts are judged by them", kind)
         end
+        local kinds = counts.kinds
+        if kinds then
+            local said = (came == nil and "unsaid") or (not came and "went") or (went and "both") or "came"
+            kinds[said] = (kinds[said] or 0) + 1
+        end
     else
         count.calm = count.calm + 1
     end
-    -- A change that comes just as one of your own effects on the unit was due
-    -- to run out is that, and says nothing about a cast.
+
     local unit = Tracker:Expecting(now) and ns.Exists(token) and ns.UnitKey(token)
-    if unit and Tracker:Explained(unit, now, token) then
-        counts.ended = (counts.ended or 0) + 1
-        stateDirty = true -- the icon goes green now, not at the next look
+    if came == false then
+        -- Effects went and none came: whatever ended, no cast landed. If one
+        -- of yours was due to run out just now, that is it.
+        if unit and Tracker:Explained(unit, now, token, true) then
+            counts.ended = (counts.ended or 0) + 1
+            stateDirty = true -- the icon goes green now, not at the next look
+        else
+            counts.gone = (counts.gone or 0) + 1
+            if Spared(token, now) then
+                counts.spared = (counts.spared or 0) + 1
+            end
+        end
         return
+    end
+    if came == nil then
+        -- A change that comes just as one of your own effects on the unit was
+        -- due to run out is that, and says nothing about a cast.
+        if unit and Tracker:Explained(unit, now, token) then
+            counts.ended = (counts.ended or 0) + 1
+            stateDirty = true
+            return
+        end
+    elseif went and unit then
+        -- Something came and something went in one report. What went may be
+        -- an effect of yours that was due: that is noted, and the report is
+        -- passed on all the same for what came.
+        Tracker:Explained(unit, now, token, true)
     end
     changes[token] = now
     if Tracker:HasPending() then
@@ -835,8 +909,8 @@ local function OnAuraChange(token, shape)
     end
 end
 
-local function AuraChanged(token, shape)
-    Guard(OnAuraChange, token, shape)
+local function AuraChanged(token, shape, came, went)
+    Guard(OnAuraChange, token, shape, came, went)
 end
 
 --- True when the unit has another name that has pointed at it for a while and

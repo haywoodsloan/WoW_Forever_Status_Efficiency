@@ -50,6 +50,7 @@ local EMPTY_CASTS = 3
 -- that a spell near the line does not keep losing and regaining it.
 local RESTORE_RATIO = 0.4
 local PROMOTE_CASTS, PROMOTE_RATIO = 6, 0.8 -- an unlikely one that keeps leaving something
+local EARLIER_RATIO = 0.75 -- the most that counts from before 0.3.6 are taken to show: short of earning an icon
 local EVIDENCE_CAP = 40 -- halve the counts past this so old results fade
 
 Spells.DEFAULT_DURATION = DEFAULT_DURATION
@@ -531,6 +532,25 @@ function Spells:Evidence(name, hit, kind)
     ns.Log("%s: %s (%d of %d casts left an effect)", name, hit and "new effect seen" or "no new effect",
         floor(hits + 0.5), floor(casts + 0.5))
     ns.MarkDirty()
+end
+
+--- Takes down what versions before 0.3.6 counted, once, when their saved
+--- settings are first loaded. Then a skill used on an enemy that died in that
+--- moment counted as having left something there: the dead enemy's effects
+--- going looked like one arriving. For a real status spell that only ever
+--- erred on the side of keeping its icon, and nothing changes for it here. For
+--- a finishing move it could add up to an icon it should not have. So those
+--- counts no longer earn an icon by themselves: a skill that nothing else
+--- speaks for has to be seen leaving something a few more times.
+function Spells.DiscountEarlier(learned)
+    for _, record in pairs(learned) do
+        if type(record) == "table" and not record.exact then
+            local casts, hits = record.casts, record.hits
+            if type(casts) == "number" and type(hits) == "number" and hits > casts * EARLIER_RATIO then
+                record.hits = floor(casts * EARLIER_RATIO)
+            end
+        end
+    end
 end
 
 --- Records that an effect with the spell's own name was read outright: a debuff

@@ -627,6 +627,15 @@ function commands.debug()
     end
     print("  Changes the game reported while details were hidden, about " .. table.concat(heard, ", ") .. ".")
     print(format("  Of those, put down to an effect of yours running out just then: %d.", journal.reports.ended or 0))
+    local kinds = journal.reports.kinds
+    if kinds then
+        -- A change that only took effects away is never a cast landing. Where
+        -- the game does not say what kind a change was, timing has to do.
+        print(format("  What the game said each one was: an effect arriving %d, one going %d, both %d, not said %d.",
+            kinds.came, kinds.went, kinds.both, kinds.unsaid))
+        print(format("  An effect going while a cast was waiting to be judged, and not taken for it landing: %d.",
+            journal.reports.spared or 0))
+    end
     local verdicts = journal.verdicts
     local landed = (verdicts.changed or 0) + (verdicts.seen or 0)
     local empty = (verdicts.silent or 0) + (verdicts["nothing new"] or 0)

@@ -2,10 +2,17 @@
 """Runs the addon against a pretend game client.
 
     pip install lupa
-    python3 tests/run_tests.py [words to filter scenario names by]
+    python3 tests/run_tests.py [--only lists|sealed] [--stop-early] [words to filter scenario names by]
 
 The addon is plain Lua 5.1, the same dialect the game embeds, so it is loaded
 unchanged into a Lua 5.1 runtime where tests/wow_mock.lua stands in for the game.
+
+Every scenario is played twice, because there are two ways a client may report
+that a unit's effects changed while their details are hidden, and the addon
+judges casts differently under each (see PAYLOADS below). A scenario that is
+about one of them chooses it for itself, with the auraPayload option, and so
+plays the same both times. --only plays one of the two. --stop-early leaves
+the second out when the first has failures.
 """
 
 import re
@@ -62,8 +69,30 @@ def static_checks():
     return problems
 
 
+# What comes with a report that a unit's effects changed, while their details
+# are hidden: the mock's auraPayload option, for the scenarios that do not
+# choose. The first is what the client was seen to send. The second is what its
+# documentation describes, and what a later build may do.
+PAYLOADS = [
+    ("lists", "each change report says whether effects were added, renewed or removed (seen on build 71139)"),
+    ("sealed", "nothing can be read from a change report (what the documentation describes)"),
+]
+
+
 def main():
-    words = [word.lower() for word in sys.argv[1:]]
+    args = sys.argv[1:]
+    stop_early = "--stop-early" in args
+    if stop_early:
+        args.remove("--stop-early")
+    only = None
+    if "--only" in args:
+        at = args.index("--only")
+        only = args[at + 1] if at + 1 < len(args) else ""
+        del args[at:at + 2]
+        if only not in [name for name, _ in PAYLOADS]:
+            print("--only takes one of: " + ", ".join(name for name, _ in PAYLOADS))
+            return 2
+    words = [word.lower() for word in args]
     failures = []
 
     for problem in static_checks():
@@ -75,23 +104,34 @@ def main():
     run = lua.eval('function(fn) local ok, err = xpcall(fn, debug.traceback) return ok, err or "" end')
 
     count = 0
-    for index in range(1, len(tests) + 1):
-        name, fn = tests[index].name, tests[index].fn
-        if words and not all(word in name.lower() for word in words):
+    played = []
+    for payload, meaning in PAYLOADS:
+        if only and payload != only:
             continue
-        count += 1
-        ok, err = run(fn)
-        print(("ok    " if ok else "FAIL  ") + name)
-        if not ok:
-            failures.append((name, str(err)))
+        if stop_early and failures:
+            break
+        played.append(payload)
+        lua.globals().DEFAULT_AURA_PAYLOAD = payload
+        print(f"== {payload}: {meaning}")
+        count = 0
+        for index in range(1, len(tests) + 1):
+            name, fn = tests[index].name, tests[index].fn
+            if words and not all(word in name.lower() for word in words):
+                continue
+            count += 1
+            ok, err = run(fn)
+            print(("ok    " if ok else "FAIL  ") + name)
+            if not ok:
+                failures.append((f"{name} [{payload}]", str(err)))
+        print()
 
-    print()
+    how = "played both ways" if len(played) == len(PAYLOADS) else "played as " + " and ".join(played) + " only"
     if failures:
         for name, err in failures:
             print(f"--- {name}\n{err}\n")
-        print(f"{len(failures)} failed, {count} scenarios run")
+        print(f"{len(failures)} failed, {count} scenarios run, {how}")
         return 1
-    print(f"all {count} scenarios passed")
+    print(f"all {count} scenarios passed, {how}")
     return 0
 
 

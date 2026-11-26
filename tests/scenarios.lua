@@ -21,6 +21,20 @@ local function check(condition, what)
     end
 end
 
+--- The runner plays every scenario twice: once with a client whose change
+--- reports say whether effects were added, renewed or removed (the mock's
+--- "lists" payload, which is what build 71139 was seen to send), and once
+--- with one whose reports say nothing ("sealed"). True in the first. A
+--- scenario that is about one of the two names it in its options instead.
+local function KindsTold()
+    return (DEFAULT_AURA_PAYLOAD or "lists") == "lists"
+end
+
+-- What Compat makes of the details that come with a report, for each of the
+-- two, when an effect was added.
+local SHAPE_LISTS = "hidden, table: full secret, added secret, updated nil, removed nil"
+local SHAPE_SEALED = "hidden, sealed table: full secret, added secret, updated secret, removed secret"
+
 --------------------------------------------------------------------------------
 -- A small spellbook
 --------------------------------------------------------------------------------
@@ -889,13 +903,19 @@ test("reports: a change that comes just as one of your own effects was due to ru
     eq(ns.db.learned["Mortal Strike"].casts, 1)
     eq(ns.db.learned["Mortal Strike"].hits, 0, "the miss is counted as one")
     eq(ns.db.report.reports.ended, 2, "put down to the ending, once for each name the boar goes by")
-    eq(ns.db.learned.Rend.due, nil, "with a cast waiting it proves nothing about endings, so it is not counted")
+    local heard = 0
+    if KindsTold() then
+        heard = 1
+        eq(ns.db.learned.Rend.due, 1, "the game said an effect went, so the ending was heard on time")
+    else
+        eq(ns.db.learned.Rend.due, nil, "with a cast waiting it proves nothing about endings, so it is not counted")
+    end
 
     -- An ending with nothing else going on is counted, to keep an eye on
     -- whether this client reports them when they are due.
     w:cast(REND)
     w:advance(22)
-    eq(ns.db.learned.Rend.due, 1, "reported when it was due")
+    eq(ns.db.learned.Rend.due, heard + 1, "reported when it was due")
     eq(ns.db.learned.Rend.late, 0)
     Clean(w)
 end)
@@ -904,6 +924,8 @@ test("reports: a spell whose endings mostly go unreported is no longer judged by
     -- What is saved about how often Rend was reported ending when it was due,
     -- and whether a change at that moment is still put down to it. Where it is
     -- not, the limit that is left shows: the report goes to the cast waiting.
+    -- This is how it goes where a report does not say what kind of change it
+    -- was. Where it does, none of this is needed: see "kinds:" further down.
     local cases = {
         { late = 1, relied = true }, -- one that went unreported is not held against it
         { late = 2, relied = false },
@@ -914,7 +936,7 @@ test("reports: a spell whose endings mostly go unreported is no longer judged by
     for _, case in ipairs(cases) do
         local saved = Proven()
         saved.learned = { Rend = { casts = 5, hits = 5, due = case.due, late = case.late } }
-        local w = Bar({ saved = saved }, REND, MORTAL)
+        local w = Bar({ saved = saved, auraPayload = "sealed" }, REND, MORTAL)
         local boar = w:addMob("Boar")
         w:showPlate(boar)
         w:target(boar)
@@ -1040,10 +1062,11 @@ test("reports: renewing an effect a moment before it was due to end is not mista
 end)
 
 test("reports: a renewal reported a frame before its cast, in the old effect's last moment, passes for its ending", function()
-    -- The price of never taking an ending for a hit. Where the game reports a
-    -- landing, it does so in the frame of the cast, so a change a frame
-    -- earlier that fits the old effect running out is put down to that.
-    local w, ns = Simple({ saved = Proven() })
+    -- The price of never taking an ending for a hit, where a report does not
+    -- say what kind of change it was. Where the game reports a landing, it
+    -- does so in the frame of the cast, so a change a frame earlier that fits
+    -- the old effect running out is put down to that.
+    local w, ns = Simple({ saved = Proven(), auraPayload = "sealed" })
     w:cast(REND)
     w:advance(20.95)
     w:cast(REND, { early = 0.05 })
@@ -1106,14 +1129,422 @@ test("reports: a cast that lands in the very frame another effect of yours ends 
                 table.remove(boar.auras, i)
             end
         end
+        boar.owed = "removed"
         w:cast(MORTAL, { early = early or nil })
         w:advance(0.3)
         eq(w:icon("ActionButton2"), "cross", "the Mortal Strike landed, and shows")
         eq(w:icon("ActionButton1"), "check", "and the Rend is over")
         w:advance(4)
         eq(ns.db.learned["Mortal Strike"].hits, 1)
-        eq(ns.db.learned.Rend.due, 4, "whether the Rend's ending was reported is left open: not counted as heard")
+        if KindsTold() then
+            eq(ns.db.learned.Rend.due, 5, "the report said an effect went as well, so the Rend's ending was heard")
+        else
+            eq(ns.db.learned.Rend.due, 4, "whether the Rend's ending was reported is left open: not counted as heard")
+        end
         eq(ns.db.learned.Rend.late, 0, "and not as missed")
+        Clean(w)
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- A client whose reports say what kind of change they are
+--
+-- Build 71139 hides what is in a report, but not whether effects were added,
+-- renewed or removed. A report that only took effects away cannot be a cast
+-- landing, whatever the timing. Each scenario here names the way the client
+-- reports, and several play both to show what telling the kinds apart changes.
+--------------------------------------------------------------------------------
+
+test("kinds: an effect going from the enemy while a cast waits is not the cast landing", function()
+    -- Somebody else's curse runs out on the boar a moment after a Mortal
+    -- Strike was dodged. Where the game says that an effect went, that cannot
+    -- pass for the strike landing. Where it does not say, it still does.
+    for payload, icon in pairs({ lists = "check", sealed = "cross" }) do
+        local w, ns = Bar({ saved = Proven(), auraPayload = payload }, MORTAL, MARK)
+        local boar = w:addMob("Boar")
+        w:showPlate(boar)
+        w:target(boar)
+        w:advance(0.3)
+        w:applyAura(boar, "Thorns", 600, false, nil, true) -- before the fight: not among the reports counted below
+        w:advance(0.3)
+        w:cast(MARK) -- the boar is heard from
+        w:advance(1)
+        w:applyAura(boar, "Curse of Agony", 5, false)
+        w:advance(4.8)
+        w:cast(MORTAL, { miss = true })
+        w:advance(0.5) -- the curse ran out 0.2 seconds after the cast
+        eq(w:icon("ActionButton1"), icon, payload .. ": the Mortal Strike was dodged")
+        w:advance(4)
+        eq(w:icon("ActionButton1"), icon, payload)
+        eq(ns.db.learned["Mortal Strike"].casts, 1)
+        eq(ns.db.learned["Mortal Strike"].hits, payload == "lists" and 0 or 1, payload .. ": what is learned of the spell")
+        w:removeAura(boar, "Hunter's Mark") -- taken off early, with no cast waiting
+        w:advance(0.1)
+        local counts = ns.db.report.reports
+        eq(counts.ended, 0, payload .. ": none of your own effects was due")
+        eq(counts.gone, payload == "lists" and 4 or 0, payload .. ": once for each name the boar goes by")
+        eq(counts.spared, payload == "lists" and 1 or 0, payload .. ": one change that a cast was waiting on")
+        eq(counts.kinds.went, payload == "lists" and 4 or 0)
+        eq(counts.kinds.came, payload == "lists" and 4 or 0, payload .. ": the Mark and the curse arriving")
+        eq(counts.kinds.unsaid, payload == "lists" and 0 or 8)
+        w:slash("debug")
+        local debug = w:drain()
+        check(debug:find(payload == "lists" and "an effect arriving 4, one going 4, both 0, not said 0."
+            or "an effect arriving 0, one going 0, both 0, not said 8.", 1, true), payload .. ": " .. debug)
+        check(debug:find("and not taken for it landing: " .. (payload == "lists" and 1 or 0) .. ".", 1, true),
+            payload .. ": " .. debug)
+        Clean(w)
+    end
+end)
+
+test("kinds: an effect going is never a hit, whatever is known about how the spell's endings are reported", function()
+    -- The cases in which timing alone gives the report to the cast waiting
+    -- (see "a spell whose endings mostly go unreported"). None of them matter
+    -- where the game says that an effect went.
+    for _, late in ipairs({ 1, 2, 5 }) do
+        local saved = Proven()
+        saved.learned = { Rend = { casts = 5, hits = 5, late = late } }
+        local w, ns = Bar({ saved = saved, auraPayload = "lists" }, REND, MORTAL)
+        local boar = w:addMob("Boar")
+        w:showPlate(boar)
+        w:target(boar)
+        w:advance(0.3)
+        w:cast(REND)
+        w:advance(20.5)
+        w:cast(MORTAL, { miss = true })
+        w:advance(1)
+        eq(w:icon("ActionButton2"), "check", late .. " endings went unreported before: the Mortal Strike was dodged")
+        eq(w:icon("ActionButton1"), "check", "and the Rend is over")
+        eq(ns.db.learned.Rend.due, 1, "its ending was heard when it was due, with the cast waiting or not")
+        eq(ns.db.report.reports.ended, 2, "once for each name the boar goes by")
+        eq(ns.db.report.reports.spared, 0, "put down to the Rend, which is another count")
+        Clean(w)
+    end
+end)
+
+test("kinds: one report of effects going answers for every effect of yours that was due", function()
+    -- A Rend and the wound from a Mortal Strike run out in the same frame, and
+    -- the game sends one report for the two. Timing alone lets one ending
+    -- answer for one change, and counts the other as never reported.
+    for payload, late in pairs({ lists = 0, sealed = 1 }) do
+        local w, ns = Bar({ saved = Proven(), auraPayload = payload }, REND, MORTAL)
+        local boar = w:addMob("Boar")
+        w:showPlate(boar)
+        w:target(boar)
+        w:advance(0.3)
+        w:cast(REND) -- 21 seconds
+        w:advance(11)
+        w:cast(MORTAL) -- 10 seconds
+        w:advance(9.5)
+        eq(w:icon("ActionButton1"), "cross", payload .. ": half a second before both run out")
+        eq(w:icon("ActionButton2"), "cross", payload)
+        w:advance(2)
+        eq(w:icon("ActionButton1"), "check", payload .. ": both over")
+        eq(w:icon("ActionButton2"), "check", payload)
+        local rend, mortal = ns.db.learned.Rend, ns.db.learned["Mortal Strike"]
+        eq((rend.due or 0) + (mortal.due or 0), 2 - late, payload .. ": endings heard on time")
+        eq((rend.late or 0) + (mortal.late or 0), late, payload .. ": endings taken to have gone unreported")
+        Clean(w)
+    end
+end)
+
+test("kinds: a recast that misses in the very frame the old effect ends stays green", function()
+    -- The old Rend goes in the frame the new one is dodged. Timing alone gives
+    -- a change in the frame of a cast to the cast, which is wrong here and
+    -- right far more often. Where the game says an effect went, it is right
+    -- both times: once with the cast announced first, once with the report.
+    for payload, icon in pairs({ lists = "check", sealed = "cross" }) do
+        for _, first in ipairs({ "cast", "report" }) do
+            local w, ns, boar = Simple({ saved = Timed(), auraPayload = payload })
+            w:cast(REND)
+            w:advance(20.95)
+            if first == "report" then
+                w:removeAura(boar, "Rend")
+            end
+            w:cast(REND, { miss = true })
+            if first == "cast" then
+                w:removeAura(boar, "Rend")
+            end
+            w:advance(0.3)
+            eq(w:icon("ActionButton1"), icon, payload .. ", the " .. first .. " first: nothing took the old Rend's place")
+            w:advance(4)
+            eq(ns.db.learned.Rend.hits, payload == "lists" and 5 or 6, payload .. ", the " .. first .. " first")
+            if payload == "lists" then
+                eq(ns.db.learned.Rend.due, 5, "the " .. first .. " first: and the old Rend's ending was heard on time")
+            end
+            Clean(w)
+        end
+    end
+end)
+
+test("kinds: a renewal reported a frame before its cast, in the old effect's last moment, is known for one", function()
+    -- Timing alone takes this for the old effect ending (see the scenario of
+    -- nearly the same name). The game may report a renewal as the same effect
+    -- renewed, or as one going and another arriving.
+    for _, replaces in ipairs({ false, true }) do
+        local how = replaces and "replaced" or "renewed"
+        local w, ns = Simple({ saved = Proven(), auraPayload = "lists", refreshReplaces = replaces })
+        w:cast(REND)
+        w:advance(20.95)
+        w:cast(REND, { early = 0.05 })
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "cross", how .. ": the report said an effect arrived")
+        w:advance(19)
+        eq(w:icon("ActionButton1"), "cross", how .. ": for another 21 seconds from the renewal")
+        w:advance(3)
+        eq(w:icon("ActionButton1"), "check", how .. ": and then it ran out")
+        eq(ns.db.learned.Rend.hits, 2, how .. ": both casts landed")
+        eq(ns.db.learned.Rend.late or 0, 0, how .. ": and no ending went unreported")
+        local kinds = ns.db.report.reports.kinds
+        eq(kinds.both, replaces and 2 or 0, how .. ": once for each name the boar goes by")
+        Clean(w)
+    end
+end)
+
+test("kinds: an effect arriving on the enemy at the instant of a miss still passes for the cast landing", function()
+    -- The limit that is left: the game says an effect arrived, never whose.
+    local w, ns, boar = Simple({ saved = Proven(), auraPayload = "lists" })
+    w:cast(REND, { miss = true })
+    w:advance(0.1)
+    w:applyAura(boar, "Curse of Agony", 24, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "nothing says the effect that arrived was somebody else's")
+    eq(ns.db.report.reports.spared, 0)
+    Clean(w)
+end)
+
+test("kinds: a report that says nothing, or everything, is judged by its timing as before", function()
+    -- A Rend is dodged, and a moment later the boar reports a change.
+    local cases = {
+        { what = "removed", icon = "check", said = "went" },
+        { what = "updated", icon = "cross", said = "came" },
+        { what = { "updated", "removed" }, icon = "cross", said = "both" },
+        { what = { "added", "removed" }, icon = "cross", said = "both" },
+        { what = { "added", "updated" }, icon = "cross", said = "came" },
+        { what = {}, icon = "cross", said = "unsaid" }, -- no list at all
+        { what = "full", icon = "cross", said = "unsaid" }, -- everything may have changed
+        { what = { "added", "updated", "removed" }, icon = "cross", said = "unsaid" }, -- every list: says nothing
+    }
+    for i, case in ipairs(cases) do
+        local w, ns, boar = Simple({ saved = Proven(), auraPayload = "lists" })
+        w:cast(REND, { miss = true })
+        w:advance(0.1)
+        w:auraChanged(boar, case.what)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), case.icon, "case " .. i .. ", taken as " .. case.said)
+        local kinds = ns.db.report.reports.kinds
+        for _, said in ipairs({ "came", "went", "both", "unsaid" }) do
+            eq(kinds[said], said == case.said and 2 or 0, "case " .. i .. ": reports counted as " .. said)
+        end
+        Clean(w)
+    end
+
+    -- One that says nothing, at the moment an effect of yours was due to run
+    -- out, is put down to that by its timing.
+    local w, ns = Bar({ saved = Timed(), auraPayload = "lists" }, REND, MORTAL)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(20.5)
+    w:cast(MORTAL, { miss = true })
+    w:advance(0.45)
+    for i = #boar.auras, 1, -1 do
+        table.remove(boar.auras, i) -- the Rend goes, and the report does not say what kind of change that is
+    end
+    w:auraChanged(boar, "full")
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "check", "not the Mortal Strike landing")
+    eq(w:icon("ActionButton1"), "check")
+    eq(ns.db.report.reports.ended, 2)
+    eq(ns.db.report.reports.kinds.unsaid, 2)
+    Clean(w)
+end)
+
+test("kinds: details are read for what they show, whatever their make", function()
+    -- A Rend is dodged, and a moment later the boar reports a change with
+    -- details made by hand: readable lists, empty ones, values that are not
+    -- lists at all. Only a report that plainly took effects away and added
+    -- none is kept from the cast.
+    local cases = {
+        { said = "went", make = function() -- readable, with empty lists where nothing happened
+            return { isFullUpdate = false, addedAuras = {}, updatedAuraInstanceIDs = {}, removedAuraInstanceIDs = { 7 } }
+        end },
+        { said = "came", make = function()
+            return { isFullUpdate = false, addedAuras = { { auraInstanceID = 9 } }, removedAuraInstanceIDs = {} }
+        end },
+        { said = "went", make = function(w) -- as build 71139 sends it
+            return { isFullUpdate = w.Secret(false), removedAuraInstanceIDs = w.Secret({ 7 }) }
+        end },
+        { said = "unsaid", make = function() -- says everything may have changed
+            return { isFullUpdate = true, removedAuraInstanceIDs = { 7 } }
+        end },
+        { said = "unsaid", make = function() -- a number where a list belongs
+            return { isFullUpdate = false, removedAuraInstanceIDs = 7 }
+        end },
+        { said = "unsaid", make = function(w) -- a list that may not be looked into
+            return { isFullUpdate = false, removedAuraInstanceIDs = w.Locked() }
+        end },
+        { said = "unsaid", make = function(w) -- every field hidden
+            return w.Sealed({ isFullUpdate = false, removedAuraInstanceIDs = { 7 } })
+        end },
+        { said = "unsaid", make = function(w) -- a table that may not be touched
+            return w.Locked()
+        end },
+        { said = "unsaid", make = function() -- not a table
+            return 5
+        end },
+    }
+    for i, case in ipairs(cases) do
+        local w, ns, boar = Simple({ saved = Proven() })
+        w:cast(REND, { miss = true })
+        w:advance(0.1)
+        w:auraChanged(boar, { details = case.make(w) })
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), case.said == "went" and "check" or "cross", "case " .. i .. ", taken as " .. case.said)
+        local kinds = ns.db.report.reports.kinds
+        for _, said in ipairs({ "came", "went", "both", "unsaid" }) do
+            eq(kinds[said], said == case.said and 2 or 0, "case " .. i .. ": reports counted as " .. said)
+        end
+        Clean(w)
+    end
+end)
+
+test("reports: an enemy dying to a skill without an icon does not make it look like a status skill", function()
+    -- A finishing blow, and the dead enemy's effects go a moment later. Where
+    -- the game says an effect went, that is never the skill leaving
+    -- something. Where it does not say, the change is put down to the cast as
+    -- any other would be, but an enemy that died in that moment teaches
+    -- nothing about the skill: six kills in a row do not earn it an icon.
+    for _, payload in ipairs({ "lists", "sealed" }) do
+        local w = World({ auraPayload = payload })
+        w:addSpell(903, {
+            name = "Finishing Blow", harmful = true,
+            description = "Attempts to finish off a wounded foe, causing 600 damage.",
+        })
+        w:addButton("ActionButton1", 1, 903)
+        w:addButton("ActionButton2", 2, MARK)
+        local ns = w:load(Proven())
+        for i = 1, 6 do
+            local boar = w:addMob("Boar " .. i)
+            w:showPlate(boar)
+            w:target(boar)
+            w:advance(0.3)
+            w:cast(MARK)
+            w:advance(2)
+            w:cast(903)
+            w:advance(0.1)
+            w:kill(boar)
+            w:advance(4)
+            w:hidePlate(boar)
+        end
+        local learned = ns.db.learned["Finishing Blow"]
+        eq(learned and learned.hits or 0, 0, payload .. ": casts counted as having left something")
+        local boar = w:addMob("Boar 7")
+        w:showPlate(boar)
+        w:target(boar)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), nil, payload .. ": it has no icon")
+        eq(ns.db.report.learning["Finishing Blow"].changed, payload == "sealed" and 6 or 0,
+            payload .. ": what the report says the enemies did after it")
+        eq(ns.db.report.reports.spared, 0, payload .. ": a skill that is only listened to is not a cast waiting to be judged")
+
+        -- An enemy that lives through it and reports nothing is counted, as before.
+        w:cast(903)
+        w:advance(4)
+        eq(ns.db.learned["Finishing Blow"].casts, 1, payload .. ": one cast that left nothing")
+        eq(ns.db.learned["Finishing Blow"].hits, 0, payload)
+        Clean(w)
+    end
+end)
+
+test("reports: what an enemy's death taught an earlier version does not earn a skill an icon", function()
+    -- Saved by 0.3.5: a finishing move that twelve kills in fifteen casts had
+    -- made look like a status skill, a real one that earned its icon by what
+    -- the enemy reported, and one that has its icon from its tooltip.
+    local function Saved(version)
+        local saved = Proven()
+        saved.version = version
+        saved.learned = {
+            ["Finishing Blow"] = { casts = 15, hits = 12 },
+            ["Gouge Armor"] = { casts = 8, hits = 8 },
+            Rend = { casts = 13, hits = 13 },
+        }
+        return saved
+    end
+    local function Play(version)
+        local w = World()
+        w:addSpell(903, {
+            name = "Finishing Blow", harmful = true,
+            description = "Attempts to finish off a wounded foe, causing 600 damage.",
+        })
+        w:addSpell(902, {
+            name = "Gouge Armor", harmful = true,
+            description = "Tears at the target's armor until it gives way.",
+            effect = { duration = 12 },
+        })
+        w:addButton("ActionButton1", 1, 903)
+        w:addButton("ActionButton2", 2, 902)
+        w:addButton("ActionButton3", 3, REND)
+        local ns = w:load(Saved(version))
+        local boar = w:addMob("Boar")
+        w:showPlate(boar)
+        w:target(boar)
+        w:advance(0.3)
+        return w, ns
+    end
+
+    local w, ns = Play(1)
+    eq(ns.db.version, 2, "the saved settings are brought up to date")
+    eq(w:icon("ActionButton1"), nil, "the finishing move is without its icon")
+    eq(ns.db.learned["Finishing Blow"].casts, 15)
+    eq(ns.db.learned["Finishing Blow"].hits, 11, "its count is taken down to short of earning one")
+    eq(w:icon("ActionButton3"), "check", "Rend has its icon from its tooltip, whatever was counted")
+    eq(w:icon("ActionButton2"), nil, "the skill that earned its icon has to be seen leaving something again")
+    w:cast(902)
+    w:advance(13)
+    eq(w:icon("ActionButton2"), nil, "once is not enough: 7 of 9")
+    w:cast(902)
+    w:advance(0.8)
+    eq(w:icon("ActionButton2"), "cross", "twice is: 8 of 10")
+    for _ = 1, 3 do
+        w:advance(4)
+        w:cast(903)
+    end
+    w:advance(4)
+    eq(w:icon("ActionButton1"), nil, "and the finishing move leaves nothing, so it stays without")
+    Clean(w)
+
+    -- Loaded a second time, nothing is taken down again.
+    local again = World()
+    again:addButton("ActionButton1", 1, REND)
+    local kept = { version = 2, learned = { Rend = { casts = 13, hits = 13 }, ["Finishing Blow"] = { casts = 15, hits = 12 } } }
+    local ns2 = again:load(kept)
+    eq(ns2.db.learned.Rend.hits, 13, "counts of this version are left alone")
+    eq(ns2.db.learned["Finishing Blow"].hits, 12)
+    Clean(again)
+
+    -- A spell whose effect has been read by its own name is never in doubt.
+    local seen = World()
+    seen:addButton("ActionButton1", 1, REND)
+    local ns3 = seen:load({ version = 1, learned = { Rend = { casts = 13, hits = 13, exact = true, duration = 21 } } })
+    eq(ns3.db.learned.Rend.hits, 13, "nothing to take down for a spell that has been seen")
+    Clean(seen)
+end)
+
+test("kinds, buffs: a buff of yours running out is not another buff landing", function()
+    -- Shield Block is used and leaves nothing, in the moment a buff somebody
+    -- else gave you runs out. Nothing is known about when that was due, so
+    -- only the kind of change tells that no buff arrived.
+    for payload, icon in pairs({ lists = "check", sealed = "cross" }) do
+        local w, ns = Bar({ saved = Proven(), auraPayload = payload }, BLOCK, REND)
+        Fight(w)
+        w:applyBuff("Mark of the Wild", 5, false)
+        w:advance(4.8)
+        w:cast(BLOCK, { miss = true })
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), icon, payload .. ": the Shield Block left nothing")
         Clean(w)
     end
 end)
@@ -1381,7 +1812,8 @@ end)
 
 test("reports: whatever comes with a report, it is only described and a cast is judged all the same", function()
     local shapes = {
-        sealed = "hidden, sealed table: full secret, added secret, updated secret, removed secret",
+        lists = SHAPE_LISTS,
+        sealed = SHAPE_SEALED,
         secret = "hidden, secret",
         none = "hidden, nothing",
         forbidden = "hidden, a table addons may not touch",
@@ -1417,7 +1849,7 @@ test("reports: only the first reports of a session are described", function()
         w:advance(0.05)
     end
     local payload = ns.db.report.payload
-    eq(payload["hidden, sealed table: full secret, added secret, updated secret, removed secret"], 60)
+    eq(payload[KindsTold() and SHAPE_LISTS or SHAPE_SEALED], 60)
     eq(payload["hidden, unread"], 100, "the rest are counted and left alone")
     Clean(w)
 end)
@@ -1971,8 +2403,12 @@ test("reports: what the client sent is saved for troubleshooting, and kept over 
     check(report.reports.target.hidden >= 1, "changes reported for the target while details were hidden")
     check(report.reports.plate.hidden >= 1, "and for its nameplate")
     eq(report.reports.target.readable, report.reports.target.hidden, "each with a table, not one secret value")
-    eq(report.payload["hidden, sealed table: full secret, added secret, updated secret, removed secret"], 2,
-        "what came with them is described: a table whose every field is sealed")
+    eq(report.payload[KindsTold() and SHAPE_LISTS or SHAPE_SEALED], 2,
+        "what came with them is described, field by field")
+    local kinds = report.reports.kinds
+    eq(kinds.came, KindsTold() and 2 or 0, "and counted by the kind of change it said it was")
+    eq(kinds.unsaid, KindsTold() and 0 or 2, "or as one that did not say")
+    eq(kinds.went + kinds.both, 0)
     eq(#report.casts, 2, "one line for each cast")
     check(report.casts[1]:find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast", 1, true),
         report.casts[1])
@@ -1992,6 +2428,10 @@ test("reports: what the client sent is saved for troubleshooting, and kept over 
         "debug counts the reports: " .. debug)
     check(debug:find("put down to an effect of yours running out just then: 0.", 1, true),
         "and those that were only an effect ending: " .. debug)
+    check(debug:find(KindsTold() and "an effect arriving 2, one going 0, both 0, not said 0."
+        or "an effect arriving 0, one going 0, both 0, not said 2.", 1, true),
+        "and what kind of change the game said each was: " .. debug)
+    check(debug:find("and not taken for it landing: 0.", 1, true), "and the endings a cast was not credited with: " .. debug)
     check(debug:find("1 left something, 1 left nothing", 1, true), "and the casts judged by them: " .. debug)
 
     -- The next session starts a report of its own and keeps the old one.

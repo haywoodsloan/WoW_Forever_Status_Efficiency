@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.3.5"
+ns.VERSION = "0.3.6"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -517,16 +517,17 @@ end
 --
 -- UNIT_AURA still fires in combat, but what it carries is sealed: the game's
 -- own documentation marks the event as producing secret values while auras are
--- restricted. So one frame per unit token listens for it and passes on nothing
--- but the fact that the unit behind that token just had an effect added,
--- renewed or removed. Registering each frame for a single unit is what tells
--- us whose effects changed without looking at the event's arguments.
+-- restricted. So one frame per unit token listens for it and passes on the
+-- fact that the unit behind that token just had an effect added, renewed or
+-- removed, and which of those it was where the client lets that be seen.
+-- Registering each frame for a single unit is what tells us whose effects
+-- changed without looking at the event's arguments.
 --
--- What exactly a client hands over is worth knowing all the same, because a
--- client that left the details readable would let a cast be told from every
--- other change. So the first reports of a session are also described, in
--- words, for the saved report. Nothing is ever read out of a secret value for
--- that: each field is only asked what kind of thing it is.
+-- What exactly a client hands over is worth knowing, because the more of it
+-- is readable, the better a cast can be told from every other change. So the
+-- first reports of a session are also described, in words, for the saved
+-- report. Nothing is ever read out of a secret value for that: each field is
+-- only asked what kind of thing it is.
 --------------------------------------------------------------------------------
 
 local issecrettable = issecrettable -- nil on clients without secret tables
@@ -605,11 +606,72 @@ local function Shape(details)
     return (Flag(issecrettable, details) and "sealed table: " or "table: ") .. table.concat(parts, ", ")
 end
 
---- Calls onChange(token, shape) whenever the effects on the unit behind
---- `token` change. `shape` describes the details the client sent along:
---- "secret" when they are one secret value, a fuller description for the first
---- reports of a session, and "unread" after that. Returns false when the
---- client will not allow the watch.
+--- True when a list in the details has something in it, false when it is not
+--- there or is empty, nil when that cannot be told. A secret value counts as
+--- something: the client only hands one over where there is a list to hide.
+local function Listed(details, field)
+    local value, kind = Peek(details, field)
+    if kind == "secret" then
+        return true
+    elseif kind == "nil" then
+        return false
+    elseif kind ~= "table" then
+        return nil
+    end
+    local _, first = Peek(value, 1)
+    if first == "refused" then
+        return nil
+    end
+    return first ~= "nil"
+end
+
+--- What kind of change the details of a report speak of, where they say:
+--- `came` is true when an effect was added or renewed, `went` when one was
+--- taken away. Both are nil when the details do not tell.
+---
+--- The game's documentation has the details sealed in combat, every field a
+--- secret value. The client this was checked against (build 71139) does
+--- something else: the details are an ordinary table whose three lists, of
+--- effects added, renewed and removed, each read as a secret value where
+--- there is something in them and as nil where there is not. What is in a
+--- list stays out of reach. That it is there does not, and it settles the one
+--- thing a cast is judged by: a report that only took effects away cannot be
+--- a cast landing. Nothing is asked of a secret value but whether it is one.
+---
+--- Details that say everything at once say nothing: a full update, no list
+--- at all, or all three lists, which is also what a client that answers
+--- "secret" for every field looks like.
+local function Told(details)
+    if IsSecret(details) or type(details) ~= "table" then
+        return nil
+    end
+    if Flag(issecrettable, details) or Flag(canaccesstable, details) == false then
+        return nil
+    end
+    local full, fullKind = Peek(details, "isFullUpdate")
+    if fullKind == "refused" or full == true then
+        return nil
+    end
+    local added = Listed(details, "addedAuras")
+    local updated = Listed(details, "updatedAuraInstanceIDs")
+    local removed = Listed(details, "removedAuraInstanceIDs")
+    if added == nil or updated == nil or removed == nil then
+        return nil
+    end
+    local came = added or updated
+    if came == removed and (not came or (added and updated)) then
+        return nil -- nothing listed, or everything
+    end
+    return came, removed
+end
+
+--- Calls onChange(token, shape, came, went) whenever the effects on the unit
+--- behind `token` change. `shape` describes the details the client sent
+--- along: "secret" when they are one secret value, a fuller description for
+--- the first reports of a session, and "unread" after that. `came` and `went`
+--- say what kind of change it was, where the details tell (see Told above),
+--- and are both nil where they do not. Returns false when the client will
+--- not allow the watch.
 function ns.WatchAuras(token, onChange)
     if watchers[token] then
         return true
@@ -631,7 +693,11 @@ function ns.WatchAuras(token, onChange)
             local described, text = pcall(Shape, details)
             shape = described and text or "could not be described"
         end
-        onChange(token, shape)
+        local told, came, went = pcall(Told, details)
+        if not told then
+            came, went = nil, nil
+        end
+        onChange(token, shape, came, went)
     end)
     watchers[token] = frame
     return true

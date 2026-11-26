@@ -24,13 +24,22 @@
 --   auraTokens     set of the kinds of unit token UNIT_AURA is sent for
 --                  ("player", "target", "softenemy", "plate"). Default: all.
 --   auraPayload    what UNIT_AURA carries as its details while they are
---                  hidden: "sealed" (default, and what the 12.1.5
---                  documentation says) a table whose every field reads as a
---                  secret value, "secret" one secret value, "none" nothing,
---                  "forbidden" a table that may not be indexed at all, "open"
---                  a table an addon can read, with a secret field or two
---                  inside, "full" a readable table that only says everything
---                  may have changed.
+--                  hidden: "lists" (default) what build 71139 was seen to
+--                  send: an ordinary table in which each of the three lists
+--                  (added, updated, removed) is there when it has something
+--                  in it and reads as a secret value, and is missing
+--                  otherwise; while nothing is hidden the lists are there
+--                  too, readable. "sealed" (what the 12.1.5 documentation
+--                  says) a table whose every field reads as a secret value,
+--                  "secret" one secret value, "none" nothing, "forbidden" a
+--                  table that may not be indexed at all, "open" a table an
+--                  addon can read, with a secret field or two inside and a
+--                  list both of effects added and of effects renewed, "full"
+--                  a readable table that only says everything may have
+--                  changed. Only "lists" tells one kind of change from
+--                  another. Where a scenario does not choose, the global
+--                  DEFAULT_AURA_PAYLOAD is used when it is set: the runner
+--                  sets it to play every scenario both ways.
 --   handover       "same": UNIT_AURA is also sent for a token in the frame it
 --                  is handed to another unit; "late": a frame after that.
 --   noSelfBuffAPI  true: C_Spell.IsSelfBuff does not exist.
@@ -197,6 +206,7 @@ function Mock.new(options)
         forbiddenTables[tbl] = true
         return tbl
     end
+    world.Sealed, world.Locked = Sealed, Locked
 
     local function AurasHidden()
         return options.secrets and world.combat
@@ -1808,18 +1818,69 @@ function Mock.new(options)
         return "plate"
     end
 
+    --- The kinds of change one report speaks of, as a set. `what` is a word
+    --- or a list of them: "added", "updated", "removed", "replaced" (one
+    --- effect went and another came in its place) or "full" (everything may
+    --- have changed).
+    local function Kinds(what, into)
+        into = into or {}
+        if type(what) == "table" then
+            for _, word in ipairs(what) do
+                Kinds(word, into)
+            end
+        elseif what == "replaced" then
+            into.added, into.removed = true, true
+        elseif what then
+            into[what] = true
+        end
+        return into
+    end
+
+    --- The details build 71139 was seen to send: a list for each kind of
+    --- change there was, each a secret value while details are hidden, and
+    --- nothing in a list's place when it would be empty.
+    local function Lists(kinds, hidden)
+        local function Wrap(value)
+            if hidden then
+                return Secret(value)
+            end
+            return value
+        end
+        if kinds.full then
+            return { isFullUpdate = Wrap(true) }
+        end
+        local details = { isFullUpdate = Wrap(false) }
+        if kinds.added then
+            details.addedAuras = Wrap({
+                { auraInstanceID = 1, isFromPlayerOrPlayerPet = true, isHarmful = true, spellId = 1 },
+            })
+        end
+        if kinds.updated then
+            details.updatedAuraInstanceIDs = Wrap({ 5 })
+        end
+        if kinds.removed then
+            details.removedAuraInstanceIDs = Wrap({ 4 })
+        end
+        return details
+    end
+
     --- Sends UNIT_AURA for one unit token. While aura details are hidden the
     --- arguments are secret, the unit included, so a frame only learns whose
-    --- effects changed from having registered for that one unit.
-    local function SendAuraEvent(token)
+    --- effects changed from having registered for that one unit. `what` is
+    --- the kind of change, which only the "lists" payload passes on.
+    local function SendAuraEvent(token, what)
         if options.auraTokens and not options.auraTokens[TokenKind(token)] then
             return
         end
         local hidden = AurasHidden()
         local unit = hidden and Secret(token) or token
         local details = { isFullUpdate = false }
-        if hidden then
-            local payload = options.auraPayload or "sealed"
+        local payload = options.auraPayload or DEFAULT_AURA_PAYLOAD or "lists"
+        if type(what) == "table" and what.details ~= nil then
+            details = what.details -- the scenario's own, sent as they are
+        elseif payload == "lists" then
+            details = Lists(Kinds(what or "added"), hidden)
+        elseif hidden then
             if payload == "secret" then
                 details = Secret({})
             elseif payload == "none" then
@@ -1856,11 +1917,23 @@ function Mock.new(options)
     end
 
     --- The effects on a unit changed: the client says so once for every unit
-    --- token that points at it.
-    function world:auraChanged(mob)
+    --- token that points at it. `what` is the kind of change: "added" (the
+    --- default: an effect that was not there before), "updated", "removed",
+    --- "replaced", or a list of those. { details = ... } sends those details
+    --- as they are, whatever the payload option says: world.Secret, world.Sealed
+    --- and world.Locked make the values a client hides. A scenario that changes
+    --- a unit's effects by hand, with no report, can name the kind in
+    --- `mob.owed`: the unit's next report then speaks of that change as well,
+    --- the way a client puts everything that happened in one frame into one
+    --- report.
+    function world:auraChanged(mob, what)
         local mode = options.auraEvents
         if mode == false or (mode == "calm" and AurasHidden()) then
             return
+        end
+        if mob.owed then
+            what = { what or "added", mob.owed }
+            mob.owed = nil
         end
         local tokens = {}
         if mob == self.player then
@@ -1873,7 +1946,7 @@ function Mock.new(options)
         end
         table.sort(tokens)
         for _, token in ipairs(tokens) do
-            SendAuraEvent(token)
+            SendAuraEvent(token, what)
         end
     end
 
@@ -1884,13 +1957,13 @@ function Mock.new(options)
             return
         end
         if options.handover == "same" then
-            SendAuraEvent(token)
+            SendAuraEvent(token, "full")
         elseif options.handover == "late" then
             world.effects[#world.effects + 1] = {
                 at = world.clock + 0.01,
                 run = function()
                     if world.tokens[token] then
-                        SendAuraEvent(token)
+                        SendAuraEvent(token, "full")
                     end
                 end,
             }
@@ -1907,7 +1980,7 @@ function Mock.new(options)
             end
         end
         if expired then
-            world:auraChanged(mob)
+            world:auraChanged(mob, "removed")
         end
     end
 
@@ -2101,13 +2174,14 @@ function Mock.new(options)
         -- Recasting refreshes the same instance unless asked otherwise.
         for _, aura in ipairs(mob.auras) do
             if aura.name == name and aura.fromPlayer == (fromPlayer ~= false) and aura.harmful == harmful then
-                if self.options.refreshReplaces then
+                local replaced = self.options.refreshReplaces
+                if replaced then
                     aura.auraInstanceID = self.nextAura
                     self.nextAura = self.nextAura + 1
                 end
                 aura.duration = duration
                 aura.expirationTime = duration > 0 and self.clock + duration or 0
-                self:auraChanged(mob)
+                self:auraChanged(mob, replaced and "replaced" or "updated")
                 return aura
             end
         end
@@ -2118,7 +2192,7 @@ function Mock.new(options)
         }
         self.nextAura = self.nextAura + 1
         mob.auras[#mob.auras + 1] = aura
-        self:auraChanged(mob)
+        self:auraChanged(mob, "added")
         return aura
     end
 
@@ -2136,7 +2210,7 @@ function Mock.new(options)
             end
         end
         if removed then
-            self:auraChanged(mob)
+            self:auraChanged(mob, "removed")
         end
     end
 
@@ -2146,7 +2220,7 @@ function Mock.new(options)
         mob.engaged = false
         mob.auras = {}
         if had then
-            self:auraChanged(mob)
+            self:auraChanged(mob, "removed")
         end
     end
 
@@ -2155,7 +2229,7 @@ function Mock.new(options)
         local had = #self.player.auras > 0
         self.player.auras = {}
         if had then
-            self:auraChanged(self.player)
+            self:auraChanged(self.player, "removed")
         end
         self:fire("PLAYER_DEAD")
         self:leaveCombat()

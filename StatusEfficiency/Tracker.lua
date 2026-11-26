@@ -10,9 +10,14 @@
 --     effect is taken to have landed then, and to last as long as the spell
 --     says. If they do not, the cast missed, was dodged or resisted, and
 --     nothing is recorded.
---   * A change that comes just as one of your own effects on the unit was due
---     to run out is put down to that, and not to a cast. That is given up for
---     a spell whose endings turn out to go unreported more often than not.
+--   * Only a change that could be an effect arriving counts for a cast. Where
+--     the client shows that a report only took effects away (the enemy died,
+--     an effect ran out), no cast is credited with it. Core.lua keeps those
+--     reports back, and only asks here whether an effect of yours was due.
+--   * Where the client does not show what kind of change it was, one that
+--     comes just as one of your own effects on the unit was due to run out is
+--     put down to that, and not to a cast. That is given up for a spell whose
+--     endings turn out to go unreported more often than not.
 --   * A cast is assumed to land only where there is nothing to go on: a unit
 --     nobody reports on, a client that has stopped reporting, and a spell
 --     tracked on your say-so that reports cannot see.
@@ -78,7 +83,9 @@ local credited = {} -- unit key -> the change (by its time) already put down to 
 local holders = {} -- unit key -> the cast it was put down to
 -- unit -> the changes at one moment that were held against your effects there
 -- running out: { when, n = how many, [1..n] = true for one put down to an
--- ending, [unit token] = how many of them were heard under that name }
+-- ending by its timing, "gone" for one the client showed to be an effect
+-- going, false for one left to the casts, [unit token] = how many of them
+-- were heard under that name }
 local endings = {}
 local heard = {} -- kind of unit token -> true once it has reported a change while details were hidden
 
@@ -208,7 +215,9 @@ local function PutDown(unit, when)
     local note = endings[unit]
     if note and note.when == when then
         for i = 1, note.n do
-            if note[i] then
+            -- Only one put down to it by its timing can be taken back. One the
+            -- client showed to be an effect going is that, whoever asks.
+            if note[i] == true then
                 return true
             end
         end
@@ -424,6 +433,24 @@ local function Announced(unit, when)
     return false
 end
 
+--- True while a cast that is judged by reports is waiting on this unit, and
+--- would take a change reported there now for its own effect arriving.
+function Tracker:Judging(unit)
+    local buffs = unit .. "+buffs"
+    for i = 1, #pending do
+        local cast = pending[i]
+        if Judged(cast) then
+            for book = 1, 2 do
+                local waiting = cast.units[book == 1 and unit or buffs]
+                if waiting and waiting.watched and not waiting.signal and not waiting.settled then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
 --- True while a cast is waiting to see whether this unit's effects change:
 --- one that has gone off, or one that was sent and not heard of since.
 local function Awaited(unit, when)
@@ -506,7 +533,11 @@ end
 --- a cast on the unit is announced goes to the cast, whatever else was due.
 --- That one exception is what keeps a cast that landed from being lost here:
 --- where the game reports a landing, it does so in the frame of the cast.
-function Tracker:Explained(unit, when, token)
+---
+--- `gone` is true when the client showed that the report took effects away.
+--- Then there is nothing to weigh: every effect of yours that was due went
+--- with it, whatever else is waiting, and no cast can take the report back.
+function Tracker:Explained(unit, when, token, gone)
     local note = endings[unit]
     if note and note.when ~= when then
         note = nil
@@ -515,7 +546,8 @@ function Tracker:Explained(unit, when, token)
     if note then
         note[token] = nth
         if nth <= note.n then
-            return note[nth] -- one already looked into, heard under another of the unit's names
+            -- One already looked into, heard under another of the unit's names.
+            return note[nth] ~= false
         end
     end
     local rec, name, relied = Due(unit, when)
@@ -527,6 +559,26 @@ function Tracker:Explained(unit, when, token)
         endings[unit] = note
     end
     note.n = note.n + 1
+    if gone then
+        -- One report can take several effects away, so it answers for every
+        -- effect of yours on the unit that was due.
+        note[note.n] = "gone"
+        for book = 1, 2 do
+            local set = records[book == 1 and unit or (unit .. "+buffs")]
+            if set then
+                for other, due in pairs(set) do
+                    if ComesDue(due, when) then
+                        due.told = when
+                        if not due.renewed then
+                            ns.Spells:Ended(other, true)
+                        end
+                        ns.Log("%s: ran out on time, and the unit reported an effect going", other)
+                    end
+                end
+            end
+        end
+        return true
+    end
     if Announced(unit, when) then
         -- The game may have sent one report for the landing and the ending
         -- both, so whether this ending was reported is left open.
@@ -691,7 +743,15 @@ local function Finish(cast, now, engaged)
                 verdict = "nothing new"
             end
         elseif unit.signal then
-            signalled = true
+            if unit.lost then
+                -- It died or went out of sight while the cast waited. A dying
+                -- enemy's effects all go, and where the client does not tell
+                -- an effect going from one arriving, that is a change too:
+                -- nothing is learned about the spell from it.
+                blind = true
+            else
+                signalled = true
+            end
             verdict = "changed" -- the books were brought up to date when it was seen
         else
             -- Nothing was seen of this cast on the unit. What that says depends
@@ -765,7 +825,9 @@ local function Finish(cast, now, engaged)
     --
     -- Silence only tells against a spell when every unit it could have reached
     -- would have reported a change. An area spell that left its effect on
-    -- enemies nobody reports on has not left nothing.
+    -- enemies nobody reports on has not left nothing. And a change only tells
+    -- for a spell on a unit that was still there afterwards: this is what
+    -- keeps a finishing move from earning an icon one kill at a time.
     local reports = cast.kind == "debuff"
     if cast.hit or (reports and signalled) then
         ns.Spells:Evidence(name, true, cast.kind)
