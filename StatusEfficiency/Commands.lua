@@ -560,6 +560,8 @@ local function ReadableNow(unit, kind)
         sample and format(" (%d)", sample.n) or "", YesNo(listed ~= nil))
 end
 
+local REPORT_LABELS = { player = "you", target = "your target", softenemy = "your soft target", plate = "nameplates" }
+
 function commands.debug()
     local now = ns.Now()
     local ok, version, build, _, interface = pcall(GetBuildInfo)
@@ -598,6 +600,31 @@ function commands.debug()
     print(ProbeLine("  Enemy debuffs, details hidden", probe.hidden, now, true, true))
     print(ProbeLine("  Your buffs, out of combat", probe.buffs.open, now, false, false))
     print(ProbeLine("  Your buffs, details hidden", probe.buffs.hidden, now, true, false))
+
+    -- What the client reports while details are hidden, and how casts came out.
+    local journal = ns.Journal()
+    local heard = {}
+    for i = 1, #ns.TOKEN_KINDS do
+        local kind = ns.TOKEN_KINDS[i]
+        heard[i] = format("%s: %d%s", REPORT_LABELS[kind], journal.reports[kind].hidden,
+            ns.Trusted(kind) and "" or " (not relied on yet)")
+    end
+    print("  Changes the game reported while details were hidden, about " .. table.concat(heard, ", ") .. ".")
+    local verdicts = journal.verdicts
+    local landed = (verdicts.changed or 0) + (verdicts.seen or 0)
+    local empty = (verdicts.silent or 0) + (verdicts["nothing new"] or 0)
+    local open = (verdicts.unproven or 0) + (verdicts.assumed or 0) + (verdicts.unclear or 0) + (verdicts.unknown or 0)
+    print(format("  Casts made with details hidden this session: %d left something, %d left nothing, %d could not be judged.",
+        landed, empty, open))
+    local refused = {}
+    for name in pairs(ns.refusals) do
+        refused[#refused + 1] = name
+    end
+    if #refused > 0 then
+        table.sort(refused)
+        print("  Refused by the game so far: " .. table.concat(refused, ", ") .. ".")
+    end
+    print("  A fuller report is saved with the addon's settings at the next /reload or logout.")
 
     local effects = Tracker:Describe(now)
     local me = ns.KeyOf("player", "buff")

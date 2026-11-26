@@ -8,13 +8,17 @@
 --
 -- Everything that talks to the game goes through this file. Nothing leaves it
 -- unless it is a plain value, so the rest of the addon never handles a secret.
+--
+-- ns.refusals notes the last error each aura query raised, and ns.nameReads
+-- what asking for an effect by name gave, for /se debug and the saved report:
+-- it is how we find out what a given client really allows.
 
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.3.0"
+ns.VERSION = "0.3.1"
 
-local pcall, type, pairs = pcall, type, pairs
+local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 
 local PREFIX = "|cff66ccffStatus Efficiency|r: "
 
@@ -24,7 +28,11 @@ end
 
 -- Replaced by Core.lua once it loads.
 function ns.Log() end
+function ns.Note() end
 function ns.MarkDirty() end
+function ns.InSight()
+    return true
+end
 
 function ns.Wipe(tbl)
     for key in pairs(tbl) do
@@ -115,6 +123,23 @@ end
 ns.Call = Call
 ns.Flag = Flag
 ns.Field = Field
+
+ns.refusals = {} -- name of a game function -> the error it last raised
+ns.nameReads = {} -- effect name -> how often asking for it by name found it, found nothing, or was refused
+
+local function Refused(name, err)
+    err = PlainString(err)
+    ns.refusals[name] = err and err:sub(1, 160) or "an error with no text"
+end
+
+local function NameRead(name, outcome)
+    local reads = ns.nameReads[name]
+    if not reads then
+        reads = { found = 0, nothing = 0, refused = 0 }
+        ns.nameReads[name] = reads
+    end
+    reads[outcome] = reads[outcome] + 1
+end
 
 --------------------------------------------------------------------------------
 -- Combat and secrecy state
@@ -370,12 +395,17 @@ local function ReadAuraList(list)
     return count, ids
 end
 
-local function SampleWith(fn, reader, unit, filter)
+local function SampleWith(name, reader, unit, filter)
+    local fn = C_UnitAuras[name]
     if type(fn) ~= "function" then
         return nil
     end
     local ok, list = pcall(fn, unit, filter)
-    if not ok or IsSecret(list) or type(list) ~= "table" then
+    if not ok then
+        Refused(name, list)
+        return nil
+    end
+    if IsSecret(list) or type(list) ~= "table" then
         return nil
     end
     local ok2, count, ids = pcall(reader, list)
@@ -390,13 +420,12 @@ end
 --- details are hidden.
 --- Returns { n = count, ids = set of aura instance ids or nil } or nil.
 function ns.SampleAuras(unit, kind)
-    local auras = C_UnitAuras
     local filter = FILTERS[kind]
-    if not auras or not filter then
+    if not C_UnitAuras or not filter then
         return nil
     end
-    return SampleWith(auras.GetUnitAuraInstanceIDs, ReadIDList, unit, filter)
-        or SampleWith(auras.GetUnitAuras, ReadAuraList, unit, filter)
+    return SampleWith("GetUnitAuraInstanceIDs", ReadIDList, unit, filter)
+        or SampleWith("GetUnitAuras", ReadAuraList, unit, filter)
 end
 
 local function ReadAura(aura)
@@ -416,7 +445,11 @@ function ns.ReadAuras(unit, kind)
     local found, complete = {}, true
     for i = 1, MAX_AURAS do
         local ok, aura = pcall(byIndex, unit, i, filter)
-        if not ok or IsSecret(aura) then
+        if not ok then
+            Refused("GetAuraDataByIndex", aura)
+            return nil
+        end
+        if IsSecret(aura) then
             return nil
         end
         if aura == nil then
@@ -449,10 +482,17 @@ function ns.ReadAuraByName(unit, name, kind)
         return nil
     end
     local ok, aura = pcall(byName, unit, name, filter)
-    if not ok or IsSecret(aura) then
+    if not ok then
+        Refused("GetAuraDataBySpellName", aura)
+        NameRead(name, "refused")
+        return nil
+    end
+    if IsSecret(aura) then
+        NameRead(name, "refused")
         return nil
     end
     if aura == nil then
+        NameRead(name, "nothing")
         return false
     end
     if type(aura) ~= "table" then
@@ -460,13 +500,87 @@ function ns.ReadAuraByName(unit, name, kind)
     end
     local ok2, found, duration, expires, id = pcall(ReadAura, aura)
     if not ok2 or IsSecret(found) or found ~= name then
+        NameRead(name, "refused")
         return nil
     end
+    NameRead(name, "found")
     return {
         duration = PlainNumber(duration),
         expires = PlainNumber(expires),
         id = PlainNumber(id),
     }
+end
+
+--------------------------------------------------------------------------------
+-- Change signals
+--
+-- UNIT_AURA still fires in combat, but with a payload an addon must not read.
+-- So one frame per unit token listens for it and passes on nothing but the fact
+-- that the unit behind that token just had an effect added, renewed or removed.
+-- Registering each frame for a single unit is what tells us whose effects
+-- changed without looking at the event's arguments.
+--------------------------------------------------------------------------------
+
+local watchers = {} -- unit token -> the frame listening for it
+
+--- Calls onChange(token, readable) whenever the effects on the unit behind
+--- `token` change. `readable` says whether the client sent details an addon may
+--- look at, which it does not do in combat. Returns false when the client will
+--- not allow the watch.
+function ns.WatchAuras(token, onChange)
+    if watchers[token] then
+        return true
+    end
+    local ok, frame = pcall(CreateFrame, "Frame")
+    if not ok or type(frame) ~= "table" then
+        return false
+    end
+    local registered, answer = pcall(frame.RegisterUnitEvent, frame, "UNIT_AURA", token)
+    if not registered or answer == false then
+        return false
+    end
+    frame:SetScript("OnEvent", function(_, _, _, details)
+        onChange(token, not IsSecret(details))
+    end)
+    watchers[token] = frame
+    return true
+end
+
+--- How the client treats one spell's aura: 0 never secret, 1 always secret,
+--- 2 it depends on the situation. nil when it will not say.
+function ns.SpellAuraSecrecy(spellID)
+    local answer = Call(C_Secrets and C_Secrets.GetSpellAuraSecrecy, spellID)
+    return PlainNumber(answer)
+end
+
+--- How far a spell reaches, in yards: little or nothing for one used at arm's
+--- length or with no target at all. nil when the client will not say.
+function ns.SpellRange(spellID)
+    local info = Call(C_Spell and C_Spell.GetSpellInfo, spellID)
+    if type(info) ~= "table" then
+        return nil
+    end
+    local range = Field(info, "maxRange")
+    if type(range) == "number" then
+        return range
+    end
+    return nil
+end
+
+--- A name for the client build, so that what was learned about one build is
+--- not taken for granted on the next.
+function ns.BuildKey()
+    local ok, version, build = pcall(GetBuildInfo)
+    if not ok then
+        return "unknown"
+    end
+    return tostring(Plain(version)) .. "." .. tostring(Plain(build))
+end
+
+--- The date and time as text, for the saved report.
+function ns.WallClock()
+    local text = Call(date, "%Y-%m-%d %H:%M:%S")
+    return type(text) == "string" and text or "unknown"
 end
 
 --------------------------------------------------------------------------------

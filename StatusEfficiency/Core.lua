@@ -15,12 +15,17 @@
 -- icons appear at all: always, only while an enemy is targeted (the default), or
 -- only during a fight; and on every skill, or only on one that can be used right
 -- now (the default).
+--
+-- In combat the client hides what effects a unit has, but still reports the
+-- moment they change. A cast only counts as applied once the unit it went to
+-- reports such a change: a miss, a dodge or a resist changes nothing, so the
+-- icon stays green.
 
 local ADDON_NAME, ns = ...
 
 local Spells, Tracker, Icons = ns.Spells, ns.Tracker, ns.Icons
 
-local pairs, type, pcall, tostring = pairs, type, pcall, tostring
+local pairs, type, pcall, tostring, next = pairs, type, pcall, tostring, next
 local floor, min, max = math.floor, math.min, math.max
 local format = string.format
 
@@ -472,6 +477,363 @@ end
 
 ns.KeyOf = KeyOf
 
+--------------------------------------------------------------------------------
+-- Change reports
+--
+-- While effect details are hidden the client still says when the effects on a
+-- unit change, though not what changed. Every unit token a spell can be judged
+-- on is listened to for that: you, your target, your soft target and the
+-- nameplates. All that is passed on to the tracker is "the effects on this unit
+-- changed at this moment"; it decides whether a cast of yours explains it.
+--
+-- What the client really sends is also written to a report kept with the
+-- settings, so that this can be checked against a real client afterwards.
+--------------------------------------------------------------------------------
+
+local SETTLE = 0.5 -- seconds a token counts as new after it was handed to another unit
+local RECENT = 0.5 -- how long a report waits for a cast that has not been announced yet
+local QUIET_LIMIT = 3 -- casts in a row with nothing reported before proof from earlier sessions is dropped
+local REPORT_CASTS = 40 -- casts kept in the saved report
+local REPORT_SESSIONS = 2 -- earlier sessions kept in it
+local REPORT_NOTES = 20
+
+local MAIN_TOKENS = { "target", "softenemy" }
+
+local listening = {} -- unit token -> true when the client lets us listen for its changes
+local changes = {} -- unit token -> when its effects were reported changing, until that is passed on
+local assigned = {} -- unit token -> when it was last handed to a different unit
+local everyone = -100 -- when every token was last handed out afresh
+
+-- How often the client has reported a change while details were hidden, this
+-- session, through each kind of unit token. Until it has, silence through that
+-- kind of token proves nothing: a client could report on your target and not
+-- on nameplates, or the other way round.
+local TOKEN_KINDS = { "player", "target", "softenemy", "plate" }
+local signals = {}
+for i = 1, #TOKEN_KINDS do
+    signals[TOKEN_KINDS[i]] = { heard = 0, quiet = 0 }
+end
+ns.signals = signals
+ns.TOKEN_KINDS = TOKEN_KINDS
+
+-- Kind of token -> the unit keys looked at through a listening token of that
+-- kind in the current pass.
+local sight = {}
+for i = 1, #TOKEN_KINDS do
+    sight[TOKEN_KINDS[i]] = {}
+end
+
+local SESSION = ns.WallClock() .. " / " .. format("%.2f", ns.Now())
+local sessionStart = ns.Now()
+local buildKey
+
+local function BuildKey()
+    buildKey = buildKey or ns.BuildKey()
+    return buildKey
+end
+
+--- A table kept with the settings, made on first use. These are not part of
+--- Defaults: they need no repair, and /se reset is meant to clear them.
+local function Kept(field)
+    local tbl = ns.db[field]
+    if type(tbl) ~= "table" then
+        tbl = {}
+        ns.db[field] = tbl
+    end
+    return tbl
+end
+
+--- The report saved with the settings: what this client sends and how each
+--- cast was judged, for this session and the last few that saw any casts.
+local function Journal()
+    local journal = ns.db.report
+    if type(journal) == "table" and journal.session == SESSION then
+        return journal
+    end
+    local earlier = {}
+    if type(journal) == "table" then
+        local older = journal.earlier
+        journal.earlier = nil
+        if type(journal.casts) == "table" and #journal.casts > 0 then
+            earlier[1] = journal
+        end
+        if type(older) == "table" then
+            for i = 1, #older do
+                if #earlier < REPORT_SESSIONS then
+                    earlier[#earlier + 1] = older[i]
+                end
+            end
+        end
+    end
+    journal = {
+        session = SESSION,
+        addon = ns.VERSION,
+        client = BuildKey(),
+        started = ns.WallClock(),
+        -- Reports of a unit's effects changing: with details hidden, without,
+        -- with details hidden but a payload we could have read, and with a
+        -- payload we could not read although nothing was said to be hidden.
+        reports = {
+            player = { hidden = 0, calm = 0, readable = 0, masked = 0 },
+            target = { hidden = 0, calm = 0, readable = 0, masked = 0 },
+            softenemy = { hidden = 0, calm = 0, readable = 0, masked = 0 },
+            plate = { hidden = 0, calm = 0, readable = 0, masked = 0 },
+            sameFrame = 0, -- ignored: the token was handed to another unit that very frame
+            handover = 0, -- ignored: only a token the unit had just been given reported it
+        },
+        verdicts = {}, -- how casts made with details hidden came out, by verdict
+        spells = {}, -- what the client says about the spells that were cast
+        casts = {}, -- the last casts, one line each
+        notes = {},
+        refusals = ns.refusals, -- the error each refused aura query raised
+        nameReads = ns.nameReads, -- what asking for an effect by name gave, with details hidden
+        earlier = earlier,
+    }
+    ns.db.report = journal
+    return journal
+end
+
+ns.Journal = Journal
+
+local function Stamp(now)
+    local elapsed = max(0, now - sessionStart)
+    return format("%d:%04.1f", floor(elapsed / 60), elapsed % 60)
+end
+
+local function Remark(text)
+    local notes = Journal().notes
+    if #notes < REPORT_NOTES then
+        notes[#notes + 1] = Stamp(ns.Now()) .. " " .. text
+    end
+end
+
+local function TokenKind(token)
+    if token == "player" or token == "target" or token == "softenemy" then
+        return token
+    end
+    return "plate"
+end
+
+--- True when the client is known to report changes through this kind of unit
+--- token while details are hidden: it has done so this session, or did in an
+--- earlier one on this same build.
+local function Trusted(kind)
+    return signals[kind].heard > 0 or Kept("proof")[kind] == BuildKey()
+end
+
+ns.Trusted = Trusted
+
+--- When a token was last handed to a different unit.
+local function Since(token)
+    local at = assigned[token]
+    if at == nil or everyone > at then
+        return everyone
+    end
+    return at
+end
+
+--- A unit token now points at a different unit, or with no token they all may.
+--- Whatever it reported before belonged to the unit it has left.
+local function Reassigned(token)
+    if token then
+        assigned[token] = ns.Now()
+        changes[token] = nil
+    else
+        everyone = ns.Now()
+        ns.Wipe(changes)
+    end
+end
+
+--- The client reported that the effects on the unit behind a token changed.
+local function OnAuraChange(token, readable)
+    local now = ns.Now()
+    local counts = Journal().reports
+    if token ~= "player" and Since(token) == now then
+        -- Handed to another unit this very frame: that is the change reported.
+        counts.sameFrame = counts.sameFrame + 1
+        return
+    end
+    local kind = TokenKind(token)
+    local count = counts[kind]
+    local secret = ns.AurasSecret()
+    if secret or not readable then
+        count.hidden = count.hidden + 1
+        if readable then
+            count.readable = count.readable + 1
+        elseif not secret then
+            count.masked = count.masked + 1
+        end
+        local state = signals[kind]
+        state.heard = state.heard + 1
+        state.quiet = 0
+        if state.heard == 1 then
+            Tracker:Heard(kind)
+            Kept("proof")[kind] = BuildKey()
+            ns.Log("the client reports changes through \"%s\" in combat: casts are judged by them from now on", kind)
+        end
+    else
+        count.calm = count.calm + 1
+    end
+    changes[token] = now
+    if Tracker:HasPending() then
+        stateDirty = true
+    end
+end
+
+local function AuraChanged(token, readable)
+    Guard(OnAuraChange, token, readable)
+end
+
+--- True when the unit has another name that has pointed at it for a while and
+--- is known to report. A real change is reported under every name a unit goes
+--- by, so one reported only under a name it was just given is the handover.
+local function HasOlderName(token, key, when)
+    for i = 1, #MAIN_TOKENS do
+        local other = MAIN_TOKENS[i]
+        if other ~= token and listening[other] and signals[other].heard > 0 and when - Since(other) >= SETTLE
+            and ns.Exists(other) and ns.UnitKey(other) == key then
+            return true
+        end
+    end
+    local plate = ns.PlateTokenFor(token)
+    return plate ~= nil and plate ~= token and listening[plate] == true and signals.plate.heard > 0
+        and when - Since(plate) >= SETTLE
+end
+
+--- Hands the reports that have come in to the tracker. With no cast waiting
+--- there is nothing they could explain, unless a cast is about to be announced:
+--- the recent ones are kept back for that, and the rest are dropped unread.
+local function PassOnChanges(now)
+    if next(changes) == nil then
+        return
+    end
+    if not Tracker:HasPending() then
+        for token, when in pairs(changes) do
+            if now - when > RECENT then
+                changes[token] = nil
+            end
+        end
+        return
+    end
+    for token, when in pairs(changes) do
+        changes[token] = nil
+        local key = ns.Exists(token) and ns.UnitKey(token)
+        if key then
+            if token ~= "player" and when - Since(token) < SETTLE and HasOlderName(token, key, when) then
+                local counts = Journal().reports
+                counts.handover = counts.handover + 1
+            else
+                Tracker:Changed(key, when)
+                Tracker:Changed(key .. "+buffs", when)
+            end
+        end
+    end
+end
+
+--- True while a change on the unit would still reach us: it is in sight
+--- through the kind of token it was cast on through, or through another kind
+--- that has been heard from. (Cast on your target and then switch target, and
+--- only its nameplate is left to report on it, if nameplates report at all.)
+function ns.InSight(key, via)
+    if via and sight[via][key] then
+        return true
+    end
+    for i = 1, #TOKEN_KINDS do
+        local kind = TOKEN_KINDS[i]
+        if signals[kind].heard > 0 and sight[kind][key] then
+            return true
+        end
+    end
+    return false
+end
+
+--- Notes on a unit in a cast's snapshot how its effects can be followed.
+local function Follow(entry, token)
+    if listening[token] then
+        local kind = TokenKind(token)
+        entry.watched = true
+        entry.via = kind
+        entry.trusted = Trusted(kind) or nil
+    end
+    return entry
+end
+
+--- Notes in the report what the client says about a spell that was just cast.
+local function NoteSpell(info, kind, source)
+    local spells = Journal().spells
+    if not spells[info.name] then
+        spells[info.name] = {
+            id = info.id,
+            kind = kind,
+            why = source or "none",
+            secrecy = ns.SpellAuraSecrecy(info.id) or "unknown", -- 0 never hidden, 1 always, 2 depends
+        }
+    end
+end
+
+local VERDICTS = { "seen", "changed", "nothing new", "silent", "unproven", "unclear", "assumed", "unknown" }
+
+--- The tracker has finished judging a cast. `tally` counts the units by how
+--- they came out, `delay` is how long after the cast one was seen to change,
+--- and `unheard` names the kinds of token that reported nothing and never have.
+function ns.Note(cast, tally, delay, unheard)
+    if unheard and cast.hidden then
+        -- Proof carried over from an earlier session is not kept against a
+        -- run of casts that nothing at all was reported for.
+        local proof = Kept("proof")
+        for kind in pairs(unheard) do
+            local state = signals[kind]
+            state.quiet = state.quiet + 1
+            if state.quiet >= QUIET_LIMIT and proof[kind] then
+                proof[kind] = nil
+                Remark(format("nothing was reported through \"%s\" after %d casts in a row, so casts are taken to "
+                    .. "land there again until a change is reported", kind, state.quiet))
+            end
+        end
+    end
+    if not cast.tracked then
+        return
+    end
+
+    local journal = Journal()
+    local parts = {}
+    for i = 1, #VERDICTS do
+        local verdict = VERDICTS[i]
+        local units = tally[verdict]
+        if units then
+            parts[#parts + 1] = units > 1 and (verdict .. " x" .. units) or verdict
+            if cast.hidden then
+                journal.verdicts[verdict] = (journal.verdicts[verdict] or 0) + units
+            end
+        end
+    end
+    local following = "nobody reports on it"
+    if cast.forced then
+        following = "taken to land on your say-so"
+    elseif cast.watched then
+        following = cast.trusted and "waited for a report" or "reports not proven yet"
+    end
+    local line = format("%s %s (%s, %s, %s): %s", Stamp(cast.time), cast.name, cast.kind,
+        cast.hidden and "hidden" or "open", following, #parts > 0 and table.concat(parts, ", ") or "nobody to judge")
+    if delay then
+        line = line .. format(", %.2fs after the cast", delay)
+    end
+    local casts = journal.casts
+    casts[#casts + 1] = line
+    if #casts > REPORT_CASTS then
+        table.remove(casts, 1)
+    end
+end
+
+listening.player = ns.WatchAuras("player", AuraChanged) or nil
+for i = 1, #MAIN_TOKENS do
+    listening[MAIN_TOKENS[i]] = ns.WatchAuras(MAIN_TOKENS[i], AuraChanged) or nil
+end
+for i = 1, #plateTokens do
+    listening[plateTokens[i]] = ns.WatchAuras(plateTokens[i], AuraChanged) or nil
+end
+ns.listening = listening
+
 -- What the client allowed the last time we looked, for /se debug: at an enemy's
 -- debuffs, and under `buffs` at your own buffs.
 local probe = { open = {}, hidden = {}, buffs = { open = {}, hidden = {} } }
@@ -548,6 +910,9 @@ local playerKey
 --- probe to fill in, if this look is one /se debug reports on.
 local function Look(unit, now, calm, kind, note)
     local key = KeyOf(unit, kind)
+    if listening[unit] then
+        sight[TokenKind(unit)][key] = true
+    end
     if seen[key] ~= nil then
         return key
     end
@@ -642,6 +1007,10 @@ local function BuffState(info, now, calm)
 end
 
 local function Refresh(now)
+    PassOnChanges(now)
+    for i = 1, #TOKEN_KINDS do
+        ns.Wipe(sight[TOKEN_KINDS[i]])
+    end
     ns.Wipe(seen)
     ns.Wipe(direct)
     ns.Wipe(engagedKeys)
@@ -760,6 +1129,21 @@ end
 -- Casts
 --------------------------------------------------------------------------------
 
+local FORCED_HITS = 3
+
+--- A spell tracked on your say-so is taken to land whatever is seen, because
+--- the addon may have no way to see what it leaves or where. That ends once
+--- there is no doubt left: an effect with the spell's own name has been read,
+--- or its casts have been followed by a new effect three times and at least
+--- every other time. From then on it is judged like any other spell.
+local function Forced(name, kind)
+    if Spells:IsExact(name, kind) then
+        return false
+    end
+    local casts, hits = Spells:Record(name, kind)
+    return hits < FORCED_HITS or hits * 2 < casts
+end
+
 --- The spell behind a cast event, if it is one we follow.
 local function CastInfo(spellID, now)
     local id = ns.PlainNumber(spellID)
@@ -781,20 +1165,20 @@ local function Snapshot(info, area, now, late, kind)
         local unit = BuffUnit(info)
         local key = KeyOf(unit, kind)
         snapshot.primary = key
-        snapshot.units[key] = {
+        snapshot.units[key] = Follow({
             pre = not late and Sample(unit, now, calm, kind) or nil,
             engaged = true,
-        }
+        }, unit)
         return snapshot
     end
     local unit = PrimaryEnemy()
     if unit then
         local key = ns.UnitKey(unit)
         snapshot.primary = key
-        snapshot.units[key] = {
+        snapshot.units[key] = Follow({
             pre = not late and Sample(unit, now, calm, kind) or nil,
             engaged = ns.IsEngaged(unit),
-        }
+        }, unit)
     end
     if area then
         for i = 1, #plateTokens do
@@ -802,10 +1186,10 @@ local function Snapshot(info, area, now, late, kind)
             if Attackable(token) then
                 local key = ns.UnitKey(token)
                 if not snapshot.units[key] then
-                    snapshot.units[key] = {
+                    snapshot.units[key] = Follow({
                         pre = not late and Sample(token, now, calm, kind) or nil,
                         engaged = ns.IsEngaged(token),
-                    }
+                    }, token)
                 end
             end
         end
@@ -844,13 +1228,20 @@ local function Landed(unit, castID, spellID, mustBeSent)
         -- We never saw it being sent, so there is no "before" to compare with.
         snapshot = Snapshot(info, area, now, true, kind)
     end
+    snapshot.hidden = ns.AurasSecret()
     Tracker:Succeeded(snapshot, {
         name = info.name,
         tracked = tracked,
         area = area,
         duration = duration,
-        forced = source == "you",
+        forced = source == "you" and Forced(info.name, kind),
+        wait = Spells:Wait(info),
     }, now)
+    -- A change reported just before the cast was announced is the cast's doing.
+    PassOnChanges(now)
+    if tracked then
+        NoteSpell(info, kind, source)
+    end
     if not (tracked and kind == "buff") then
         -- Out of combat, look at your buffs a moment from now: that is how a
         -- spell is found to leave one on you.
@@ -1025,6 +1416,7 @@ end
 
 function handlers.PLAYER_ENTERING_WORLD()
     ns.TokenChanged(nil)
+    Reassigned(nil)
     NewFight()
     nextFind = -100
     ns.MarkBarsDirty()
@@ -1032,6 +1424,7 @@ end
 
 function handlers.PLAYER_TARGET_CHANGED()
     ns.TokenChanged("target")
+    Reassigned("target")
     stateDirty = true
 end
 
@@ -1042,6 +1435,7 @@ end
 
 function handlers.PLAYER_SOFT_ENEMY_CHANGED()
     ns.TokenChanged("softenemy")
+    Reassigned("softenemy")
     stateDirty = true
 end
 
@@ -1049,6 +1443,7 @@ local function PlateChanged(token)
     token = ns.PlainString(token)
     if token then
         ns.TokenChanged(token)
+        Reassigned(token)
     end
     stateDirty = true
 end

@@ -174,6 +174,7 @@ local function Load(info, now)
             info.selfOnly = ns.SpellIsSelfOnly(id)
         end
         info.passive = ns.SpellIsPassive(id)
+        info.range = ns.SpellRange(id)
         local text = ns.SpellDescription(id)
         if text and text ~= "" then
             info.tooltipDuration = Spells.ParseDuration(text)
@@ -192,7 +193,7 @@ local function Load(info, now)
 end
 
 --- Static facts about a spell: { id, name, harmful, helpful, selfOnly, passive,
---- tooltipDuration }.
+--- range, tooltipDuration }.
 --- Returns nil while the client does not know the spell's name, with a second
 --- value of true if it is still worth asking again.
 function Spells:Get(spellID, now)
@@ -428,6 +429,60 @@ function Spells:LearnExact(name, duration, kind)
             learned.duration and (learned.duration .. "s") or "an unknown time")
         ns.MarkDirty()
     end
+end
+
+--------------------------------------------------------------------------------
+-- How long a cast takes to show on its target
+--
+-- When the only thing the client reports is that a unit's effects changed, a
+-- cast is judged by whether that happens soon after it. The shorter the wait,
+-- the less often something else changing on the unit is mistaken for the cast,
+-- and the more often a cast that was slow to show is called a miss.
+--
+-- A spell used at arm's length shows at once, so the gap is timed and the wait
+-- cut down to fit. One cast from a distance may have to fly there, for longer
+-- or shorter depending on where you stand, so it always gets the full wait.
+--------------------------------------------------------------------------------
+
+local min = math.min
+
+local WAIT_MIN, WAIT_MAX = 0.5, 3.0 -- seconds
+local WAIT_NEAR = 1.5 -- for a spell used at arm's length that has not been timed yet
+local NEAR = 10 -- yards: no flight time to speak of within this
+local LAG_TIMED = 3 -- landings to time before a spell's gap is trusted
+local LAG_FADE = 0.3 -- how fast an old, longer gap is forgotten
+
+Spells.WAIT_MAX = WAIT_MAX
+
+--- How long to wait for a cast of this spell to change the effects on its
+--- target before deciding that it left nothing there.
+function Spells:Wait(info)
+    if type(info.range) ~= "number" or info.range > NEAR then
+        return WAIT_MAX
+    end
+    local learned = ns.db.learned[info.name]
+    local lag = learned and learned.lag
+    local timed = learned and learned.timed
+    if type(lag) ~= "number" or type(timed) ~= "number" or timed < LAG_TIMED then
+        return WAIT_NEAR
+    end
+    return max(WAIT_MIN, min(WAIT_MAX, 2 * lag + 0.5))
+end
+
+--- Records that a cast of this spell showed on its target `delay` seconds
+--- after it went off.
+function Spells:Landed(name, delay)
+    local learned = Learned(name)
+    delay = max(0, min(WAIT_MAX, delay))
+    local lag = learned.lag
+    if type(lag) ~= "number" then
+        lag = delay
+    else
+        lag = max(delay, lag - LAG_FADE * (lag - delay))
+    end
+    learned.lag = floor(lag * 100 + 0.5) / 100
+    local timed = type(learned.timed) == "number" and learned.timed or 0
+    learned.timed = min(LAG_TIMED, timed + 1)
 end
 
 --- The cast record for a spell judged as one kind, for display: casts, hits

@@ -72,7 +72,7 @@ local function World(options)
         effect = { area = true, duration = 6 },
     })
     w:addSpell(MARK, {
-        name = "Hunter's Mark", harmful = true,
+        name = "Hunter's Mark", harmful = true, range = 100,
         description = "Places the Hunter's Mark on the target for 2 min.",
         effect = { duration = 120 },
     })
@@ -82,7 +82,7 @@ local function World(options)
         effect = { name = "Mortal Wounds", duration = 10 },
     })
     w:addSpell(FROSTBOLT, {
-        name = "Frostbolt", harmful = true,
+        name = "Frostbolt", harmful = true, range = 30,
         description = "Launches a bolt of frost, causing 500 damage and slowing movement by 50% for 8 sec.",
         effect = { duration = 8 },
     })
@@ -151,14 +151,31 @@ local function World(options)
     return w
 end
 
+-- What the addon saves once it has seen this client report, in combat, that a
+-- unit's effects changed: from then on it waits for such a report after a cast
+-- instead of assuming the cast landed.
+local BUILD = "1.60.1.70888"
+
+local function Proven()
+    return { proof = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+end
+
+--- How long the addon would wait for a cast of this spell to show on its target.
+local function Wait(ns, spellID)
+    return ns.Spells:Wait(ns.Spells:Get(spellID, ns.Now()))
+end
+
 --- A world with Rend, Heroic Strike and Battle Shout on the first three buttons
 --- and one boar targeted, nameplate showing.
+---
+--- For this helper and the next ones, `options.saved` is what the addon finds
+--- saved from an earlier session.
 local function Simple(options)
     local w = World(options)
     w:addButton("ActionButton1", 1, REND)
     w:addButton("ActionButton2", 2, HEROIC)
     w:addButton("ActionButton3", 3, SHOUT)
-    local ns = w:load()
+    local ns = w:load(options and options.saved)
     local boar = w:addMob("Boar")
     w:showPlate(boar)
     w:target(boar)
@@ -172,7 +189,7 @@ local function Bar(options, ...)
     for i = 1, select("#", ...) do
         w:addButton("ActionButton" .. i, i, (select(i, ...)))
     end
-    local ns = w:load()
+    local ns = w:load(options and options.saved)
     return w, ns
 end
 
@@ -185,6 +202,23 @@ local function Fight(w)
     w:cast(REND)
     w:advance(0.5)
     return boar
+end
+
+--- A world with Thunder Clap and Rend on the first two buttons and three
+--- kobolds, nameplates showing, the first one targeted.
+local function Pack(options)
+    local w = World(options)
+    w:addButton("ActionButton1", 1, CLAP)
+    w:addButton("ActionButton2", 2, REND)
+    local ns = w:load(options and options.saved)
+    local mobs = {}
+    for i = 1, 3 do
+        mobs[i] = w:addMob("Kobold " .. i)
+        w:showPlate(mobs[i])
+    end
+    w:target(mobs[1])
+    w:advance(0.5)
+    return w, ns, mobs
 end
 
 -- Globals the addon may create, and game functions it may look for and not find.
@@ -326,8 +360,28 @@ test("ids: a debuff that outlives its tooltip stays red", function()
     Clean(w)
 end)
 
-test("ids: a miss goes back to green after a moment", function()
+test("ids: a miss never turns the icon red", function()
     local w, ns, boar = Simple({ combatAuras = "ids" })
+    w:cast(REND)
+    w:advance(3)
+    w:removeAura(boar, "Rend")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "clean again")
+
+    w:cast(REND, { miss = true })
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "check", "nothing changed on the boar, so nothing is assumed")
+    w:advance(3.3)
+    eq(w:icon("ActionButton1"), "check", "and nothing showed up")
+    eq(ns.db.learned.Rend.casts, 2, "casts counted")
+    eq(ns.db.learned.Rend.hits, 1, "hits counted")
+    Clean(w)
+end)
+
+test("ids, no reports: a miss goes back to green after a moment", function()
+    -- A client that never says when a unit's effects change: the cast is
+    -- assumed to land, and the count corrects it.
+    local w, ns, boar = Simple({ combatAuras = "ids", auraEvents = false })
     w:cast(REND)
     w:advance(3)
     w:removeAura(boar, "Rend")
@@ -358,17 +412,25 @@ test("ids: the first cast of a fight is given the benefit of the doubt", functio
 end)
 
 test("an empty answer in combat is never mistaken for a clean enemy", function()
-    -- A client that answers the count with an empty list instead of refusing.
-    local w, ns = Simple({ combatAuras = "empty" })
-    for _ = 1, 6 do
-        w:cast(REND)
-        w:advance(1)
-        eq(w:icon("ActionButton1"), "cross", "after each cast")
-        w:advance(21)
+    -- A client that answers the count with an empty list instead of refusing,
+    -- with and without reports of a unit's effects changing.
+    for _, events in ipairs({ true, false }) do
+        local w, ns = Simple({ combatAuras = "empty", auraEvents = events })
+        for _ = 1, 6 do
+            w:cast(REND)
+            w:advance(1)
+            eq(w:icon("ActionButton1"), "cross", "after each cast")
+            w:advance(21)
+        end
+        local learned = ns.db.learned.Rend
+        if events then
+            eq(learned.hits, learned.casts, "every cast was seen to land")
+        else
+            eq(learned, nil, "nothing was learned or unlearned")
+        end
+        eq(w:icon("ActionButton1"), "check", "timers still run")
+        Clean(w)
     end
-    eq(ns.db.learned.Rend, nil, "nothing was unlearned")
-    eq(w:icon("ActionButton1"), "check", "timers still run")
-    Clean(w)
 end)
 
 test("ids: recasting on top refreshes without counting as a miss", function()
@@ -462,8 +524,8 @@ test("count: hit, early drop and miss are all told apart", function()
 
     w:cast(REND, { miss = true })
     w:advance(0.1)
-    eq(w:icon("ActionButton1"), "cross", "assumed at first")
-    w:advance(2.3)
+    eq(w:icon("ActionButton1"), "check", "a miss changes nothing on the boar")
+    w:advance(3.3)
     eq(w:icon("ActionButton1"), "check", "after a miss")
     eq(ns.db.learned.Rend.casts, 2)
     eq(ns.db.learned.Rend.hits, 1)
@@ -528,6 +590,19 @@ test("a debuff the client still shows by name in combat is read exactly", functi
 
     w:cast(REND, { miss = true })
     w:advance(0.1)
+    eq(w:icon("ActionButton1"), "check", "a miss leaves it green")
+    w:advance(2.4)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("a debuff shown by name in combat, no reports: a miss is caught by name", function()
+    local w = Simple({ combatAuras = "none", byName = { Rend = true }, auraEvents = false })
+    w:cast(REND)
+    w:advance(22)
+    eq(w:icon("ActionButton1"), "check", "the first one ran out")
+    w:cast(REND, { miss = true })
+    w:advance(0.1)
     eq(w:icon("ActionButton1"), "cross", "assumed at first")
     w:advance(2.4)
     eq(w:icon("ActionButton1"), "check", "the miss is caught by name")
@@ -535,23 +610,637 @@ test("a debuff the client still shows by name in combat is read exactly", functi
 end)
 
 --------------------------------------------------------------------------------
--- Area spells
+-- In combat on the client as it is documented: nothing about a unit's effects
+-- can be read, but the client still says when they change
 --------------------------------------------------------------------------------
 
-local function Pack(options)
-    local w = World(options)
-    w:addButton("ActionButton1", 1, CLAP)
-    w:addButton("ActionButton2", 2, REND)
-    local ns = w:load()
-    local mobs = {}
-    for i = 1, 3 do
-        mobs[i] = w:addMob("Kobold " .. i)
-        w:showPlate(mobs[i])
-    end
-    w:target(mobs[1])
+test("reports: a cast turns the icon red when the enemy's effects change, for as long as the spell lasts", function()
+    local w, ns = Simple({ saved = Proven() })
+    w:cast(REND)
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "as soon as the boar's effects changed")
+    w:advance(20.5)
+    eq(w:icon("ActionButton1"), "cross", "20 seconds in")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "after its time ran out")
+    eq(ns.db.learned.Rend.hits, 1, "and the cast counts as one that landed")
+    Clean(w)
+end)
+
+test("reports: a miss, a dodge or a resist leaves the icon green", function()
+    local w, ns = Simple({ saved = Proven() })
+    w:cast(REND, { miss = true })
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "check", "nothing changed on the boar")
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "check", "and it stays that way")
+    eq(ns.db.learned.Rend, nil, "with nothing reported yet this session, silence is not held against the spell")
+
+    w:cast(REND)
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "the next one lands")
+    w:advance(22)
+    eq(w:icon("ActionButton1"), "check", "and runs out")
+
+    w:cast(REND, { miss = true })
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "check", "a later miss")
+    eq(ns.db.learned.Rend.casts, 2, "now that reports have been seen, a silent cast counts as one that left nothing")
+    eq(ns.db.learned.Rend.hits, 1)
+    Clean(w)
+end)
+
+test("reports: until the client has been seen to report in combat, a cast is assumed to land", function()
+    local w, ns = Simple()
+    local wolf = w:addMob("Wolf")
+    w:showPlate(wolf)
+    w:advance(0.3)
+    eq(ns.Trusted("target"), false, "nothing to go on yet")
+
+    w:cast(REND, { miss = true })
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "so it is assumed to land, as it always was")
+    eq(ns.Trusted("target"), false)
+
+    w:cast(HEROIC) -- nothing changes on the boar
     w:advance(0.5)
-    return w, ns, mobs
-end
+    w:removeAura(w.player, "nothing") -- and nothing on you
+    eq(w:icon("ActionButton1"), "cross", "still assumed")
+
+    w:advance(21)
+    eq(w:icon("ActionButton1"), "check", "until its timer ends")
+    eq(ns.db.learned.Rend, nil, "and nothing is learned from it")
+
+    w:cast(REND)
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(ns.Trusted("target"), true, "the boar's effects were reported changing in combat")
+    eq(ns.Trusted("plate"), true, "through its nameplate too")
+    eq(ns.db.proof.target, BUILD, "which is remembered for the next session")
+    w:advance(22)
+
+    w:cast(REND, { miss = true })
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "check", "from then on nothing is assumed")
+    Clean(w)
+end)
+
+test("reports: what is heard about you says nothing about what is reported for a target", function()
+    local w, ns = Simple()
+    w:cast(REND, { miss = true })
+    w:advance(0.15)
+    w:applyBuff("Blessing", 60, false) -- someone buffs you in the fight
+    w:advance(3)
+    eq(ns.Trusted("player"), true)
+    eq(ns.Trusted("target"), false)
+    eq(w:icon("ActionButton1"), "cross", "the cast on the boar is still only assumed")
+    Clean(w)
+end)
+
+test("reports, area: the very first cast is assumed to land on everyone, then corrected by who reported", function()
+    local w, ns, mobs = Pack()
+    for i = 1, 3 do
+        mobs[i].engaged = true
+    end
+    w:enterCombat()
+    w:advance(0.5)
+    w:cast(CLAP, { hits = { mobs[1], mobs[2] } })
+    w:advance(0.05)
+    eq(w:icon("ActionButton1"), "cross", "nothing has ever been reported, so everyone is assumed hit")
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "partial", "two nameplates reported a change, so the third one's silence is believed")
+    eq(ns.Trusted("plate"), true)
+    Clean(w)
+end)
+
+test("reports: switching target on a client whose nameplates do not report", function()
+    -- Once the boar is no longer the target nothing reports on it any more,
+    -- nameplate or not, so its silence is not taken for a miss.
+    local w, ns, boar = Simple({ auraTokens = { player = true, target = true }, saved = { proof = { target = BUILD } } })
+    local wolf = w:addMob("Wolf")
+    w:showPlate(wolf)
+    w:advance(0.3)
+    w:cast(REND, { travel = 0.5 })
+    w:target(wolf)
+    w:advance(1)
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "taken to have landed")
+    eq(ns.Trusted("plate"), false)
+    Clean(w)
+end)
+
+test("reports: proof from an earlier session is dropped when the client stops reporting", function()
+    local w, ns = Simple({ auraEvents = "calm", saved = Proven() })
+    for i = 1, 3 do
+        w:cast(REND)
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "check", "cast " .. i .. " landed, but no report came")
+        w:advance(3)
+    end
+    eq(ns.db.proof.target, nil, "three casts in a row with no report at all: the proof is dropped")
+    eq(ns.Trusted("target"), false)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "and casts are assumed to land again")
+    check(ns.db.report.notes[1]:find("taken to land there again", 1, true), "the report says so: " .. ns.db.report.notes[1])
+    Clean(w)
+end)
+
+test("reports: a missed refresh keeps the old timer, and one that lands restarts it", function()
+    local w = Simple({ saved = Proven() })
+    w:cast(REND)
+    w:advance(10)
+    w:cast(REND, { miss = true })
+    w:advance(8)
+    eq(w:icon("ActionButton1"), "cross", "18 seconds after the one that landed")
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "check", "it ran out on its own time, not the missed cast's")
+
+    w:cast(REND)
+    w:advance(10)
+    w:cast(REND)
+    w:advance(15)
+    eq(w:icon("ActionButton1"), "cross", "25 seconds in, refreshed at 10")
+    w:advance(7)
+    eq(w:icon("ActionButton1"), "check", "the refreshed one ran out")
+    Clean(w)
+end)
+
+test("reports: a spell cast from a distance turns red when it lands, however long it flies", function()
+    local w, ns = Bar({ saved = Proven() }, FROSTBOLT, REND)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    eq(Wait(ns, FROSTBOLT), 3, "a spell that may have to fly is given three seconds")
+    for i = 1, 3 do
+        w:cast(FROSTBOLT, { travel = 0.2 }) -- from right next to the boar
+        w:advance(0.4)
+        eq(w:icon("ActionButton1"), "cross", "landed at once, cast " .. i)
+        w:advance(9)
+    end
+    eq(Wait(ns, FROSTBOLT), 3, "and keeps them, however quickly it has landed so far")
+    w:cast(FROSTBOLT, { travel = 1.5 }) -- from across the field
+    w:advance(1.2)
+    eq(w:icon("ActionButton1"), "check", "still in the air")
+    w:advance(0.6)
+    eq(w:icon("ActionButton1"), "cross", "landed")
+    local lag = ns.db.learned.Frostbolt.lag
+    check(lag >= 1.45 and lag <= 1.6, "how long it took to arrive: " .. tostring(lag))
+    Clean(w)
+end)
+
+test("reports: a spell used at arm's length is given less time once it has been timed", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    eq(Wait(ns, REND), 1.5, "before it has been timed")
+    for _ = 1, 3 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    eq(Wait(ns, REND), 0.5, "it shows at once, so half a second is plenty")
+
+    w:cast(REND, { miss = true })
+    w:advance(0.8)
+    w:applyAura(boar, "Sunder Armor", 30, false) -- something else, not a second after the miss
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "is no longer taken for the Rend")
+
+    w:cast(REND, { travel = 0.3 }) -- a slow one
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "still in time")
+    w:advance(22)
+    check(Wait(ns, REND) >= 1.1 and Wait(ns, REND) <= 1.2, "and the wait grows to fit what was seen: " .. Wait(ns, REND))
+    for _ = 1, 6 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    check(Wait(ns, REND) < 0.7, "then shrinks again as casts show at once: " .. Wait(ns, REND))
+    Clean(w)
+end)
+
+test("reports: a change reported a moment before the cast is announced still counts for it", function()
+    local w = Simple({ saved = Proven() })
+    w:cast(REND, { early = 0.1 })
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("reports: something else changing on the enemy at that moment passes for a hit", function()
+    -- The client says that the boar's effects changed, not which effect or
+    -- whose. This is the limit of what an addon can know in combat.
+    local w, _, boar = Simple({ saved = Proven() })
+    w:applyAura(boar, "Sunder Armor", 30, false) -- someone else's debuff, before the cast
+    w:advance(0.4)
+    w:cast(REND, { miss = true })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "a change from before the cast is not put down to it")
+
+    w:applyAura(boar, "Sunder Armor", 30, false) -- and again, half a second after the miss
+    w:advance(0.2)
+    eq(w:icon("ActionButton1"), "cross", "this one is taken for the Rend")
+    Clean(w)
+end)
+
+test("reports: a change after the wait is over is not put down to the cast", function()
+    local w, _, boar = Simple({ saved = Proven() })
+    w:cast(REND, { miss = true })
+    w:advance(2)
+    w:applyAura(boar, "Sunder Armor", 30, false)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("reports: two casts in a row are each judged on their own", function()
+    local w = Bar({ saved = Proven() }, REND, MARK)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND, { miss = true })
+    w:advance(0.5)
+    w:cast(MARK)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the change belongs to the newer cast")
+    eq(w:icon("ActionButton2"), "cross")
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "check", "and the older one is not given it later")
+    eq(w:icon("ActionButton2"), "cross")
+
+    local wolf = w:addMob("Wolf")
+    w:showPlate(wolf)
+    w:target(wolf)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    w:cast(MARK, { miss = true })
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "cross", "the other way round: the first landed")
+    eq(w:icon("ActionButton2"), "check", "and the second did not")
+    Clean(w)
+end)
+
+test("reports: switching target while a cast is still in the air", function()
+    local w, _, boar = Simple({ saved = Proven() })
+    local wolf = w:addMob("Wolf")
+    w:showPlate(wolf)
+    w:advance(0.3)
+    w:cast(REND, { travel = 0.5 })
+    w:target(wolf)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the wolf is clean")
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the boar's nameplate reported the change")
+
+    w:advance(22)
+    w:cast(REND, { travel = 0.5, miss = true })
+    w:target(wolf)
+    w:advance(1)
+    w:target(boar)
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check", "and a miss is still a miss")
+    Clean(w)
+end)
+
+test("reports: an enemy that goes out of sight during the wait is given the benefit of the doubt", function()
+    local w = Bar({ saved = Proven() }, REND)
+    local boar = w:addMob("Boar") -- no nameplate: once it is not the target, nothing reports on it
+    local wolf = w:addMob("Wolf")
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND, { travel = 0.5 })
+    w:target(wolf)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the wolf is clean")
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "nobody was watching when it would have landed, so it is taken to have")
+    Clean(w)
+end)
+
+test("reports: targeting an enemy and attacking it straight away is still judged", function()
+    local w = Simple({ saved = Proven() })
+    local wolf = w:addMob("Wolf")
+    w:target(wolf)
+    w:advance(0.05)
+    w:cast(REND)
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "a hit")
+
+    local fox = w:addMob("Fox")
+    w:target(fox)
+    w:advance(0.05)
+    w:cast(REND, { miss = true })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "a miss")
+    Clean(w)
+end)
+
+test("reports: a token handed to another enemy is not mistaken for a change on it", function()
+    for _, mode in ipairs({ "same", "late" }) do
+        local w, ns, boar = Simple({ handover = mode, saved = Proven() })
+        local wolf = w:addMob("Wolf")
+        w:showPlate(wolf)
+        w:advance(0.3)
+        w:cast(REND) -- so that targets and nameplates are both known to report in combat
+        w:advance(22)
+        eq(w:icon("ActionButton1"), "check", "ran out")
+
+        w:cast(REND, { miss = true })
+        w:advance(0.2)
+        w:target(wolf)
+        w:advance(0.2)
+        w:target(boar) -- back again: this client announces a change for "target" although nothing changed
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "check", "handover " .. mode .. ": no effect changed on the boar")
+        local reports = ns.db.report.reports
+        check(reports.sameFrame + reports.handover >= 2, "both handovers were recognised: " .. mode)
+        Clean(w)
+    end
+end)
+
+test("reports, area: only the enemies whose effects changed count as hit", function()
+    local w, _, mobs = Pack({ saved = Proven() })
+    for i = 1, 3 do
+        mobs[i].engaged = true
+    end
+    w:enterCombat()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "three enemies without Thunder Clap")
+
+    w:cast(CLAP, { hits = { mobs[1], mobs[2] } })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "two of the three reported a change")
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "partial", "and the third never did")
+
+    w:cast(CLAP, { hits = { mobs[1], mobs[2], mobs[3] } })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "all three")
+
+    w:cast(CLAP, { miss = true })
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "cross", "a cast that reaches nobody changes nothing")
+    w:advance(27)
+    eq(w:icon("ActionButton1"), "check", "all ran out")
+    Clean(w)
+end)
+
+test("reports, area: a client that reports on your target but not on nameplates", function()
+    -- The target is judged by its reports. The enemies only a nameplate shows
+    -- are assumed hit, as they were before, because nothing was ever heard
+    -- through a nameplate.
+    local w, ns, mobs = Pack({ auraTokens = { player = true, target = true } })
+    for i = 1, 3 do
+        mobs[i].engaged = true
+    end
+    w:enterCombat()
+    w:cast(REND)
+    w:advance(0.5)
+    eq(ns.Trusted("target"), true)
+    eq(ns.Trusted("plate"), false)
+    w:cast(CLAP, { hits = { mobs[2], mobs[3] } })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "the target reported nothing, the other two are assumed")
+    w:cast(CLAP)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "now the target reported it too")
+    Clean(w)
+end)
+
+test("reports, buffs: in combat your buff shows once your own effects change", function()
+    local w, ns = Bar({ saved = Proven() }, BLOCK, REND)
+    Fight(w)
+    w:cast(BLOCK)
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "your effects changed right after the cast")
+    w:advance(9)
+    eq(w:icon("ActionButton1"), "cross", "9 seconds in")
+    w:advance(1.2)
+    eq(w:icon("ActionButton1"), "check", "after it ran out")
+
+    w:cast(BLOCK, { miss = true })
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "check", "a cast that leaves nothing on you stays green")
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "check")
+    eq(ns.db.learned["Shield Block"].buffCasts, nil,
+        "what is reported about you in a fight is not held for or against a buff spell")
+    Clean(w)
+end)
+
+test("reports: a spell you told the addon to track is taken to land whatever is reported", function()
+    local w = Simple({ saved = Proven() })
+    w:slash("track heroic strike")
+    w:advance(0.5)
+    w:cast(HEROIC)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "it leaves nothing behind, but you asked for it to be tracked")
+    w:advance(3.5)
+    eq(w:icon("ActionButton2"), "cross", "and silence does not take that away")
+    Clean(w)
+end)
+
+test("reports: a debuff you told the addon to track is judged by reports once they have borne it out", function()
+    local w, ns = Simple({ saved = Proven() })
+    w:slash("track rend")
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "taken to land at first, because you asked for it to be tracked")
+    w:advance(22)
+    eq(w:icon("ActionButton1"), "check", "for as long as it would have lasted")
+
+    for _ = 1, 3 do
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross")
+        w:advance(22)
+    end
+    eq(ns.db.learned.Rend.hits, 3, "three casts were each followed by a change on the boar")
+
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "so there is no doubt left about it: a miss is a miss")
+    w:advance(3.5)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "and a hit is a hit")
+    check(ns.db.report.casts[1]:find("taken to land on your say-so", 1, true), "the report says how the first one was judged: "
+        .. ns.db.report.casts[1])
+    Clean(w)
+end)
+
+test("reports: a tracked spell that leaves nothing stays as you asked, whatever else changes on the enemy", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    w:slash("track heroic strike")
+    w:cast(REND)
+    w:advance(1)
+    for _ = 1, 6 do
+        w:cast(HEROIC)
+        w:advance(3)
+    end
+    for _ = 1, 3 do
+        w:cast(HEROIC)
+        w:advance(0.1)
+        w:auraChanged(boar) -- something else, at just that moment
+        w:advance(3)
+    end
+    eq(ns.db.learned["Heroic Strike"].hits, 3, "three casts looked as if they left something")
+    eq(ns.db.learned["Heroic Strike"].casts, 9, "out of nine")
+    w:advance(15)
+    eq(w:icon("ActionButton2"), "check", "the last one has run out")
+    w:cast(HEROIC)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "most of its casts changed nothing, so it is still taken to land as you asked")
+    w:advance(3.5)
+    eq(w:icon("ActionButton2"), "cross")
+    Clean(w)
+end)
+
+test("reports: a tracked spell that leaves nothing does not take the credit from a cast waiting for it", function()
+    local w, ns = Simple({ saved = Proven() })
+    w:slash("track heroic strike")
+    w:cast(REND, { travel = 0.2 })
+    w:advance(0.1)
+    w:cast(HEROIC) -- goes off before the boar has shown the Rend
+    w:advance(0.4)
+    eq(w:icon("ActionButton1"), "cross", "the change on the boar is the Rend's")
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(ns.db.learned.Rend.hits, 1)
+    eq(ns.db.learned["Heroic Strike"].hits, 0, "and is not put down to the spell that is taken to land anyway")
+    Clean(w)
+end)
+
+test("reports: a spell set to always show is judged like any other when its effect has been read by name", function()
+    local saved = Proven()
+    saved.spells = { Rend = { track = true } }
+    saved.learned = { Rend = { exact = true, casts = 0, hits = 0, duration = 21 } }
+    local w = Simple({ saved = saved })
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "what it leaves is known, so nothing needs to be taken on trust")
+    w:advance(3.5)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("reports, area: on a client that reports nothing, enemies pulled in by the spell are assumed hit", function()
+    local w, ns, mobs = Pack({ auraEvents = false })
+    w:cast(CLAP, { hits = mobs }) -- none of them was in the fight when it was sent
+    w:advance(0.05)
+    eq(w:icon("ActionButton1"), "check", "nothing to go on yet")
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "cross", "all three are in the fight now and nothing says otherwise")
+    eq(ns.Trusted("plate"), false)
+    Clean(w)
+end)
+
+test("reports: a spell that keeps leaving nothing on the enemy loses its icon", function()
+    local w, ns = Bar({ saved = Proven() }, BLOODTHIRST, REND)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "trusted at first: it has a duration in its tooltip")
+    w:cast(REND)
+    w:advance(1)
+    for _ = 1, 4 do
+        w:cast(BLOODTHIRST)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check", "never red: nothing changed on the boar")
+        w:advance(3.5)
+    end
+    eq(ns.db.learned.Bloodthirst.casts, 4)
+    eq(ns.db.learned.Bloodthirst.hits, 0)
+    eq(w:icon("ActionButton1"), nil, "dropped after four silent casts")
+    Clean(w)
+end)
+
+test("no reports: a client that never says when effects change runs on timers as before", function()
+    local w, ns = Simple({ auraEvents = false })
+    w:cast(REND, { miss = true })
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "cross", "assumed, with nothing to say otherwise")
+    w:advance(18.5)
+    eq(w:icon("ActionButton1"), "check", "until the timer ends")
+    eq(ns.db.learned.Rend, nil)
+    eq(ns.Trusted("target"), false)
+    Clean(w)
+end)
+
+test("reports: what the client sent is saved for troubleshooting, and kept over a reload", function()
+    local w, ns = Simple()
+    w:cast(REND)
+    w:advance(1)
+    w:cast(REND, { miss = true })
+    w:advance(4)
+    local report = ns.db.report
+    eq(report.addon, ns.VERSION)
+    eq(report.client, BUILD)
+    check(report.reports.target.hidden >= 1, "changes reported for the target while details were hidden")
+    check(report.reports.plate.hidden >= 1, "and for its nameplate")
+    eq(report.reports.target.readable, 0, "with nothing an addon could read")
+    eq(#report.casts, 2, "one line for each cast")
+    check(report.casts[1]:find("Rend (debuff, hidden, reports not proven yet): changed, 0.00s after the cast", 1, true),
+        report.casts[1])
+    check(report.casts[2]:find("Rend (debuff, hidden, waited for a report): silent", 1, true), report.casts[2])
+    eq(report.verdicts.changed, 1)
+    eq(report.verdicts.silent, 1)
+    eq(report.spells.Rend.secrecy, 2, "what the client says about hiding Rend's effect")
+    eq(report.spells.Rend.why, "tooltip")
+    check(report.refusals.GetUnitAuraInstanceIDs ~= nil, "the refusal to count effects is on record")
+    eq(report.nameReads.Rend.found, 0)
+    check(report.nameReads.Rend.nothing > 0, "asking for Rend by name gave nothing")
+    Clean(w)
+
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("your target: 1, your soft target: 0 (not relied on yet), nameplates: 1", 1, true),
+        "debug counts the reports: " .. debug)
+    check(debug:find("1 left something, 1 left nothing", 1, true), "and the casts judged by them: " .. debug)
+
+    -- The next session starts a report of its own and keeps the old one.
+    local saved = w.env.StatusEfficiencyDB
+    local w2 = World()
+    w2.clock = 5000
+    w2:addButton("ActionButton1", 1, REND)
+    local ns2 = w2:load(saved)
+    local boar = w2:addMob("Boar")
+    w2:target(boar)
+    w2:advance(0.3)
+    w2:cast(REND, { miss = true })
+    w2:advance(0.15)
+    eq(w2:icon("ActionButton1"), "check", "what was proven last session still holds")
+    w2:advance(4)
+    local second = ns2.db.report
+    check(second ~= report, "a new report")
+    eq(#second.casts, 1)
+    eq(#second.earlier, 1, "the earlier session is kept")
+    eq(second.earlier[1].casts[1], report.casts[1])
+    eq(second.earlier[1].earlier, nil, "without nesting")
+    Clean(w2)
+end)
+
+test("reports: a client build that changed is not trusted on the old build's word", function()
+    local w, ns = Simple({ clientBuild = "70999", saved = Proven() })
+    eq(ns.Trusted("target"), false)
+    w:cast(REND, { miss = true })
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "assumed until this build has been seen to report")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Area spells
+--------------------------------------------------------------------------------
 
 test("area: green, yellow and red follow how many enemies have it", function()
     local w, _, mobs = Pack({ combatAuras = "ids" })
@@ -711,11 +1400,11 @@ test("a spell whose tooltip misleads loses its icon", function()
     w:advance(1)
     for _ = 1, 3 do
         w:cast(BLOODTHIRST)
-        w:advance(3)
+        w:advance(3.5)
     end
     eq(w:icon("ActionButton1"), "check", "three empty casts are not enough")
     w:cast(BLOODTHIRST)
-    w:advance(3)
+    w:advance(3.5)
     eq(ns.db.learned.Bloodthirst.casts, 4)
     eq(w:icon("ActionButton1"), nil, "dropped after four")
     Clean(w)
@@ -972,9 +1661,9 @@ test("buffs, ids: a buff named differently from its spell is followed, and an em
 
     w:cast(WARD, { miss = true })
     w:advance(0.1)
-    eq(w:icon("ActionButton1"), "cross", "assumed at first")
-    w:advance(2.3)
-    eq(w:icon("ActionButton1"), "check", "nothing turned up")
+    eq(w:icon("ActionButton1"), "check", "nothing changed on you, so nothing is assumed")
+    w:advance(3.3)
+    eq(w:icon("ActionButton1"), "check", "and nothing turned up")
 
     w:cast(WARD)
     w:advance(25)
@@ -1004,7 +1693,7 @@ test("buffs, count: a new buff, an early loss and an empty cast are told from th
     eq(w:icon("ActionButton1"), "check", "its timer ran out")
 
     w:cast(WARD, { miss = true })
-    w:advance(2.5)
+    w:advance(3.5)
     eq(w:icon("ActionButton1"), "check", "the count did not move")
     eq(ns.db.learned["Stone Ward"].buffCasts, 2)
     Clean(w)
@@ -1059,9 +1748,9 @@ test("buffs: one the client still shows by name in combat is read exactly", func
 
     w:cast(BLOCK, { miss = true })
     w:advance(0.1)
-    eq(w:icon("ActionButton1"), "cross", "assumed at first")
+    eq(w:icon("ActionButton1"), "check", "an empty cast leaves it green")
     w:advance(2.4)
-    eq(w:icon("ActionButton1"), "check", "the empty cast is caught by name")
+    eq(w:icon("ActionButton1"), "check")
     Clean(w)
 end)
 
@@ -1342,8 +2031,17 @@ test("a cast with a cast time is judged from when it was sent", function()
     Clean(w)
 end)
 
-test("a success with no sent event is assumed, not judged", function()
+test("a success with no sent event is judged by what the enemy shows afterwards", function()
     local w, ns = Simple({ combatAuras = "ids" })
+    w:cast(REND, { noSent = true })
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(ns.db.learned.Rend.hits, 1, "its effects changed right after the cast")
+    Clean(w)
+end)
+
+test("a success with no sent event and no reports is assumed, not judged", function()
+    local w, ns = Simple({ combatAuras = "ids", auraEvents = false })
     w:cast(REND, { noSent = true })
     w:advance(3)
     eq(w:icon("ActionButton1"), "cross")

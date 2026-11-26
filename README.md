@@ -15,11 +15,12 @@ it is a debuff and there is no enemy to judge. Out of the box the icons also
 stay away until you target an enemy, and from a skill you cannot use right now
 (too close, too far, not enough rage). Both can be changed in the settings.
 
-Version 0.3.0 is an early draft. It loads and draws its icons in the real
+Version 0.3.1 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
-[Development](#development)), and how much the client reveals in combat is not
-confirmed yet. Expect a few rough edges and please report what `/se debug`
-prints.
+[Development](#development)), and what the client reports in combat is still
+being confirmed: the addon keeps a short record of it (see
+[Checking it against your client](#checking-it-against-your-client)). Expect a
+few rough edges.
 
 ## Install
 
@@ -41,7 +42,7 @@ prints.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.3.0 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.3.1 loaded."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -49,9 +50,10 @@ A full restart is only needed when a new version adds files.
 ## Using it
 
 Target an enemy. Every spell on your bars that leaves a debuff gets a green
-check. Cast one and its button turns to a red X until the effect ends. Spells
-that hit every enemy around you go yellow when only some of the enemies in the
-fight have the effect.
+check. Cast one and, once it lands, its button turns to a red X until the effect
+ends. A cast that misses, or is dodged, parried or resisted, leaves the green
+check where it is. Spells that hit every enemy around you go yellow when only
+some of the enemies in the fight have the effect.
 
 Spells that put a buff on you work the same way: a green check while you do
 not have the buff, a red X while you do. A buff you can also put on other
@@ -208,30 +210,79 @@ client still allows, best first:
    disappears early is noticed. This is only believed after the same fight has
    shown at least one effect this way, so an empty answer from a client that is
    simply hiding everything is never mistaken for "nothing there".
-4. **Your own casts and a timer.** When none of the above works, a cast is
-   assumed to land on the unit it was aimed at and to last as long as its
-   tooltip says.
+4. **Watching for the unit's effects to change.** In combat the game still
+   tells an addon the moment a unit gains, renews or loses an effect, without
+   saying which effect or whose. So a cast counts for nothing until the unit it
+   was aimed at reports such a change right after it. A cast that misses
+   changes nothing on the enemy, nothing is reported, and the button stays
+   green. The addon waits up to three seconds for the report: the full three
+   for a spell cast from a distance, a second and a half for a skill used at
+   arm's length, and less once it has timed a few of that skill's landings.
+5. **Your own casts and a timer.** As a last resort a cast is assumed to land on
+   the unit it was aimed at and to last as long as its tooltip says. That is
+   only done for a unit the game reports nothing about, and until the game has
+   been seen to send those reports in combat on your client (see below).
 
 Debuffs on enemies and buffs on you are handled separately, so a client that
 allows one and not the other is still used as far as it goes. `/se debug` shows
 which of these the client allowed the last time the addon looked, for each of
 the two, out of combat and in it.
 
+### Checking it against your client
+
+What a client allows in combat differs from one version to the next, so the
+addon does not take step 4 for granted. It listens for reports about you, your
+target, your soft target and the nameplates, and relies on each of those four
+only once it has heard a report through it while details were hidden. Until
+then a cast is assumed to land, as in step 5. What it heard is remembered for
+that client version, so this is a matter of the first hit of the first fight.
+If three casts in a row are then met with silence where reports were expected,
+it stops relying on them again.
+
+It also keeps a short record of what your client really sent: how many changes
+were reported and through what, which requests the game refused, and how each
+of the last 40 casts was judged ("changed", "silent", and so on). `/se debug`
+prints the summary. The full record is saved with the addon's settings at the
+next `/reload` or logout, under `report` in
+`WTF\Account\<account>\SavedVariables\StatusEfficiency.lua`, and is the thing
+to send with a bug report. It holds spell names, counts and timings, and no
+character or account names.
+
 ## Known limitations
 
-- **In combat the icons are most likely running on timers.** If the client
-  refuses even the counting, the addon cannot see a miss, a dodge, an immune
-  enemy, or a debuff or buff that is removed or used up early. It shows a red X
-  for the length of the effect after every cast that goes off. A buff you
-  already had when the fight began keeps its real end time.
+- **In combat the addon is told that a unit's effects changed, not which
+  effect.** A cast counts as landed when the unit's effects change within
+  moments of it. Something else changing on that unit in the same moment
+  (another player's debuff landing, an effect of its own, an old effect running
+  out) passes for your cast, so a miss can still show a red X now and then,
+  more often in a group than alone. On your own buffs this is weaker still,
+  because your effects come and go all through a fight.
+- **An effect that ends early in combat is not noticed.** A debuff that is
+  dispelled or used up, or a buff that is removed, keeps its red X until its
+  timer runs out or the fight ends. A buff you already had when the fight began
+  keeps its real end time.
+- **A cast is still assumed to land where the addon has nothing to go on.**
+  There a miss shows a red X for the length of the effect, as it did before
+  0.3.1. That covers three cases:
+  - an enemy that is neither your target nor showing a nameplate;
+  - every cast until the game has first been seen to report a change in combat
+    (see [Checking it against your client](#checking-it-against-your-client));
+  - a spell you set to **Always** show an icon (or `/se track`), for as long as
+    the addon cannot tell what it leaves behind. That ends once an effect with
+    the spell's own name has been read off a unit, or once three of its casts,
+    and at least every other one, were followed by a change on the enemy.
+- **A very slow landing can be taken for a miss.** An effect that shows up more
+  than three seconds after its cast (a slow missile from far away) is not put
+  down to that cast, and the button stays green.
 - **Only your own effects count.** The same debuff or buff put there by another
   player is not seen, so the button stays green.
 - **Spell detection is a guess from the tooltip.** A spell that mentions any
   duration gets an icon, which includes some that leave nothing behind (an
   interrupt that locks a spell school "for 3 sec", for example). Once the addon
   has watched about four casts leave nothing, it drops the icon by itself. It
-  can watch that out of combat, and in combat only on a client that lets it
-  count effects. Otherwise use `/se ignore <spell>`.
+  can watch that out of combat, and in combat for a spell cast on enemies (the
+  enemy's effects do not change). For a buff it needs a client that lets it
+  count effects in combat. Otherwise use `/se ignore <spell>`.
 - **Spells with no target** cannot be recognised from the tooltip. An area
   debuff needs to be on the small built-in list or added with
   `/se track <spell>`. A buff (a shout for the whole party, an aura, a stance)
@@ -241,7 +292,7 @@ the two, out of combat and in it.
   addon assumes 12 seconds until it has seen the real effect. Fix one with
   `/se duration <spell> <seconds>`.
 - **An effect named differently from its spell** cannot be looked up by name, so
-  that spell falls back to counting or timers.
+  that spell falls back to counting, change reports or timers.
 - **Buffs that switch each other off** (stances, forms and aspects, or a spell
   that turns its own buff off when cast again) are followed correctly out of
   combat. In combat, when the client hides your buffs, the addon only knows
@@ -257,8 +308,9 @@ the two, out of combat and in it.
   showing is assumed to be in reach. Enemy nameplates need to be turned on for
   area spells to see more than your target.
 - **Casts aimed somewhere else** (a mouseover or focus macro, or a buff cast on
-  yourself with a modifier key while a friend is targeted) are booked against
-  your current target.
+  yourself with a modifier key while a friend is targeted) are judged against
+  your current target. In combat that unit reports no change, so the cast is
+  taken to have left nothing.
 - **When the client hides who an enemy is**, enemies are told apart by their
   nameplates. With nameplates off, switching away from an enemy and back forgets
   what was on it.
@@ -287,8 +339,10 @@ tools/make_icons.py   draws the icons in Media/
 The addon is plain Lua 5.1, the dialect the game embeds, so the tests load it
 unchanged into a Lua 5.1 runtime where `tests/wow_mock.lua` stands in for the
 game. The mock imitates secret values (they throw when compared, indexed or
-used in arithmetic) and the different ways a client might restrict aura queries
-in combat.
+used in arithmetic), the different ways a client might restrict aura queries
+in combat, and the reports a client sends when a unit's effects change. By
+default it behaves like the documented client: every aura query is refused in
+combat and only those reports get through.
 
 ```
 pip install lupa

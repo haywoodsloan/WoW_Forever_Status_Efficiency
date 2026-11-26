@@ -11,11 +11,20 @@
 --   secrets        true (default): the client has secret values and hides aura
 --                  details in combat. false: an older client with neither.
 --   combatAuras    what counting the player's debuffs gives in combat:
---                  "ids" (default) plain instance ids, "count" a list of secret
---                  ids, "none" a Lua error, "empty" an empty list whatever the
---                  enemy really carries.
+--                  "none" (default, and what the 12.1.5 documentation says) a
+--                  Lua error, "ids" plain instance ids, "count" a list of
+--                  secret ids, "empty" an empty list whatever the enemy
+--                  really carries.
 --   combatBuffs    the same choice for counting the player's buffs, when the
 --                  client treats them differently. Defaults to combatAuras.
+--   auraEvents     when UNIT_AURA is sent as a unit's effects change: true
+--                  (default) always, with unreadable arguments while details
+--                  are hidden; "calm" only while they are not hidden; false
+--                  never.
+--   auraTokens     set of the kinds of unit token UNIT_AURA is sent for
+--                  ("player", "target", "softenemy", "plate"). Default: all.
+--   handover       "same": UNIT_AURA is also sent for a token in the frame it
+--                  is handed to another unit; "late": a frame after that.
 --   noSelfBuffAPI  true: C_Spell.IsSelfBuff does not exist.
 --   combatIdentity true (default): NPC GUIDs stay readable in combat.
 --   secretFlags    true: UnitExists, UnitCanAttack and friends answer with
@@ -58,7 +67,10 @@ function Mock.new(options)
     if options.secrets == nil then
         options.secrets = true
     end
-    options.combatAuras = options.combatAuras or "ids"
+    options.combatAuras = options.combatAuras or "none"
+    if options.auraEvents == nil then
+        options.auraEvents = true
+    end
     if options.combatIdentity == nil then
         options.combatIdentity = true
     end
@@ -72,7 +84,7 @@ function Mock.new(options)
         frames = {},
         tokens = {}, -- unit token -> mob
         mobs = {},
-        spells = {}, -- id -> { name, description, harmful, helpful, passive, override, effect }
+        spells = {}, -- id -> { name, description, harmful, helpful, passive, override, range, effect }
         actions = {}, -- slot -> { kind = "spell" | "macro", id = n }
         macros = {}, -- macro index -> spell id
         effects = {}, -- delayed aura applications
@@ -163,7 +175,11 @@ function Mock.new(options)
     end
 
     function env.GetBuildInfo()
-        return "1.60.1", "70888", "Nov 11 2026", 16001
+        return options.clientVersion or "1.60.1", options.clientBuild or "70888", "Nov 11 2026", 16001
+    end
+
+    function env.date()
+        return "2026-11-26 20:15:00"
     end
 
     function env.InCombatLockdown()
@@ -451,7 +467,8 @@ function Mock.new(options)
             if not data or data.unloaded then
                 return nil
             end
-            return { name = data.name, spellID = data.id, iconID = 1, castTime = 0, minRange = 0, maxRange = 0 }
+            return { name = data.name, spellID = data.id, iconID = 1, castTime = 0, minRange = 0,
+                maxRange = data.range or 0 }
         end,
         GetSpellDescription = function(spell)
             local data = FindSpell(spell)
@@ -498,6 +515,20 @@ function Mock.new(options)
             return data.icon or (130000 + data.id)
         end or nil,
     }
+
+    if env.C_Secrets then
+        function env.C_Secrets.GetSpellAuraSecrecy(spell)
+            local data = FindSpell(spell)
+            local name = data and ((data.effect and data.effect.name) or data.name)
+            if name and options.alwaysSecret and options.alwaysSecret[name] then
+                return 1
+            end
+            if name and options.byName[name] then
+                return 0
+            end
+            return 2
+        end
+    end
 
     function env.GetActionInfo(slot)
         local action = world.actions[slot]
@@ -1358,12 +1389,91 @@ function Mock.new(options)
         end
     end
 
+    local function TokenKind(token)
+        if token == "player" or token == "target" or token == "softenemy" then
+            return token
+        end
+        return "plate"
+    end
+
+    --- Sends UNIT_AURA for one unit token. While aura details are hidden the
+    --- arguments are secret, the unit included, so a frame only learns whose
+    --- effects changed from having registered for that one unit.
+    local function SendAuraEvent(token)
+        if options.auraTokens and not options.auraTokens[TokenKind(token)] then
+            return
+        end
+        local hidden = AurasHidden()
+        local unit = hidden and Secret(token) or token
+        local details = hidden and Secret({}) or { isFullUpdate = false }
+        world.auraEventsSent = (world.auraEventsSent or 0) + 1
+        for i = 1, #world.frames do
+            local frame = world.frames[i]
+            if frame.events.UNIT_AURA or frame.unitEvents.UNIT_AURA == token then
+                local handler = frame.scripts.OnEvent
+                if handler then
+                    local ok, err = pcall(handler, frame, "UNIT_AURA", unit, details)
+                    if not ok then
+                        world.errors[#world.errors + 1] = tostring(err)
+                    end
+                end
+            end
+        end
+    end
+
+    --- The effects on a unit changed: the client says so once for every unit
+    --- token that points at it.
+    function world:auraChanged(mob)
+        local mode = options.auraEvents
+        if mode == false or (mode == "calm" and AurasHidden()) then
+            return
+        end
+        local tokens = {}
+        if mob == self.player then
+            tokens[#tokens + 1] = "player"
+        end
+        for token, other in pairs(self.tokens) do
+            if other == mob then
+                tokens[#tokens + 1] = token
+            end
+        end
+        table.sort(tokens)
+        for _, token in ipairs(tokens) do
+            SendAuraEvent(token)
+        end
+    end
+
+    --- A unit token was handed to another unit. Some clients follow that with
+    --- a UNIT_AURA for the token although no effect changed.
+    local function Handover(token)
+        if options.auraEvents == false then
+            return
+        end
+        if options.handover == "same" then
+            SendAuraEvent(token)
+        elseif options.handover == "late" then
+            world.effects[#world.effects + 1] = {
+                at = world.clock + 0.01,
+                run = function()
+                    if world.tokens[token] then
+                        SendAuraEvent(token)
+                    end
+                end,
+            }
+        end
+    end
+
     local function Expire(mob, now)
+        local expired = false
         for i = #mob.auras, 1, -1 do
             local aura = mob.auras[i]
             if aura.expirationTime > 0 and aura.expirationTime <= now then
                 table.remove(mob.auras, i)
+                expired = true
             end
+        end
+        if expired then
+            world:auraChanged(mob)
         end
     end
 
@@ -1457,6 +1567,9 @@ function Mock.new(options)
     function world:target(mob)
         self.tokens.target = mob
         self:fire("PLAYER_TARGET_CHANGED")
+        if mob then
+            Handover("target")
+        end
     end
 
     function world:showPlate(mob)
@@ -1470,6 +1583,7 @@ function Mock.new(options)
                 mob.plate = token
                 plateFrames[token] = plateFrames[token] or { unitToken = token }
                 self:fire("NAME_PLATE_UNIT_ADDED", token)
+                Handover(token)
                 return token
             end
         end
@@ -1515,6 +1629,7 @@ function Mock.new(options)
                 end
                 aura.duration = duration
                 aura.expirationTime = duration > 0 and self.clock + duration or 0
+                self:auraChanged(mob)
                 return aura
             end
         end
@@ -1525,6 +1640,7 @@ function Mock.new(options)
         }
         self.nextAura = self.nextAura + 1
         mob.auras[#mob.auras + 1] = aura
+        self:auraChanged(mob)
         return aura
     end
 
@@ -1534,29 +1650,43 @@ function Mock.new(options)
     end
 
     function world:removeAura(mob, name)
+        local removed = false
         for i = #mob.auras, 1, -1 do
             if mob.auras[i].name == name then
                 table.remove(mob.auras, i)
+                removed = true
             end
+        end
+        if removed then
+            self:auraChanged(mob)
         end
     end
 
     function world:kill(mob)
+        local had = #mob.auras > 0
         mob.dead = true
         mob.engaged = false
         mob.auras = {}
+        if had then
+            self:auraChanged(mob)
+        end
     end
 
     --- The player dies, losing every aura, and comes back to life.
     function world:die()
+        local had = #self.player.auras > 0
         self.player.auras = {}
+        if had then
+            self:auraChanged(self.player)
+        end
         self:fire("PLAYER_DEAD")
         self:leaveCombat()
     end
 
     --- The player casts a spell.
     --- opts: miss = true (nothing lands), travel = seconds before the effect
-    --- lands, castTime = seconds between sent and success, noSent = true,
+    --- lands, early = seconds the effect shows on the unit before the cast is
+    --- announced, castTime = seconds between sent and success, noSent = true,
     --- fail = true (the cast is sent and then fails), hits = list of mobs an
     --- area spell reaches (default: every engaged mob plus the target),
     --- quiet = true (does not start combat).
@@ -1642,8 +1772,16 @@ function Mock.new(options)
             self:enterCombat()
         end
 
+        if opts.early then
+            Land()
+            self:advance(opts.early)
+        end
+
         self:fire("UNIT_SPELLCAST_SUCCEEDED", "player", castID, shownID)
 
+        if opts.early then
+            return
+        end
         if opts.travel and opts.travel > 0 then
             self.effects[#self.effects + 1] = { at = self.clock + opts.travel, run = Land }
         else
