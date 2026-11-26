@@ -12,7 +12,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.2.0"
+ns.VERSION = "0.3.0"
 
 local pcall, type, pairs = pcall, type, pairs
 
@@ -541,6 +541,19 @@ end
 
 function ns.RequestSpellLoad(spellID)
     Call(C_Spell and C_Spell.RequestLoadSpellData, spellID)
+end
+
+--- The spell's own picture, as something a texture can show: a file id or a
+--- path. Nil when the client will not say.
+function ns.SpellIcon(spellID)
+    local icon = Call(C_Spell and C_Spell.GetSpellTexture, spellID)
+    if icon == nil then
+        icon = Call(GetSpellTexture, spellID) -- clients older than 11.0
+    end
+    if (type(icon) == "number" and icon > 0) or (type(icon) == "string" and icon ~= "") then
+        return icon
+    end
+    return nil
 end
 
 --- The spell that is really cast when this one is used: talents and forms can

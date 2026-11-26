@@ -62,12 +62,7 @@ local function ResolveSpell(text)
 end
 
 local function Choice(name)
-    local choice = ns.db.spells[name]
-    if not choice then
-        choice = {}
-        ns.db.spells[name] = choice
-    end
-    return choice
+    return Spells:Choice(name)
 end
 
 local function WithSpell(text, fn)
@@ -78,6 +73,7 @@ local function WithSpell(text, fn)
     end
     fn(name)
     ns.MarkBarsDirty()
+    ns.Options.RefreshAll() -- the Spells tab shows the same choices
 end
 
 --- How a spell on the bars is treated right now: tracked, area, duration,
@@ -112,17 +108,19 @@ local HELP = {
     "icons on your action buttons show whether casting again is worth it.",
     "  A debuff: green check = no enemy it would hit has it, yellow half circle = some do, red X = all do.",
     "  A buff: green check = you do not have it, red X = you do.",
-    "  /se options - the settings window: icon position, icon size and which icon means what",
-    "  /se on | off",
+    "  /se options - the settings window: when the icons appear, where they sit, how big they are, which icon",
+    "    means what, and how each spell on your bars is treated",
+    "  /se on | off   /se when <always | target | combat> - when the icons appear",
     "  /se list - the spells on your bars and how each is treated",
     "  /se track <spell> | ignore <spell> | auto <spell>",
     "  /se buff <spell> | debuff <spell> - track it as a buff on you, or as a debuff on enemies",
     "  /se aoe <spell> | single <spell> - judge a debuff against every enemy in the fight, or only your target",
     "  /se duration <spell> <seconds | auto>",
     "  /se corner <tl | top | tr | left | center | right | bl | bottom | br>   /se size <pixels | auto>",
-    "  /se icon <green | yellow | red> <icon name | file ID | texture path | default>   /se icons lists the names",
+    "  /se icon <green | yellow | red> <icon name | file ID | texture path | none | default>   /se icons lists the names",
     "  /se debug - what the game lets the addon see right now",
     "  /se log - show or hide what the tracker is doing",
+    "  /se plain - draw the settings window without the game's own buttons and sliders, should they look wrong",
     "  /se reset - forget every setting and everything learned",
 }
 
@@ -133,17 +131,49 @@ function commands.help()
     end
 end
 
+--- When the icons appear, in the words the settings window uses.
+local function AppearWords(when)
+    local choices = ns.Options.APPEAR_CHOICES
+    for i = 1, #choices do
+        if choices[i].key == when then
+            return choices[i].words
+        end
+    end
+    return tostring(when)
+end
+
 function commands.on()
-    ns.db.enabled = true
-    ns.Resume()
-    Print("on.")
+    ns.SetEnabled(true)
+    ns.Options.RefreshAll()
+    Print("on. Icons appear " .. AppearWords(ns.db.appear) .. ".")
 end
 
 function commands.off()
-    ns.db.enabled = false
-    ns.HideAll()
+    ns.SetEnabled(false)
+    ns.Options.RefreshAll()
     Print("off. /se on turns it back on.")
 end
+
+local APPEAR_WORDS = {
+    always = "always", all = "always",
+    target = "target", targeting = "target", targeted = "target", enemy = "target",
+    combat = "combat", fight = "combat", fighting = "combat",
+}
+
+function commands.when(rest)
+    local when = APPEAR_WORDS[Trim(rest):lower()]
+    if not when then
+        Print("icons appear " .. AppearWords(ns.db.appear) .. ". /se when <always | target | combat> changes that: "
+            .. "always, when targeting an enemy, or when in combat.")
+        return
+    end
+    ns.Options.Change(function()
+        ns.SetAppear(when)
+    end)
+    Print("icons now appear " .. AppearWords(when) .. ".")
+end
+
+commands.appear = commands.when
 
 function commands.track(rest)
     WithSpell(rest, function(name)
@@ -296,8 +326,15 @@ end
 
 commands.position = commands.corner
 
-function commands.options()
-    ns.Options.Toggle()
+local TAB_WORDS = { spells = "spells", spell = "spells", appearance = "appearance", look = "appearance", icons = "appearance" }
+
+function commands.options(rest)
+    local tab = TAB_WORDS[Trim(rest or ""):lower()]
+    if tab then
+        ns.Options.Open(tab) -- a tab was named: bring the window up on it
+    else
+        ns.Options.Toggle()
+    end
 end
 
 commands.config = commands.options
@@ -313,11 +350,17 @@ function commands.icons()
             line = {}
         end
     end
-    print("  or a file ID such as 136243, a texture path such as Interface\\Icons\\INV_Misc_QuestionMark, or default.")
+    print("  or a file ID such as 136243, a texture path such as Interface\\Icons\\INV_Misc_QuestionMark,")
+    print("  none for no icon at all, or default.")
     for i = 1, #Icons.STATES do
         local state = Icons.STATES[i]
         local current, custom = Icons.Current(state.key)
-        print(format("  %s: %s", state.title, current == "custom" and tostring(custom) or current))
+        if current == Icons.HIDDEN then
+            current = "none"
+        elseif current == "custom" then
+            current = tostring(custom)
+        end
+        print(format("  %s: %s", state.title, current))
     end
 end
 
@@ -325,7 +368,8 @@ function commands.icon(rest)
     local word, choice = Trim(rest):match("^(%S+)%s*(.-)$")
     local state = Icons.StateFor(word)
     if not state or choice == "" then
-        Print("Usage: /se icon <green | yellow | red> <icon name | file ID | texture path | default>. /se icons lists the names.")
+        Print("Usage: /se icon <green | yellow | red> <icon name | file ID | texture path | none | default>. "
+            .. "/se icons lists the names.")
         return
     end
     local title = Icons.State(state).title
@@ -333,13 +377,18 @@ function commands.icon(rest)
     if choice:lower() == "default" then
         ns.Options.Change(function()
             Icons.Set(state, nil)
-        end, state)
+        end)
         Print("\"" .. title .. "\" is back to its usual icon.")
     elseif known then
         ns.Options.Change(function()
             Icons.Set(state, known.key)
-        end, state)
+        end)
         Print("\"" .. title .. "\" now shows the " .. known.name:lower() .. ".")
+    elseif Icons.IsHiddenWord(choice) then
+        ns.Options.Change(function()
+            Icons.SetHidden(state)
+        end)
+        Print("\"" .. title .. "\" now shows no icon. /se icon " .. state .. " default brings its icon back.")
     else
         local texture = Icons.ParseCustom(choice)
         if not texture then
@@ -348,7 +397,7 @@ function commands.icon(rest)
         end
         ns.Options.Change(function()
             Icons.SetCustom(state, texture)
-        end, state)
+        end)
         Print("\"" .. title .. "\" now shows your own texture, " .. tostring(texture) .. ".")
     end
 end
@@ -358,8 +407,16 @@ function commands.log()
     Print(ns.db.log and "showing what the tracker does. /se log hides it again." or "tracker messages hidden.")
 end
 
+function commands.plain()
+    ns.db.plain = not ns.db.plain
+    Print(ns.db.plain
+        and "the settings window will draw its own buttons and sliders. Type /reload to see it. /se plain again brings the game's own back."
+        or "the settings window will use the game's own buttons and sliders again. Type /reload to see it.")
+end
+
 function commands.reset()
     ns.ResetSettings()
+    ns.Options.PlaceWindow()
     ns.Options.RefreshAll()
     Print("all settings and everything learned are back to the start.")
 end
@@ -415,7 +472,7 @@ function commands.list()
             quiet = quiet + 1
         end
     end
-    local ADD = " /se track <spell> adds one, and /se buff <spell> adds one as a buff on you."
+    local ADD = " /se track <spell> adds one, and /se buff <spell> adds one as a buff on you. The Spells tab of /se options does the same with clicks."
     if quiet == 1 then
         print("  1 other spell does not look like a status effect." .. ADD)
     elseif quiet > 1 then

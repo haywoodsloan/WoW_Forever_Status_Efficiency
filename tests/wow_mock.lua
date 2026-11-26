@@ -26,6 +26,16 @@
 --   noAuraAPI      true: C_UnitAuras does not exist.
 --   macroStyle     "index" (default) GetActionInfo gives the macro index,
 --                  "spell" it gives the macro's spell id with subType "spell".
+--   noTemplates    true: CreateFrame knows none of the game's own templates.
+--                  A set of template names: it does not know those.
+--   brokenTemplates set of template names that exist but whose methods fail.
+--   missingFonts   set of font objects this client does not have.
+--   missingTextures set of textures (paths or file ids) that do not exist.
+--   quietTextures  true: Texture:SetTexture does not say whether it worked.
+--   noAtlas        true: textures have no SetAtlas.
+--   noLines        true: frames have no CreateLine.
+--   noSounds       true: PlaySound and SOUNDKIT do not exist.
+--   noSpellTexture true: C_Spell.GetSpellTexture does not exist.
 
 local Mock = {}
 
@@ -476,6 +486,13 @@ function Mock.new(options)
             local data = FindSpell(spell)
             return data and data.override or spell
         end,
+        GetSpellTexture = not options.noSpellTexture and function(spell)
+            local data = FindSpell(spell)
+            if not data or data.unloaded then
+                return nil
+            end
+            return data.icon or (130000 + data.id)
+        end or nil,
     }
 
     function env.GetActionInfo(slot)
@@ -533,35 +550,93 @@ function Mock.new(options)
     -- Only methods the real widgets have are defined here, so a call to
     -- something that does not exist fails in the tests as it would in the game.
 
+    -- Font objects, with their height in points.
     local FONTS = {
-        GameFontNormal = true, GameFontNormalLarge = true, GameFontNormalSmall = true,
-        GameFontHighlight = true, GameFontHighlightSmall = true, GameFontDisableSmall = true,
+        GameFontNormal = 12, GameFontNormalLarge = 16, GameFontNormalSmall = 10,
+        GameFontHighlight = 12, GameFontHighlightSmall = 10, GameFontHighlightHuge = 20,
+        GameFontDisable = 12, GameFontDisableSmall = 10,
     }
+    if options.missingFonts then
+        for font in pairs(options.missingFonts) do
+            FONTS[font] = nil
+        end
+    end
     for font in pairs(FONTS) do
         env[font] = { fontObject = font }
+    end
+
+    local POINTS = {
+        TOPLEFT = true, TOP = true, TOPRIGHT = true, LEFT = true, CENTER = true, RIGHT = true,
+        BOTTOMLEFT = true, BOTTOM = true, BOTTOMRIGHT = true,
+    }
+
+    --- Runs a widget's script the way the client does: a failure in it goes to
+    --- the error handler, not to whoever caused the script to run.
+    local function Run(widget, kind, ...)
+        local handler = widget.scripts[kind]
+        if not handler then
+            return false
+        end
+        local ok, err = pcall(handler, widget, ...)
+        if not ok then
+            world.errors[#world.errors + 1] = tostring(err)
+        end
+        return true
     end
 
     local Region = {}
     Region.__index = Region
     function Region:SetPoint(point, ...)
-        if type(point) ~= "string" then
+        if type(point) ~= "string" or not POINTS[point] then
             error("SetPoint: bad point", 2)
         end
+        local anchor = { point, ... }
         self.points = self.points or {}
-        self.points[#self.points + 1] = { point, ... }
-        self.point = { point, ... }
+        local at = #self.points + 1
+        for i = 1, #self.points do
+            if self.points[i][1] == point then
+                at = i -- setting a point a second time moves it
+            end
+        end
+        self.points[at] = anchor
+        self.point = anchor
+    end
+    --- point, relativeTo, relativePoint, x, y of an anchor, however it was given.
+    function Region:GetPoint(index)
+        local anchor = self.points and self.points[index or 1]
+        if not anchor then
+            return nil
+        end
+        local point, a, b, c, d = anchor[1], anchor[2], anchor[3], anchor[4], anchor[5]
+        if type(a) == "number" then
+            return point, self.parent or self.owner, point, a, b or 0
+        elseif type(b) == "string" then
+            return point, a, b, c or 0, d or 0
+        end
+        return point, a or self.parent or self.owner, point, b or 0, c or 0
     end
     function Region:ClearAllPoints()
-        self.points, self.point = nil, nil
+        self.points, self.point, self.allPoints = nil, nil, nil
     end
-    function Region:SetAllPoints() end
+    function Region:SetAllPoints(target)
+        self.allPoints = target or true
+    end
     function Region:SetSize(width, height)
+        if type(width) ~= "number" or type(height) ~= "number" then
+            error("SetSize: bad size", 2)
+        end
         self.width, self.height = width, height
     end
     function Region:SetWidth(width)
+        if type(width) ~= "number" then
+            error("SetWidth: bad width", 2)
+        end
         self.width = width
     end
     function Region:SetHeight(height)
+        if type(height) ~= "number" then
+            error("SetHeight: bad height", 2)
+        end
         self.height = height
     end
     function Region:GetWidth()
@@ -570,7 +645,15 @@ function Mock.new(options)
     function Region:GetHeight()
         return self.height or 0
     end
-    function Region:SetAlpha() end
+    function Region:SetAlpha(alpha)
+        if type(alpha) ~= "number" then
+            error("SetAlpha: bad alpha", 2)
+        end
+        self.alpha = alpha
+    end
+    function Region:GetAlpha()
+        return self.alpha or 1
+    end
     function Region:Show()
         self.shown = true
     end
@@ -583,9 +666,16 @@ function Mock.new(options)
 
     local Texture = setmetatable({}, { __index = Region })
     Texture.__index = Texture
+    --- Answers whether the texture exists, as the client does. With the option
+    --- quietTextures it answers nothing, as older clients do.
     function Texture:SetTexture(path)
-        self.path = path
-        self.color = nil
+        self.color, self.atlas = nil, nil
+        local missing = path ~= nil and options.missingTextures and options.missingTextures[path]
+        self.path = not missing and path or nil
+        if options.quietTextures then
+            return
+        end
+        return not missing
     end
     function Texture:GetTexture()
         return self.path
@@ -595,10 +685,43 @@ function Mock.new(options)
             error("SetColorTexture: bad colour", 2)
         end
         self.color = { r, g, b, a }
-        self.path = nil
+        self.path, self.atlas = nil, nil
     end
-    function Texture:SetTexCoord() end
+    if not options.noAtlas then
+        function Texture:SetAtlas(atlas, useAtlasSize)
+            if type(atlas) ~= "string" then
+                error("SetAtlas: bad atlas", 2)
+            end
+            self.atlas, self.atlasSize = atlas, useAtlasSize
+            self.path, self.color = nil, nil
+        end
+    end
+    function Texture:SetTexCoord(...)
+        self.texCoord = { ... }
+    end
     function Texture:SetVertexColor() end
+    function Texture:SetDesaturated(desaturated)
+        self.desaturated = desaturated and true or false
+    end
+
+    local Line = setmetatable({}, { __index = Region })
+    Line.__index = Line
+    function Line:SetStartPoint(point, relativeTo, x, y)
+        if not POINTS[point] then
+            error("SetStartPoint: bad point", 2)
+        end
+        self.from = { point, relativeTo, x, y }
+    end
+    function Line:SetEndPoint(point, relativeTo, x, y)
+        if not POINTS[point] then
+            error("SetEndPoint: bad point", 2)
+        end
+        self.to = { point, relativeTo, x, y }
+    end
+    function Line:SetThickness(thickness)
+        self.thickness = thickness
+    end
+    Line.SetColorTexture = Texture.SetColorTexture
 
     local FontString = setmetatable({}, { __index = Region })
     FontString.__index = FontString
@@ -608,13 +731,53 @@ function Mock.new(options)
     function FontString:GetText()
         return self.text
     end
-    function FontString:SetJustifyH() end
-    function FontString:SetJustifyV() end
-    function FontString:SetTextColor() end
-    function FontString:SetWordWrap() end
+    --- Roughly how wide the text is drawn, in the panel's units.
+    function FontString:GetStringWidth()
+        return #tostring(self.text or "") * (FONTS[self.font] or 12) * 0.5
+    end
+    function FontString:SetJustifyH(justify)
+        self.justifyH = justify
+    end
+    function FontString:SetJustifyV(justify)
+        self.justifyV = justify
+    end
+    function FontString:SetTextColor(r, g, b, a)
+        if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+            error("SetTextColor: bad colour", 2)
+        end
+        self.textColor = { r, g, b, a }
+    end
+    function FontString:SetWordWrap(wrap)
+        self.wordWrap = wrap
+    end
+    function FontString:SetMaxLines(lines)
+        if type(lines) ~= "number" then
+            error("SetMaxLines: bad number", 2)
+        end
+        self.maxLines = lines
+    end
 
     local Frame = setmetatable({}, { __index = Region })
     Frame.__index = Frame
+
+    -- The scripts each kind of widget has. Setting any other is an error, as it
+    -- is in the game.
+    local FRAME_SCRIPTS = {
+        OnEvent = true, OnUpdate = true, OnShow = true, OnHide = true, OnEnter = true, OnLeave = true,
+        OnMouseDown = true, OnMouseUp = true, OnMouseWheel = true, OnDragStart = true, OnDragStop = true,
+        OnSizeChanged = true,
+    }
+    local EXTRA_SCRIPTS = {
+        Button = { OnClick = true, OnDoubleClick = true, PreClick = true, PostClick = true },
+        CheckButton = { OnClick = true, OnDoubleClick = true, PreClick = true, PostClick = true },
+        EditBox = {
+            OnEnterPressed = true, OnEscapePressed = true, OnTextChanged = true, OnEditFocusGained = true,
+            OnEditFocusLost = true, OnTabPressed = true, OnChar = true,
+        },
+        Slider = { OnValueChanged = true, OnMinMaxChanged = true },
+    }
+
+    world.updaters = {} -- frames with an OnUpdate script
 
     function Frame:RegisterEvent(event)
         if not KNOWN_EVENTS[event] then
@@ -638,12 +801,22 @@ function Mock.new(options)
         if fn ~= nil and type(fn) ~= "function" then
             error("SetScript: handler is not a function", 2)
         end
+        local extra = EXTRA_SCRIPTS[self.frameType]
+        if not FRAME_SCRIPTS[kind] and not (extra and extra[kind]) then
+            error(tostring(self.frameType) .. " doesn't have a \"" .. tostring(kind) .. "\" script", 2)
+        end
+        if kind == "OnUpdate" and fn and not self.scripts.OnUpdate then
+            world.updaters[#world.updaters + 1] = self
+        end
         self.scripts[kind] = fn
     end
     function Frame:GetScript(kind)
         return self.scripts[kind]
     end
     function Frame:SetFrameLevel(level)
+        if type(level) ~= "number" then
+            error("SetFrameLevel: bad level", 2)
+        end
         self.level = level
     end
     function Frame:GetFrameLevel()
@@ -652,17 +825,39 @@ function Mock.new(options)
     function Frame:SetFrameStrata(strata)
         self.strata = strata
     end
-    function Frame:EnableMouse() end
+    function Frame:EnableMouse(enabled)
+        self.mouse = enabled and true or false
+    end
+    function Frame:EnableMouseWheel(enabled)
+        self.mouseWheel = enabled and true or false
+    end
     function Frame:SetMovable() end
     function Frame:SetClampedToScreen() end
     function Frame:RegisterForDrag() end
-    function Frame:StartMoving() end
-    function Frame:StopMovingOrSizing() end
+    function Frame:StartMoving()
+        self.moving = true
+    end
+    function Frame:StopMovingOrSizing()
+        self.moving = false
+    end
+    function Frame:SetClipsChildren(clips)
+        self.clips = clips and true or false
+    end
+    function Frame:SetHitRectInsets(left, right, top, bottom)
+        self.hitInsets = { left, right, top, bottom }
+    end
+    --- How large the frame is drawn next to the screen: tests set `scale` on a
+    --- frame to stand for SetScale.
+    function Frame:GetEffectiveScale()
+        local scale, frame = 1, self
+        while frame do
+            scale = scale * (frame.scale or 1)
+            frame = frame.parent
+        end
+        return scale
+    end
     function Frame:GetName()
         return self.name
-    end
-    function Frame:SetParent(parent)
-        self.parent = parent
     end
     function Frame:GetParent()
         return self.parent
@@ -677,18 +872,72 @@ function Mock.new(options)
         end
         return true
     end
+
+    -- A frame that comes on screen, or leaves it, takes the frames inside it
+    -- along: each of them that is shown gets its OnShow or OnHide too.
+    local function Appeared(frame)
+        Run(frame, "OnShow")
+        local i = 1
+        while i <= #frame.children do
+            if frame.children[i].shown then
+                Appeared(frame.children[i])
+            end
+            i = i + 1
+        end
+    end
+
+    local function Vanished(frame)
+        if frame.focus then
+            frame:ClearFocus() -- an edit box nobody can see cannot be typed into
+        end
+        local i = 1
+        while i <= #frame.children do
+            if frame.children[i].shown then
+                Vanished(frame.children[i])
+            end
+            i = i + 1
+        end
+        Run(frame, "OnHide")
+    end
+
     function Frame:Show()
-        local was = self:IsVisible()
+        if self.shown then
+            return
+        end
         self.shown = true
-        if not was and self:IsVisible() and self.scripts.OnShow then
-            self.scripts.OnShow(self)
+        if self:IsVisible() then
+            Appeared(self)
         end
     end
     function Frame:Hide()
+        if not self.shown then
+            return
+        end
         local was = self:IsVisible()
         self.shown = false
-        if was and self.scripts.OnHide then
-            self.scripts.OnHide(self)
+        if was then
+            Vanished(self)
+        end
+    end
+    function Frame:SetParent(parent)
+        local was = self:IsVisible()
+        local old = self.parent
+        if old and old.children then
+            for i = #old.children, 1, -1 do
+                if old.children[i] == self then
+                    table.remove(old.children, i)
+                end
+            end
+        end
+        self.parent = parent
+        if parent and parent.children then
+            parent.children[#parent.children + 1] = self
+        end
+        local now = self:IsVisible()
+        if was and not now then
+            Vanished(self)
+        elseif now and not was then
+            Appeared(self)
         end
     end
     function Frame:GetAttribute(name)
@@ -707,12 +956,99 @@ function Mock.new(options)
         self.strings[#self.strings + 1] = text
         return text
     end
+    if not options.noLines then
+        function Frame:CreateLine(_, layer)
+            local line = setmetatable({ owner = self, layer = layer, shown = true }, Line)
+            self.lines[#self.lines + 1] = line
+            return line
+        end
+    end
 
     local Button = setmetatable({}, { __index = Frame })
     Button.__index = Button
     function Button:RegisterForClicks() end
-    function Button:Enable() end
-    function Button:Disable() end
+    function Button:Enable()
+        self.enabled = true
+    end
+    function Button:Disable()
+        self.enabled = false
+    end
+    function Button:SetEnabled(enabled)
+        self.enabled = enabled and true or false
+    end
+    function Button:IsEnabled()
+        return self.enabled ~= false
+    end
+    function Button:SetText(text)
+        self.text = text
+    end
+    function Button:GetText()
+        return self.text
+    end
+
+    local CheckButton = setmetatable({}, { __index = Button })
+    CheckButton.__index = CheckButton
+    function CheckButton:SetChecked(checked)
+        self.checked = checked and true or false
+    end
+    function CheckButton:GetChecked()
+        return self.checked == true
+    end
+
+    local Slider = setmetatable({}, { __index = Frame })
+    Slider.__index = Slider
+    local function Within(slider, value)
+        return math.max(slider.low or 0, math.min(slider.high or 0, value))
+    end
+    function Slider:SetMinMaxValues(low, high)
+        if type(low) ~= "number" or type(high) ~= "number" or low > high then
+            error("SetMinMaxValues: bad range", 2)
+        end
+        self.low, self.high = low, high
+        if self.value ~= nil and Within(self, self.value) ~= self.value then
+            self:SetValue(self.value) -- pulled back inside the new range
+        end
+    end
+    function Slider:GetMinMaxValues()
+        return self.low or 0, self.high or 0
+    end
+    function Slider:SetValueStep(step)
+        if type(step) ~= "number" then
+            error("SetValueStep: bad step", 2)
+        end
+        self.step = step
+    end
+    function Slider:GetValueStep()
+        return self.step or 0
+    end
+    function Slider:SetObeyStepOnDrag(obey)
+        self.obeyStep = obey and true or false
+    end
+    function Slider:SetOrientation(orientation)
+        if orientation ~= "HORIZONTAL" and orientation ~= "VERTICAL" then
+            error("SetOrientation: bad orientation", 2)
+        end
+        self.orientation = orientation
+    end
+    function Slider:SetThumbTexture(texture)
+        self.thumb = texture
+    end
+    function Slider:GetValue()
+        return self.value or self.low or 0
+    end
+    --- Tells the script only when the value really changes, as the client does.
+    function Slider:SetValue(value)
+        if type(value) ~= "number" then
+            error("SetValue: bad value", 2)
+        end
+        value = Within(self, value)
+        if self.value ~= value then
+            self.value = value
+            Run(self, "OnValueChanged", value, false)
+        end
+    end
+    Slider.Enable, Slider.Disable = Button.Enable, Button.Disable
+    Slider.SetEnabled, Slider.IsEnabled = Button.SetEnabled, Button.IsEnabled
 
     local EditBox = setmetatable({}, { __index = Frame })
     EditBox.__index = EditBox
@@ -724,56 +1060,206 @@ function Mock.new(options)
     end
     function EditBox:SetTextInsets() end
     function EditBox:SetMaxLetters() end
+    function EditBox:SetJustifyH(justify)
+        self.justifyH = justify
+    end
+    function EditBox:HighlightText(first, last)
+        self.highlight = { first, last }
+    end
     function EditBox:SetText(text)
         self.text = tostring(text)
     end
     function EditBox:GetText()
         return self.text or ""
     end
+    -- One box has the keyboard at a time, and each is told when it gets or loses it.
     function EditBox:SetFocus()
+        if self.focus then
+            return
+        end
+        if world.focused then
+            world.focused:ClearFocus()
+        end
         self.focus = true
+        world.focused = self
+        Run(self, "OnEditFocusGained")
     end
     function EditBox:ClearFocus()
+        if not self.focus then
+            return
+        end
         self.focus = false
+        if world.focused == self then
+            world.focused = nil
+        end
+        Run(self, "OnEditFocusLost")
     end
     function EditBox:HasFocus()
         return self.focus == true
     end
 
-    local CLASSES = { Frame = Frame, Button = Button, CheckButton = Button, EditBox = EditBox }
+    local CLASSES = { Frame = Frame, Button = Button, CheckButton = CheckButton, EditBox = EditBox, Slider = Slider }
+
+    world.sounds = {}
+    if not options.noSounds then
+        env.SOUNDKIT = {
+            IG_MAINMENU_OPTION_CHECKBOX_ON = 856, IG_MAINMENU_OPTION_CHECKBOX_OFF = 857,
+            IG_CHARACTER_INFO_TAB = 841,
+        }
+        function env.PlaySound(id)
+            if type(id) ~= "number" then
+                error("PlaySound: bad sound", 2)
+            end
+            world.sounds[#world.sounds + 1] = id
+        end
+    end
+
+    -- The few of the game's own templates the addon uses, as far as it uses
+    -- them. `kind` is the widget each one is for; `build` adds what it brings.
+    local function Sized(width, height, level)
+        return function(frame)
+            frame.width, frame.height, frame.level = width, height, level
+        end
+    end
+    local TEMPLATES = {
+        UIPanelButtonTemplate = { kind = "Button", build = Sized(40, 22) },
+        UIPanelCloseButtonNoScripts = { kind = "Button", build = Sized(24, 24, 510) },
+        MinimalCheckboxTemplate = { kind = "CheckButton", build = Sized(30, 29) },
+        MinimalSliderWithSteppersTemplate = { kind = "Frame" },
+    }
+
+    -- Blizzard_SharedXML/Shared/Slider/MinimalSlider.lua and .xml, in outline.
+    function TEMPLATES.MinimalSliderWithSteppersTemplate.build(frame)
+        frame.width, frame.height = 250, 40
+        local slider = env.CreateFrame("Slider", nil, frame)
+        slider:SetPoint("TOPLEFT", 19, 0)
+        slider:SetPoint("BOTTOMRIGHT", -19, 0)
+        local back = env.CreateFrame("Button", nil, frame)
+        back:SetSize(11, 19)
+        back:SetPoint("RIGHT", slider, "LEFT", -4, 0)
+        local forward = env.CreateFrame("Button", nil, frame)
+        forward:SetSize(9, 18)
+        forward:SetPoint("LEFT", slider, "RIGHT", 4, 0)
+        frame.Slider, frame.Back, frame.Forward = slider, back, forward
+        frame.Event = { OnValueChanged = "OnValueChanged", OnInteractStart = "OnInteractStart",
+            OnInteractEnd = "OnInteractEnd" }
+
+        local callbacks = {}
+        function frame:RegisterCallback(event, func, owner)
+            if type(event) ~= "string" then
+                error("CallbackRegistryMixin::RegisterCallback 'event' requires string type.")
+            elseif type(func) ~= "function" then
+                error("CallbackRegistryMixin::RegisterCallback 'func' requires function type.")
+            elseif type(owner) == "number" then
+                error("CallbackRegistryMixin:RegisterCallback 'owner' as number is reserved internally.")
+            end
+            callbacks[event] = callbacks[event] or {}
+            callbacks[event][owner or {}] = func
+        end
+        local function Trigger(event, ...)
+            for owner, func in pairs(callbacks[event] or {}) do
+                local ok, err = pcall(func, owner, ...)
+                if not ok then
+                    world.errors[#world.errors + 1] = tostring(err)
+                end
+            end
+        end
+
+        local function UpdateSteppers()
+            local value, step = slider:GetValue(), slider:GetValueStep()
+            local low, high = slider:GetMinMaxValues()
+            back:SetEnabled(value > low + step * 0.5)
+            forward:SetEnabled(value < high - step * 0.5)
+        end
+        function frame:Init(value, minValue, maxValue, steps)
+            if options.brokenTemplates and options.brokenTemplates.MinimalSliderWithSteppersTemplate then
+                error("attempt to call method 'Init' (a nil value)", 2)
+            end
+            slider:SetMinMaxValues(minValue, maxValue)
+            slider:SetValueStep((maxValue - minValue) / steps)
+            slider:SetValue(value)
+            UpdateSteppers()
+            slider:SetScript("OnValueChanged", function(_, now)
+                UpdateSteppers()
+                Trigger("OnValueChanged", now)
+            end)
+        end
+        function frame:SetValue(value)
+            slider:SetValue(value)
+        end
+        function frame:SetEnabled(enabled)
+            slider:SetEnabled(enabled)
+            if enabled then
+                UpdateSteppers()
+            else
+                back:SetEnabled(false)
+                forward:SetEnabled(false)
+            end
+        end
+        back:SetScript("OnClick", function()
+            slider:SetValue(slider:GetValue() - slider:GetValueStep())
+            env.PlaySound(env.SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+        end)
+        forward:SetScript("OnClick", function()
+            slider:SetValue(slider:GetValue() + slider:GetValueStep())
+            env.PlaySound(env.SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+        end)
+    end
 
     function env.CreateFrame(frameType, name, parent, template)
         local class = CLASSES[frameType]
         if not class then
             error("CreateFrame: unknown frame type " .. tostring(frameType), 2)
         end
+        local inherits
         if template ~= nil then
-            error("CreateFrame: the addon should not rely on the template " .. tostring(template), 2)
+            inherits = TEMPLATES[template]
+            local without = options.noTemplates
+            if not inherits or without == true or (type(without) == "table" and without[template]) then
+                error("CreateFrame: Couldn't find inherited node: " .. tostring(template), 2)
+            end
+            if inherits.kind ~= frameType then
+                error("CreateFrame: " .. tostring(template) .. " is a template for a " .. inherits.kind, 2)
+            end
         end
         if options.failCreateFrameWithParent and parent then
             error("CreateFrame is not allowed right now", 2)
         end
         local frame = setmetatable({
-            events = {}, unitEvents = {}, scripts = {}, textures = {}, strings = {},
-            shown = true, parent = parent, name = name, frameType = frameType,
+            events = {}, unitEvents = {}, scripts = {}, textures = {}, strings = {}, lines = {}, children = {},
+            shown = true, parent = parent, name = name, frameType = frameType, template = template,
         }, class)
         world.frames[#world.frames + 1] = frame
+        if parent and parent.children then
+            parent.children[#parent.children + 1] = frame
+        end
         if name then
             rawset(env, name, frame)
+        end
+        if inherits and inherits.build then
+            inherits.build(frame)
         end
         return frame
     end
 
     env.UIParent = env.CreateFrame("Frame", "UIParent", nil)
     env.UISpecialFrames = {}
+    world.tooltipLines = {}
     env.GameTooltip = {
-        SetOwner = function() end,
-        SetText = function(self, text)
+        SetOwner = function(_, owner)
+            world.tooltipOwner = owner
+        end,
+        SetText = function(_, text)
             world.tooltip = text
+            world.tooltipLines = {}
+        end,
+        AddLine = function(_, text)
+            world.tooltipLines[#world.tooltipLines + 1] = text
         end,
         Show = function() end,
         Hide = function()
-            world.tooltip = nil
+            world.tooltip, world.tooltipOwner = nil, nil
+            world.tooltipLines = {}
         end,
     }
 
@@ -841,14 +1327,11 @@ function Mock.new(options)
             Expire(mob, self.clock)
         end
         Expire(self.player, self.clock)
-        for i = 1, #self.frames do
-            local frame = self.frames[i]
-            local handler = frame.scripts.OnUpdate
-            if handler then
-                local ok, err = pcall(handler, frame, dt)
-                if not ok then
-                    self.errors[#self.errors + 1] = tostring(err)
-                end
+        -- Only frames that are on screen get their OnUpdate.
+        for i = 1, #self.updaters do
+            local frame = self.updaters[i]
+            if frame.scripts.OnUpdate and frame:IsVisible() then
+                Run(frame, "OnUpdate", dt)
             end
         end
     end
@@ -1139,32 +1622,118 @@ function Mock.new(options)
         env.SlashCmdList["STATUSEFFICIENCY"](text)
     end
 
-    --- Clicks a button the way the mouse would.
+    --- Clicks a button the way the mouse would. A widget that is not on screen
+    --- cannot be clicked, and a disabled one ignores the click.
     function world:click(button)
-        local handler = assert(button.scripts.OnClick, "that widget has no click handler")
-        local ok, err = pcall(handler, button, "LeftButton")
-        if not ok then
-            self.errors[#self.errors + 1] = tostring(err)
+        assert(type(button) == "table" and button.scripts, "that is not a widget")
+        if not button:IsVisible() then
+            error("that widget is not on screen", 2)
         end
+        if button.IsEnabled and not button:IsEnabled() then
+            return
+        end
+        Run(button, "OnMouseDown", "LeftButton")
+        Run(button, "OnMouseUp", "LeftButton")
+        if button.frameType == "CheckButton" then
+            button.checked = not button.checked -- the game flips the box before the script runs
+        end
+        assert(button.scripts.OnClick, "that widget has no click handler")
+        Run(button, "OnClick", "LeftButton")
+    end
+
+    --- Puts the mouse over a widget. Returns the tooltip's title and its lines.
+    function world:hover(widget)
+        if not widget:IsVisible() then
+            error("that widget is not on screen", 2)
+        end
+        Run(widget, "OnEnter")
+        return self.tooltip, self.tooltipLines
+    end
+
+    function world:unhover(widget)
+        Run(widget, "OnLeave")
     end
 
     --- Types into an edit box and presses Enter.
     function world:type(box, text)
+        if not box:IsVisible() then
+            error("that edit box is not on screen", 2)
+        end
         box:SetFocus()
         box:SetText(text)
-        local ok, err = pcall(box.scripts.OnEnterPressed, box)
-        if not ok then
-            self.errors[#self.errors + 1] = tostring(err)
+        Run(box, "OnEnterPressed")
+    end
+
+    --- Presses Escape in an edit box.
+    function world:escape(box)
+        Run(box, "OnEscapePressed")
+    end
+
+    --- Drags a slider's thumb to a value.
+    function world:slide(slider, value)
+        if not slider:IsVisible() then
+            error("that slider is not on screen", 2)
+        end
+        value = math.max(slider.low or 0, math.min(slider.high or 0, value))
+        if slider.value ~= value then
+            slider.value = value
+            Run(slider, "OnValueChanged", value, true)
         end
     end
 
-    --- Opens the game's Options window on the addon's panel.
+    --- Turns the mouse wheel over a frame: 1 is one notch up, -1 one down.
+    function world:wheel(frame, delta)
+        if not frame:IsVisible() then
+            error("that frame is not on screen", 2)
+        end
+        assert(frame.mouseWheel, "that frame does not take the mouse wheel")
+        Run(frame, "OnMouseWheel", delta)
+    end
+
+    --- Drags a movable frame, leaving it anchored the way the client leaves it.
+    function world:drag(frame, point, relativePoint, x, y)
+        Run(frame, "OnDragStart", "LeftButton")
+        frame.points = { { point, env.UIParent, relativePoint, x, y } }
+        frame.point = frame.points[1]
+        Run(frame, "OnDragStop")
+    end
+
+    --- Opens the game's Options window on the addon's panel, the way
+    --- SettingsPanelMixin:DisplayLayout does.
     function world:openSettings()
         local category = assert(self.settings.addons[1], "the addon registered no settings panel")
-        local canvas = env.CreateFrame("Frame", nil, env.UIParent)
-        category.frame:SetParent(canvas)
-        category.frame:Show()
-        return category.frame
+        if not self.settingsPanel then
+            self.settingsPanel = env.CreateFrame("Frame", nil, env.UIParent)
+            self.settingsPanel:Hide()
+            self.settingsCanvas = env.CreateFrame("Frame", nil, self.settingsPanel)
+            self.settingsCanvas:SetSize(665, 601)
+            self.settingsCanvas:Hide()
+        end
+        self.settingsPanel:Show()
+        local frame = category.frame
+        frame:SetParent(self.settingsCanvas)
+        frame:ClearAllPoints()
+        frame:SetAllPoints(self.settingsCanvas)
+        frame:Show()
+        if frame.OnRefresh then
+            frame:OnRefresh()
+        end
+        self.settingsCanvas:Show()
+        return frame
+    end
+
+    --- Moves the Options window on to another page.
+    function world:leaveSettings()
+        local frame = self.settings.addons[1].frame
+        frame:SetParent(nil)
+        frame:ClearAllPoints()
+        frame:Hide()
+        self.settingsCanvas:Hide()
+    end
+
+    --- Closes the Options window with whatever page it was on.
+    function world:closeSettings()
+        self.settingsPanel:Hide()
     end
 
     --- Everything printed so far, as one string; clears the buffer.

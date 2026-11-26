@@ -9,11 +9,13 @@ status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 | Green check | None of the enemies it would hit has the debuff. Casting puts it on all of them. | You do not have the buff. |
 | Yellow half circle | Some of them have it and some do not. | Not used. |
 | Red X | All of them already have it. Casting again changes nothing. | You already have it. Casting again changes nothing. |
-| No icon | There is no enemy to judge. | Never, because there is always you. |
 
-A spell that applies no status effect gets no icon at all.
+No icon means there is nothing to say: the spell applies no status effect, or
+it is a debuff and there is no enemy to judge. Out of the box the icons also
+stay away until you target an enemy. The settings can make them appear always,
+or only in combat.
 
-Version 0.2.0 is an early draft. It loads and draws its icons in the real
+Version 0.3.0 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and how much the client reveals in combat is not
 confirmed yet. Expect a few rough edges and please report what `/se debug`
@@ -39,7 +41,7 @@ prints.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.2.0 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.3.0 loaded."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -51,10 +53,15 @@ check. Cast one and its button turns to a red X until the effect ends. Spells
 that hit every enemy around you go yellow when only some of the enemies in the
 fight have the effect.
 
-Spells that put a buff on you work the same way and need no target: a green
-check while you do not have the buff, a red X while you do. A buff you can also
-put on other people (a heal over time, a stamina buff) is judged on the friend
-you have targeted, and on you when your target is an enemy or nobody.
+Spells that put a buff on you work the same way: a green check while you do
+not have the buff, a red X while you do. A buff you can also put on other
+people (a heal over time, a stamina buff) is judged on the friend you have
+targeted, and on you when your target is an enemy or nobody.
+
+The icons appear while you have an enemy targeted, buff icons included. If you
+would rather see them all the time (buffs at any time, debuffs whenever there
+is an enemy to check), or only during a fight, change **when the icons appear**
+in the settings or with `/se when`.
 
 A buff spell the game does not label as one gets its icon the first time the
 addon sees its buff on you out of combat. `/se buff <spell>` does the same by
@@ -63,23 +70,50 @@ hand.
 ### Settings
 
 Open **Options > AddOns > Status Efficiency**, or type `/se options` for the same
-panel in a window of its own. Changes apply straight away and are saved per
-account.
+panel in a window of its own. The window can be dragged by its title bar and
+opens where you left it. Changes apply straight away and are saved per account.
 
-- **Icon position.** Click one of nine spots on the pretend button: the four
-  corners, the four edges, or the middle.
-- **Icon size.** The minus and plus buttons make the icon a step smaller or
-  larger. **Auto** sizes it from the button it sits on, at about a third of the
-  button's width, which is 16 on a standard button.
-- **Icon for each indication.** Each of the three indications (not applied yet,
-  partly applied, already applied) can use any of 21 icons: the three defaults,
-  coloured dots, a plus, an exclamation mark, a stop sign, a ring, the ready
-  check marks and the eight raid markers. Buffs and debuffs share them.
-- **Your own texture.** Type a file ID such as `136243`, or a path such as
-  `Interface\Icons\Spell_Nature_Slow`, into the box beside an indication and
-  press Enter. Empty the box and press Enter to go back.
-- **Reset position, size and icons** puts those three things back to the
-  defaults and leaves your spell choices alone.
+The **Appearance** tab:
+
+- **Show status icons** turns the icons on and off, like `/se on` and `/se off`.
+- **When the icons appear**, beside it:
+  - **Always**: whenever there is something to judge, which is a buff at any
+    time and a debuff whenever there is an enemy to check.
+  - **When targeting an enemy** (the default): only while you have an enemy
+    targeted. Buff icons wait for one too.
+  - **When in combat**: only during a fight.
+- **Preview.** Three pretend buttons, one for each result, drawn as large as
+  your action buttons with the icon where and as big as it is on the bars.
+  Click one of the nine spots on any of them to move the icon: the four
+  corners, the four edges, or the middle. While this tab is open and you are
+  out of combat, your real action buttons show sample icons as well.
+- **Icon size.** A slider from 8 to 48. **Auto** sizes the icon from the button
+  it sits on, at about a third of the button's width, which is 16 on a standard
+  button.
+- **Icon set.** Four ready-made sets that change all three icons in one click.
+- **The icon for each result.** Each of the three results (worth casting,
+  partly worth casting, no need to cast) can use any of 21 icons: the addon's
+  own ten on the first line, the game's ready check marks and raid markers on
+  the second. The tile with a stroke through it means no icon at all for that
+  result. The panel says so when two results end up with the same icon. Buffs
+  and debuffs share the icons.
+- **Your own texture.** The tile marked `...` opens a box. Type a file ID such
+  as `136243`, or a path such as `Interface\Icons\Spell_Nature_Slow`, and press
+  Enter. Empty the box and press Enter to go back.
+- **Reset appearance** asks first, then puts the position, size and icons back
+  to the defaults. It leaves your spell choices alone.
+
+The **Spells** tab has one row for every spell on your action bars:
+
+- **Show an icon**: Auto (the addon decides), Always, or Never.
+- **Judged on**: your target, all enemies in the fight, or you (a buff).
+- **Lasts**: how long the effect lasts. Type a number of seconds to change it,
+  or empty the box to let the addon work it out again.
+- **Why**: what the addon's choice rests on. Hover it for the full sentence.
+
+The panel uses the game's own buttons, tick boxes and slider. If any of them
+looks wrong in this client, `/se plain` followed by `/reload` swaps them for
+plainer ones the addon draws itself.
 
 ### Commands
 
@@ -89,8 +123,9 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | Command | What it does |
 | --- | --- |
 | `/se` | Lists the commands. |
-| `/se options` | Opens or closes the settings window. |
+| `/se options` | Opens or closes the settings window. `/se options spells` opens it on the Spells tab. |
 | `/se on`, `/se off` | Turns the icons on or off. |
+| `/se when <always\|target\|combat>` | When the icons appear: always, while an enemy is targeted (the default), or only in combat. |
 | `/se list` | Shows the spells on your bars and how each one is treated, and why. |
 | `/se track <spell>` | Always give this spell an icon. The reply says whether it is treated as a debuff or a buff. |
 | `/se buff <spell>` | Always give this spell an icon, as a buff on you. |
@@ -101,11 +136,12 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se single <spell>` | Judge a debuff against your target only. |
 | `/se duration <spell> <seconds>` | Say how long the effect lasts. `auto` goes back to the addon's own figure. |
 | `/se corner <where>` | Moves the icon: `tl`, `top`, `tr`, `left`, `center`, `right`, `bl`, `bottom`, `br`. |
-| `/se size <pixels>` | Icon size from 8 to 128. `auto` sizes it from the button again. |
-| `/se icons` | Lists the icon names and what each indication uses now. |
-| `/se icon <green\|yellow\|red> <icon>` | Sets the icon for one indication: an icon name, a file ID, a texture path, or `default`. |
+| `/se size <pixels>` | Icon size from 8 to 48. `auto` sizes it from the button again. |
+| `/se icons` | Lists the icon names and what each result uses now. |
+| `/se icon <green\|yellow\|red> <icon>` | Sets the icon for one result: an icon name, a file ID, a texture path, `none` for no icon, or `default`. |
 | `/se debug` | Shows what the game lets the addon see right now. Paste this into a bug report. |
 | `/se log` | Shows or hides a running commentary of what the tracker is doing. |
+| `/se plain` | Swaps the settings panel between the game's own controls and plainer ones the addon draws. Takes effect after `/reload`. |
 | `/se reset` | Forgets every setting and everything learned. |
 
 ## How it decides
@@ -224,7 +260,7 @@ the two, out of combat and in it.
 StatusEfficiency/     the addon; this folder is what gets installed
   StatusEfficiency.toc
   Compat.lua          every call into the game, guarded against secret values
-  Icons.lua           the three indications and the icons on offer
+  Icons.lua           the three results and the icons on offer
   Spells.lua          which spells leave a status effect, and for how long
   Tracker.lua         which of your effects are on whom
   Core.lua            action buttons, enemies, casts, the update loop

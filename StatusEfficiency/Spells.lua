@@ -23,7 +23,7 @@ local _, ns = ...
 local Spells = {}
 ns.Spells = Spells
 
-local type, tonumber, pairs = type, tonumber, pairs
+local type, tonumber, pairs, next = type, tonumber, pairs, next
 local floor, max = math.floor, math.max
 
 local DEFAULT_DURATION = 12 -- seconds, when nothing better is known
@@ -40,6 +40,7 @@ local EVIDENCE_CAP = 40 -- halve the counts past this so old results fade
 
 Spells.DEFAULT_DURATION = DEFAULT_DURATION
 Spells.MAX_DURATION = MAX_DURATION
+Spells.MIN_DURATION = MIN_DURATION
 
 --------------------------------------------------------------------------------
 -- Well known area debuffs
@@ -324,6 +325,40 @@ function Spells:Tracking(info)
         or DEFAULT_DURATION
 
     return tracked, area, duration, source, kind
+end
+
+--- Your own choices for a spell, made on first use: { track, kind, aoe, duration }.
+function Spells:Choice(name)
+    local choice = ns.db.spells[name]
+    if not choice then
+        choice = {}
+        ns.db.spells[name] = choice
+    end
+    return choice
+end
+
+--- Drops a spell's choices again once none are left, so that it is treated
+--- exactly like a spell nobody has touched.
+function Spells:Tidy(name)
+    local choice = ns.db.spells[name]
+    if choice and next(choice) == nil then
+        ns.db.spells[name] = nil
+    end
+end
+
+--- Where a spell's assumed duration comes from: "you", "seen" (read off a unit
+--- in play), "tooltip", or "guess" when nothing better is known.
+function Spells:DurationSource(info)
+    local user = ns.db.spells[info.name]
+    local learned = ns.db.learned[info.name]
+    if user and user.duration then
+        return "you"
+    elseif learned and learned.duration then
+        return "seen"
+    elseif info.tooltipDuration then
+        return "tooltip"
+    end
+    return "guess"
 end
 
 --- Whether the spell's casts are worth following at all. Spells that are not

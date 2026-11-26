@@ -11,7 +11,9 @@
 --   green check          the buff is not there
 --   red X                the buff is there, so casting again changes nothing
 --
--- A spell that applies no status effect gets no icon.
+-- A spell that applies no status effect gets no icon. And a setting says when
+-- the icons appear at all: always, only while an enemy is targeted (the
+-- default), or only during a fight.
 
 local ADDON_NAME, ns = ...
 
@@ -43,21 +45,31 @@ ns.CORNERS = CORNERS
 
 -- The icon's size in pixels when one is chosen. With none chosen it follows the
 -- button, taking this share of its width.
-local SIZE_MIN, SIZE_MAX = 8, 128
+local SIZE_MIN, SIZE_MAX = 8, 48
+local OLD_SIZE_MAX = 128 -- how far sizes went before 0.3.0
 local AUTO_SHARE = 0.36
 local STANDARD_BUTTON = 45 -- an action button's width, for when one cannot be measured
 ns.SIZE_MIN, ns.SIZE_MAX = SIZE_MIN, SIZE_MAX
+
+-- When the icons appear at all: "always" (whenever there is something to judge),
+-- "target" (only while an enemy is targeted) or "combat" (only during a fight).
+local APPEAR = { always = true, target = true, combat = true }
+local APPEAR_DEFAULT = "target"
+ns.APPEAR_DEFAULT = APPEAR_DEFAULT
 
 local function Defaults()
     return {
         version = 1,
         enabled = true,
+        appear = APPEAR_DEFAULT,
         corner = "TOPLEFT",
         size = 0, -- 0 sizes the icon from the button
+        plain = false, -- draw the settings panel without the game's own controls
+        window = {}, -- where the settings window was dragged to: { point, relative, x, y }
         interval = 0.2, -- seconds between looks at the enemies
         log = false,
-        icons = {}, -- the icon chosen for each indication; empty means the default
-        custom = {}, -- your own texture for an indication set to "custom"
+        icons = {}, -- the icon chosen for each result; empty means the default
+        custom = {}, -- your own texture for a result set to "custom"
         spells = {}, -- your choices by spell name: { track, kind, aoe, duration }
         learned = {}, -- what play has shown by spell name: { exact, casts, hits, buff, buffCasts, buffHits, duration }
     }
@@ -79,10 +91,15 @@ local function LoadSettings()
     if not CORNERS[saved.corner] then
         saved.corner = "TOPLEFT"
     end
+    if not APPEAR[saved.appear] then
+        saved.appear = APPEAR_DEFAULT
+    end
     if saved.interval < 0.05 or saved.interval > 2 then
         saved.interval = 0.2
     end
-    if saved.size ~= 0 and (saved.size < SIZE_MIN or saved.size > SIZE_MAX) then
+    if saved.size > SIZE_MAX and saved.size <= OLD_SIZE_MAX then
+        saved.size = SIZE_MAX -- chosen when sizes went further: keep it as big as it can be
+    elseif saved.size ~= 0 and (saved.size < SIZE_MIN or saved.size > SIZE_MAX) then
         saved.size = 0
     end
     ns.db = saved
@@ -219,6 +236,27 @@ function ns.AutoIconSize()
     return AutoSize(nil)
 end
 
+--- A typical action button, the first one on screen: its width, and how many
+--- times larger it is drawn than `frame` would draw the same width (1 when the
+--- two share a scale). The settings panel sizes its preview from this.
+function ns.TypicalButton(frame)
+    for i = 1, #entries do
+        local button = entries[i].frame
+        if Visible(button) then
+            local width = ns.Call(ns.Field(button, "GetWidth"), button)
+            if type(width) == "number" and width > 0 then
+                local scale = ns.Call(ns.Field(button, "GetEffectiveScale"), button)
+                local own = frame and ns.Call(ns.Field(frame, "GetEffectiveScale"), frame)
+                if type(scale) == "number" and type(own) == "number" and scale > 0 and own > 0 then
+                    return width, scale / own
+                end
+                return width, 1
+            end
+        end
+    end
+    return STANDARD_BUTTON, 1
+end
+
 local function Layout(entry)
     local overlay = entry.overlay
     if not overlay then
@@ -250,19 +288,21 @@ local function CreateOverlay(entry)
     Layout(entry)
 end
 
+--- Shows the icon for a state on a button, or nothing: for no state, and for a
+--- state whose result has been given no icon.
 local function SetState(entry, state)
     local art = state and Icons.Texture(state) or nil
     if entry.state == state and entry.art == art then
         return
     end
-    if state and not entry.overlay then
+    if art and not entry.overlay then
         if entry.broken or not pcall(CreateOverlay, entry) or not entry.overlay then
             entry.broken = true
             return
         end
     end
     entry.state, entry.art = state, art
-    if state then
+    if art then
         entry.texture:SetTexture(art)
         entry.overlay:Show()
     elseif entry.overlay then
@@ -277,6 +317,25 @@ local function HideAll()
 end
 
 ns.HideAll = HideAll
+
+-- While the settings panel is open on its Appearance tab, and you are not in a
+-- fight, every button that holds a spell shows a sample icon, the three results
+-- in turn, so the look can be judged on the real bars with nothing targeted.
+local SAMPLE_STATES = { "none", "some", "all" }
+local showSamples = false
+
+--- Turns the sample icons on or off. The settings panel calls this.
+function ns.SetSampling(on)
+    on = on and true or false
+    if showSamples ~= on then
+        showSamples = on
+        ns.MarkDirty()
+    end
+end
+
+function ns.IsSampling()
+    return showSamples
+end
 
 --- Re-applies icon size, position and artwork after a setting changed.
 function ns.Relayout()
@@ -607,6 +666,20 @@ local function Refresh(now)
 
     Tracker:Update(now, seen, engagedKeys, direct)
 
+    -- The panel says when it closes, but ask it again while samples are up, so
+    -- that they can never outstay it.
+    if showSamples and ns.Options then
+        ns.Options.UpdateSampling()
+    end
+    local samples = showSamples and not ns.InCombat()
+    local sampled = 0
+
+    -- Whether the icons may be on the buttons right now. Everything above goes
+    -- on either way, so nothing is missed while they are away.
+    local when = ns.db.appear
+    local appear = when == "always" or (when == "combat" and ns.InCombat())
+        or (when ~= "combat" and primaryUnit ~= nil)
+
     local wantSweep, wantBuffs, wantFriend, wantLearn = false, false, false, false
     for i = 1, #entries do
         local entry = entries[i]
@@ -640,6 +713,13 @@ local function Refresh(now)
             end
             if not (tracked and kind == "buff") and Spells:Watched(info) then
                 wantLearn = true
+            end
+            if not appear then
+                state = nil
+            end
+            if samples then
+                state = SAMPLE_STATES[sampled % #SAMPLE_STATES + 1]
+                sampled = sampled + 1
             end
         end
         SetState(entry, state or nil)
@@ -780,17 +860,33 @@ end
 --------------------------------------------------------------------------------
 
 local failures = 0
+local watching = false -- the settings panel is open
+
+--- Tells the addon that the settings panel is on screen. The panel lists the
+--- spells on the bars, so they are read while it is open even with the icons
+--- turned off.
+function ns.SetWatching(on)
+    on = on and true or false
+    if on and not watching then
+        barsDirty = true
+    end
+    watching = on
+end
 
 --- Runs every frame; returns true when it actually did something.
 local function Tick()
     local now = ns.Now()
-    if not ns.db.enabled then
+    local enabled = ns.db.enabled
+    if not enabled and not watching then
         return false
     end
     local worked = false
     if (barsDirty and now >= lastScan + 0.25) or now >= lastScan + 2 then
         ScanBars(now)
         worked = true
+    end
+    if not enabled then
+        return worked -- the settings panel is open: the bars are read, and nothing is shown
     end
     if (stateDirty and now >= lastRefresh + 0.05) or now >= lastRefresh + ns.db.interval then
         stateDirty = false
@@ -826,6 +922,27 @@ function ns.Resume()
     ns.halted = false
     failures = 0
     ns.MarkBarsDirty()
+end
+
+--- Turns the icons on or off: /se on, /se off and the tick box in the settings.
+function ns.SetEnabled(on)
+    ns.db.enabled = on and true or false
+    if ns.db.enabled then
+        ns.Resume()
+    else
+        HideAll()
+    end
+end
+
+--- Sets when the icons appear: "always", "target" or "combat". Says whether
+--- that was one of the three.
+function ns.SetAppear(when)
+    if not APPEAR[when] then
+        return false
+    end
+    ns.db.appear = when
+    ns.MarkDirty()
+    return true
 end
 
 function ns.ResetSettings()
