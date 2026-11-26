@@ -1,0 +1,17 @@
+## Interface: 16001
+## Title: Status Efficiency
+## Notes: Marks each action button to show whether casting it again would put its status effect on enemies that do not already have it.
+## Author: haywoodsloan
+## Version: 0.1.0
+## SavedVariables: StatusEfficiencyDB
+## IconTexture: Interface\AddOns\StatusEfficiency\Media\Check.tga
+## Category: Combat
+## X-Website: https://github.com/haywoodsloan/WoW_Forever_Status_Efficiency
+
+Compat.lua
+Icons.lua
+Spells.lua
+Tracker.lua
+Core.lua
+Options.lua
+Commands.lua
