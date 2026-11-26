@@ -111,6 +111,7 @@ local HELP = {
     "  /se options - the settings window: when the icons appear, where they sit, how big they are, which icon",
     "    means what, and how each spell on your bars is treated",
     "  /se on | off   /se when <always | target | combat> - when the icons appear",
+    "  /se usable <on | off> - an icon only on a skill you can use right now, or on every skill",
     "  /se list - the spells on your bars and how each is treated",
     "  /se track <spell> | ignore <spell> | auto <spell>",
     "  /se buff <spell> | debuff <spell> - track it as a buff on you, or as a debuff on enemies",
@@ -142,10 +143,22 @@ local function AppearWords(when)
     return tostring(when)
 end
 
+--- On which skills they appear, likewise.
+local function UsableWords(only)
+    local choices = ns.Options.USABLE_CHOICES
+    local key = only and "usable" or "always"
+    for i = 1, #choices do
+        if choices[i].key == key then
+            return choices[i].words
+        end
+    end
+    return key
+end
+
 function commands.on()
     ns.SetEnabled(true)
     ns.Options.RefreshAll()
-    Print("on. Icons appear " .. AppearWords(ns.db.appear) .. ".")
+    Print("on. Icons appear " .. AppearWords(ns.db.appear) .. ", " .. UsableWords(ns.db.usableOnly) .. ".")
 end
 
 function commands.off()
@@ -174,6 +187,34 @@ function commands.when(rest)
 end
 
 commands.appear = commands.when
+
+local USABLE_WORDS = {
+    on = true, yes = true, only = true, usable = true,
+    off = false, no = false, always = false, all = false, every = false,
+}
+
+--- Owns up when the setting cannot do its work on this client.
+local function UsableNote()
+    if ns.db.usableOnly and ns.usableProbe.usable == "no" then
+        Print("this client is not telling the addon whether a skill can be used, so for now the icons show on "
+            .. "every skill.")
+    end
+end
+
+function commands.usable(rest)
+    local only = USABLE_WORDS[Trim(rest):lower()]
+    if only == nil then
+        Print("icons appear " .. UsableWords(ns.db.usableOnly) .. ". /se usable <on | off> changes that: on for "
+            .. "only on a skill you can use right now, off for on every skill.")
+        UsableNote()
+        return
+    end
+    ns.Options.Change(function()
+        ns.SetUsableOnly(only)
+    end)
+    Print("icons now appear " .. UsableWords(only) .. ".")
+    UsableNote()
+end
 
 function commands.track(rest)
     WithSpell(rest, function(name)

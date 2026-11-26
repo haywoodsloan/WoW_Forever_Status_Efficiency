@@ -621,3 +621,23 @@ function ns.SlotSpell(slot)
     end
     return nil
 end
+
+--- Whether the game would let the action in a slot be used right now, as far as
+--- it tells an addon: usable, inRange. Each is true, false, or nil when the game
+--- will not say or the question does not come into it.
+---   usable   false while the game dims the button: not enough rage, mana or
+---            energy, the wrong stance, a target the skill is no use on
+---   inRange  false while the target is out of the skill's reach, which
+---            includes too close for a skill with a shortest range
+--- A cooldown is part of neither answer: the game can keep cooldowns from
+--- addons during a fight.
+function ns.ActionUsable(slot)
+    local bar = C_ActionBar
+    local usable = Flag(bar and bar.IsUsableAction or IsUsableAction, slot)
+    local range, known = Call(bar and bar.IsActionInRange or IsActionInRange, slot)
+    local inRange = nil
+    if known and range ~= nil then
+        inRange = not (range == false or range == 0) -- older clients answer 1 and 0
+    end
+    return usable, inRange
+end

@@ -36,6 +36,10 @@
 --   noLines        true: frames have no CreateLine.
 --   noSounds       true: PlaySound and SOUNDKIT do not exist.
 --   noSpellTexture true: C_Spell.GetSpellTexture does not exist.
+--   usableAPI      how the client says whether an action can be used: nil for
+--                  C_ActionBar.IsUsableAction and IsActionInRange, "globals" for
+--                  the old plain functions that answer 1 and nil, "secret" when
+--                  the answers are secret values, "none" when there is no such call.
 
 local Mock = {}
 
@@ -522,6 +526,55 @@ function Mock.new(options)
             return nil
         end,
     }
+
+    -- Whether an action can be used right now, and whether its target is in
+    -- reach. Tests set `unusable`, `lacking` and `inRange` on world.actions[slot]
+    -- through world:setUsable and world:setRange.
+    local function IsUsableAction(slot)
+        if type(slot) ~= "number" then
+            error("IsUsableAction: bad slot", 2)
+        end
+        world.usableAsked = (world.usableAsked or 0) + 1
+        local action = world.actions[slot]
+        if not action then
+            return false, false
+        end
+        if options.usableAPI == "secret" then
+            return Secret(not action.unusable), Secret(action.lacking == true)
+        end
+        return not action.unusable, action.lacking == true
+    end
+    local function IsActionInRange(slot)
+        if type(slot) ~= "number" then
+            error("IsActionInRange: bad slot", 2)
+        end
+        local action = world.actions[slot]
+        local inRange = action and action.inRange
+        if inRange == nil then
+            return nil -- no target, or range does not come into it
+        end
+        if options.usableAPI == "secret" then
+            return Secret(inRange)
+        end
+        return inRange
+    end
+    if options.usableAPI == "globals" then
+        -- An older client: plain functions that answer 1 and nil, or 1 and 0.
+        function env.IsUsableAction(slot)
+            local usable, lacking = IsUsableAction(slot)
+            return usable and 1 or nil, lacking and 1 or nil
+        end
+        function env.IsActionInRange(slot)
+            local inRange = IsActionInRange(slot)
+            if inRange == nil then
+                return nil
+            end
+            return inRange and 1 or 0
+        end
+    elseif options.usableAPI ~= "none" then
+        env.C_ActionBar.IsUsableAction = IsUsableAction
+        env.C_ActionBar.IsActionInRange = IsActionInRange
+    end
 
     env.SlashCmdList = {}
 
@@ -1369,6 +1422,20 @@ function Mock.new(options)
             self.actions[slot] = nil
         end
         return frame
+    end
+
+    --- Says whether the skill in a slot can be used (enough rage, the right
+    --- stance and so on). `lacking` marks it as short of rage, mana or energy.
+    function world:setUsable(slot, usable, lacking)
+        local action = assert(self.actions[slot], "no action in that slot")
+        action.unusable = not usable
+        action.lacking = lacking and true or nil
+    end
+
+    --- Says whether the target is in the skill's reach: true, false (too far or
+    --- too close), or nil when range does not come into it.
+    function world:setRange(slot, inRange)
+        assert(self.actions[slot], "no action in that slot").inRange = inRange
     end
 
     function world:addMob(name, fields)

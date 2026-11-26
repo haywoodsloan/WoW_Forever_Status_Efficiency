@@ -196,6 +196,7 @@ local OPTIONAL_READS = {
     -- Whole parts of the API that some of the pretend clients leave out.
     issecretvalue = true, C_Secrets = true, C_UnitAuras = true, Settings = true,
     InterfaceOptions_AddCategory = true, GetSpellTexture = true, SOUNDKIT = true, PlaySound = true,
+    IsUsableAction = true, IsActionInRange = true,
 }
 
 --- Fails the scenario if the addon wrote a global of its own, or read one that
@@ -1761,7 +1762,8 @@ test("/se when says and sets when the icons appear", function()
     w:slash("off")
     w:drain()
     w:slash("on")
-    check(w:drain():find("on. Icons appear always.", 1, true), "/se on says when to expect them")
+    check(w:drain():find("on. Icons appear always, only on skills you can use right now.", 1, true),
+        "/se on says when to expect them")
     Clean(w)
 end)
 
@@ -1773,6 +1775,171 @@ test("a saved choice of when that makes no sense goes back to the default", func
         eq(ns.db.appear, "target", "saved as " .. tostring(bad))
         Clean(w)
     end
+end)
+
+--------------------------------------------------------------------------------
+-- On which skills the icons appear
+--------------------------------------------------------------------------------
+
+test("an icon only shows on a skill that can be used right now", function()
+    local w, ns = Simple()
+    eq(ns.db.usableOnly, true, "the default")
+    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "Rend with the boar out of reach: too far, or too close for a skill with a shortest range")
+    eq(w:icon("ActionButton3"), "check", "Battle Shout does not mind")
+    w:setRange(1, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "back in reach")
+
+    w:setUsable(1, false, true)
+    w:setUsable(3, false, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "no rage for Rend")
+    eq(w:icon("ActionButton3"), nil, "nor for Battle Shout: buffs follow the same rule")
+    w:setUsable(1, true)
+    w:setUsable(3, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton3"), "check")
+    Clean(w)
+end)
+
+test("a skill that cannot be used loses its red X as well, and what it did is still known", function()
+    local w = Simple({ combatAuras = "ids" })
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "nothing to say about a skill that cannot be used")
+    w:setRange(1, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "Rend is still on the boar")
+    Clean(w)
+end)
+
+test("the same skill on two buttons is judged button by button", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, REND, "macro") -- a macro that casts it on something else
+    w:load()
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:setRange(2, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton2"), nil, "only the button that cannot be used goes bare")
+    Clean(w)
+end)
+
+test("/se usable off shows the icon on every skill", function()
+    local w, ns = Simple()
+    w:setRange(1, false)
+    w:setUsable(3, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil)
+    eq(w:icon("ActionButton3"), nil)
+
+    w:drain()
+    w:slash("usable off")
+    check(w:drain():find("icons now appear on every skill", 1, true), "it says so")
+    eq(ns.db.usableOnly, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "out of reach, and shown all the same")
+    eq(w:icon("ActionButton3"), "check")
+
+    w.usableAsked = 0
+    w:advance(2)
+    eq(w.usableAsked, 0, "and the game is no longer asked")
+
+    w:slash("usable on")
+    check(w:drain():find("icons now appear only on skills you can use right now", 1, true))
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil)
+    Clean(w)
+end)
+
+test("/se usable says and sets on which skills the icons appear", function()
+    local w, ns = Simple()
+    w:drain()
+    w:slash("usable")
+    local said = w:drain()
+    check(said:find("icons appear only on skills you can use right now", 1, true),
+        "with nothing after it, it says how things are: " .. said)
+    check(said:find("/se usable <on | off>", 1, true), "and how to change them: " .. said)
+
+    w:slash("usable maybe")
+    eq(ns.db.usableOnly, true, "a word it does not know changes nothing")
+    check(w:drain():find("/se usable <on | off>", 1, true))
+    w:slash("usable OFF")
+    eq(ns.db.usableOnly, false, "capitals do not matter")
+
+    w:slash("off")
+    w:drain()
+    w:slash("on")
+    check(w:drain():find("on. Icons appear always, on every skill.", 1, true), "/se on says what to expect")
+    w:slash("help")
+    check(w:drain():find("/se usable <on | off>", 1, true), "and /se lists the command")
+    Clean(w)
+end)
+
+test("when the game will not say whether a skill can be used, the icon shows", function()
+    for _, api in ipairs({ "none", "secret" }) do
+        local w = Simple({ usableAPI = api })
+        w:setRange(1, false)
+        w:setUsable(3, false)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check", api .. ": Rend")
+        eq(w:icon("ActionButton3"), "check", api .. ": Battle Shout")
+        w:drain()
+        w:slash("usable")
+        check(w:drain():find("not telling the addon whether a skill can be used", 1, true),
+            api .. ": and /se usable owns up to it")
+        Clean(w)
+    end
+
+    local w = Simple()
+    w:drain()
+    w:slash("usable")
+    check(not w:drain():find("not telling", 1, true), "no such note on a client that answers")
+    Clean(w)
+end)
+
+test("an older client's plain answers about using a skill are understood", function()
+    local w = Simple({ usableAPI = "globals" })
+    eq(w:icon("ActionButton1"), "check", "1 for usable, and no word on range")
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "0 for out of reach")
+    w:setRange(1, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "1 for in reach")
+    w:setUsable(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "nothing at all for a skill that cannot be used")
+    Clean(w)
+end)
+
+test("a saved choice about usable skills is kept, and one that makes no sense goes back to the default", function()
+    for _, bad in ipairs({ "sometimes", 7 }) do
+        local w = World()
+        w:addButton("ActionButton1", 1, REND)
+        local ns = w:load({ usableOnly = bad })
+        eq(ns.db.usableOnly, true, "saved as " .. tostring(bad))
+        Clean(w)
+    end
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    local ns = w:load({ usableOnly = false })
+    eq(ns.db.usableOnly, false, "a real choice survives a reload")
+    w:slash("reset")
+    eq(ns.db.usableOnly, true, "/se reset goes back to usable skills only")
+    Clean(w)
 end)
 
 --------------------------------------------------------------------------------
@@ -1972,6 +2139,44 @@ panel("picking when the icons appear", function(options)
     w:target(nil)
     w:advance(0.3)
     eq(w:icon("ActionButton3"), nil, "and now none is")
+    Clean(w)
+end)
+
+panel("picking on which skills the icons appear", function(options)
+    local w, ns = Simple(options)
+    local view = w:openSettings().view
+    w:slash("options")
+    local window = w.env.StatusEfficiencyOptions.view
+    eq(view.usable.picked, "usable", "only on usable skills to begin with")
+    eq(view.usable.buttons.usable.picked, true)
+
+    w:click(view.usable.buttons.always)
+    eq(ns.db.usableOnly, false)
+    eq(view.usable.picked, "always")
+    eq(window.usable.picked, "always", "the other copy follows")
+    w:slash("usable on")
+    eq(view.usable.picked, "usable", "/se usable moves it too")
+
+    local title, lines = w:hover(view.usable.buttons.usable)
+    eq(title, "Only when the skill is usable")
+    check(lines[1]:find("too close", 1, true), "each choice explains itself: " .. tostring(lines[1]))
+    check(lines[1]:find("cooldown", 1, true), "and says what does not count")
+    w:unhover(view.usable.buttons.usable)
+
+    w:click(view.enable.frame)
+    near(view.usable.frame:GetAlpha(), 0.4, "dimmed while the icons are off")
+    w:click(view.enable.frame)
+    near(view.usable.frame:GetAlpha(), 1)
+
+    -- Sample icons are for judging the look, so they show on every button.
+    w:setUsable(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "a sample, on a skill that cannot be used")
+    w:closeSettings()
+    w.env.StatusEfficiencyOptions:Hide()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "the real icon stays away")
+    eq(w:icon("ActionButton3"), "check")
     Clean(w)
 end)
 
@@ -2673,8 +2878,9 @@ panel("Spells tab: a long list scrolls", function(options)
     w:click(view.tabs.spells)
     local list, page = view.spells, view.pages.spells
     eq(#list.items, 20)
+    local shown = #list.rows
     eq(list.rows[1].name:GetText(), "Curse 01")
-    eq(list.rows[13].name:GetText(), "Curse 13", "thirteen at a time")
+    eq(list.rows[shown].name:GetText(), string.format("Curse %02d", shown), "as many at a time as fit the page")
     eq(list.bar:IsShown(), true, "with a scroll bar once they do not all fit")
     eq(list.more:IsShown(), true)
     eq(list.count:GetText(), "20 spells on your bars, 20 with an icon.")
@@ -2685,10 +2891,10 @@ panel("Spells tab: a long list scrolls", function(options)
     w:wheel(page, -1)
     w:wheel(page, -1)
     w:wheel(page, -1)
-    eq(list.rows[13].name:GetText(), "Curse 20", "it stops at the end")
-    eq(list.rows[1].name:GetText(), "Curse 08")
+    eq(list.rows[shown].name:GetText(), "Curse 20", "it stops at the end")
+    eq(list.rows[1].name:GetText(), string.format("Curse %02d", 21 - shown))
     w:wheel(page, 1)
-    eq(list.rows[1].name:GetText(), "Curse 05")
+    eq(list.rows[1].name:GetText(), string.format("Curse %02d", 18 - shown))
     w:slide(list.bar, 0)
     eq(list.rows[1].name:GetText(), "Curse 01", "dragging the bar works too")
 

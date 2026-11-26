@@ -11,9 +11,10 @@
 --   green check          the buff is not there
 --   red X                the buff is there, so casting again changes nothing
 --
--- A spell that applies no status effect gets no icon. And a setting says when
--- the icons appear at all: always, only while an enemy is targeted (the
--- default), or only during a fight.
+-- A spell that applies no status effect gets no icon. Two settings say when the
+-- icons appear at all: always, only while an enemy is targeted (the default), or
+-- only during a fight; and on every skill, or only on one that can be used right
+-- now (the default).
 
 local ADDON_NAME, ns = ...
 
@@ -62,6 +63,7 @@ local function Defaults()
         version = 1,
         enabled = true,
         appear = APPEAR_DEFAULT,
+        usableOnly = true, -- an icon only on a skill that can be used right now
         corner = "TOPLEFT",
         size = 0, -- 0 sizes the icon from the button
         plain = false, -- draw the settings panel without the game's own controls
@@ -318,6 +320,30 @@ end
 
 ns.HideAll = HideAll
 
+-- What the game said the last time it was asked whether a skill can be used,
+-- for /se debug: "yes" when it answered, "no" when it would not.
+local usableProbe = { usable = "not asked yet", range = "not asked yet" }
+ns.usableProbe = usableProbe
+
+--- Whether the skill on a button can be used right now: not while the game dims
+--- it (no rage, the wrong stance and so on) or its target is too far or too
+--- close. An answer the game will not give counts as yes, and so does a
+--- cooldown, which it can keep to itself during a fight.
+local function CanUse(entry)
+    local slot = entry.slot
+    if not slot then
+        return true
+    end
+    local usable, inRange = ns.ActionUsable(slot)
+    usableProbe.usable = usable == nil and "no" or "yes"
+    if inRange ~= nil then
+        usableProbe.range = "yes"
+    elseif usableProbe.range ~= "yes" then
+        usableProbe.range = "no answer so far"
+    end
+    return usable ~= false and inRange ~= false
+end
+
 -- While the settings panel is open on its Appearance tab, and you are not in a
 -- fight, every button that holds a spell shows a sample icon, the three results
 -- in turn, so the look can be judged on the real bars with nothing targeted.
@@ -369,7 +395,7 @@ local function ScanBars(now)
                 barsDirty = true -- its name or tooltip has not arrived yet
             end
         end
-        entry.info = info
+        entry.info, entry.slot = info, slot
         if info then
             barNames[info.name] = true
         end
@@ -679,6 +705,7 @@ local function Refresh(now)
     local when = ns.db.appear
     local appear = when == "always" or (when == "combat" and ns.InCombat())
         or (when ~= "combat" and primaryUnit ~= nil)
+    local usableOnly = ns.db.usableOnly
 
     local wantSweep, wantBuffs, wantFriend, wantLearn = false, false, false, false
     for i = 1, #entries do
@@ -716,6 +743,8 @@ local function Refresh(now)
             end
             if not appear then
                 state = nil
+            elseif state and usableOnly and not CanUse(entry) then
+                state = nil -- nothing to say about a skill that cannot be used right now
             end
             if samples then
                 state = SAMPLE_STATES[sampled % #SAMPLE_STATES + 1]
@@ -943,6 +972,12 @@ function ns.SetAppear(when)
     ns.db.appear = when
     ns.MarkDirty()
     return true
+end
+
+--- Sets whether an icon only shows on a skill that can be used right now.
+function ns.SetUsableOnly(on)
+    ns.db.usableOnly = on and true or false
+    ns.MarkDirty()
 end
 
 function ns.ResetSettings()

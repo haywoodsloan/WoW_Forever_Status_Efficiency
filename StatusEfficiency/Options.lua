@@ -1,9 +1,9 @@
 -- Status Efficiency: the settings panel.
 --
--- Two tabs. "Appearance" has the on/off switch, when the icons appear, where the
--- icon sits on a button, how big it is and which icon each result uses, with a
--- life-size preview of all three. "Spells" has one row per spell on the action
--- bars.
+-- Two tabs. "Appearance" has the on/off switch, when the icons appear and on
+-- which skills, where the icon sits on a button, how big it is and which icon
+-- each result uses, with a life-size preview of all three. "Spells" has one row
+-- per spell on the action bars.
 --
 -- Buttons, tick boxes and the size slider are the game's own where this client
 -- has them. Where it does not, or when /se plain says so, the panel draws its own
@@ -31,22 +31,22 @@ local QUESTION = "Interface\\Icons\\INV_Misc_QuestionMark"
 -- Sizes and places, in the panel's own units. A page is the part under the tabs.
 local L = {
     width = 640,
-    pageHeight = 490,
+    pageHeight = 514, -- as tall as fits the game's Options window
     bar = 28, -- the window's title bar
 
+    headTop = -68, -- the headings "Preview", "Icon size": what is under them hangs off this
     tile = 30, -- an icon to pick
     tileStep = 34,
-    blockTop = -176, -- the first result's heading
+    blockTop = -200, -- the first result's heading
     blockPitch = 92,
 
     slotWidth = 88, -- the room each pretend button gets in the preview
     slotHeight = 64,
     slotPitch = 92,
-    previewTop = -62,
     previewMin = 36, -- a pretend button is drawn life-size, within these
     previewMax = 60,
 
-    rows = 13, -- spells shown at once
+    rows = 14, -- spells shown at once
     rowHeight = 30,
     listTop = -58,
 }
@@ -79,6 +79,17 @@ local APPEAR_CHOICES = {
         body = "Only during a fight. Out of combat your buttons stay bare." },
 }
 Options.APPEAR_CHOICES = APPEAR_CHOICES
+
+-- And on which skills: every one, or only those that can be used right now.
+local USABLE_CHOICES = {
+    { key = "always", label = "On every skill", width = 92, words = "on every skill", tip = "On every skill",
+        body = "Whether or not you can use the skill right now." },
+    { key = "usable", label = "Only when the skill is usable", width = 172,
+        words = "only on skills you can use right now", tip = "Only when the skill is usable",
+        body = "Not while the game says the skill cannot be used: you are too close or too far, short of rage, "
+            .. "mana or energy, in the wrong stance and the like. A cooldown does not hide the icon." },
+}
+Options.USABLE_CHOICES = USABLE_CHOICES
 
 local views = {} -- every copy of the panel that has been built
 Options.views = views
@@ -598,7 +609,7 @@ local function BuildPreview(view, page, index, state)
     -- The slot cuts off an icon that is set far larger than the button.
     local slot = CreateFrame("Frame", nil, page)
     slot:SetSize(L.slotWidth, L.slotHeight)
-    slot:SetPoint("TOPLEFT", page, "TOPLEFT", 16 + (index - 1) * L.slotPitch, L.previewTop)
+    slot:SetPoint("TOPLEFT", page, "TOPLEFT", 16 + (index - 1) * L.slotPitch, L.headTop - 18)
     Try(slot, "SetClipsChildren", true)
 
     local button = CreateFrame("Frame", nil, slot)
@@ -836,7 +847,7 @@ local function BuildAppearance(view, page)
     view.previews, view.sets, view.current, view.clashes = {}, {}, {}, {}
     view.swatches, view.editors, view.inputs, view.editing = {}, {}, {}, {}
 
-    -- On or off, and when: the two read as one sentence.
+    -- On or off, when, and on which skills: the three read as one sentence.
     local enable = TickBox(page, "Show status icons")
     enable.frame:SetPoint("LEFT", page, "TOPLEFT", 14, -22)
     enable.onChange = function(ticked)
@@ -854,9 +865,18 @@ local function BuildAppearance(view, page)
     end
     view.appear = appear
 
+    local usable = Segmented(page, USABLE_CHOICES)
+    usable.frame:SetPoint("TOPLEFT", appear.frame, "BOTTOMLEFT", 0, -4)
+    usable.onPick = function(key)
+        Change(function()
+            ns.SetUsableOnly(key == "usable")
+        end)
+    end
+    view.usable = usable
+
     -- A pretend button for each result.
     local previewLabel = Text(page, "GameFontNormal", "Preview")
-    previewLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 16, -44)
+    previewLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.headTop)
     local hint = Text(page, "GameFontHighlightSmall", "Click a spot on any button to move the icon.")
     hint:SetPoint("BOTTOMLEFT", previewLabel, "BOTTOMRIGHT", 10, 1)
 
@@ -867,16 +887,16 @@ local function BuildAppearance(view, page)
     view.zones = view.previews[Icons.STATES[1].key].zones
 
     local sampleNote = Text(page, "GameFontDisableSmall")
-    sampleNote:SetPoint("TOPLEFT", page, "TOPLEFT", 16, -156)
+    sampleNote:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.headTop - 112)
     sampleNote:SetWidth(608)
     view.sampleNote = sampleNote
 
     -- Size: a slider, or follow the button.
     local sizeLabel = Text(page, "GameFontNormal", "Icon size")
-    sizeLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, -44)
+    sizeLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop)
 
     local slider = NumberSlider(page, 200, ns.SIZE_MIN, ns.SIZE_MAX)
-    slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", 300, -62)
+    slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop - 18)
     slider.onChange = function(value)
         Change(function()
             ns.db.size = value
@@ -909,12 +929,12 @@ local function BuildAppearance(view, page)
 
     -- Sets: all three icons in one click.
     local setLabel = Text(page, "GameFontNormal", "Icon set")
-    setLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, -102)
+    setLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop - 58)
     for index = 1, #Icons.SETS do
         local set = Icons.SETS[index]
         local button = CreateFrame("Button", nil, page)
         button:SetSize(76, 30)
-        button:SetPoint("TOPLEFT", page, "TOPLEFT", 300 + (index - 1) * 80, -120)
+        button:SetPoint("TOPLEFT", page, "TOPLEFT", 300 + (index - 1) * 80, L.headTop - 76)
 
         local ring = button:CreateTexture(nil, "BACKGROUND")
         ring:SetAllPoints(button)
@@ -1034,7 +1054,10 @@ local function BuildAppearance(view, page)
     function view.RefreshAppearance()
         enable.Set(ns.db.enabled)
         appear.Set(ns.db.appear)
-        Try(appear.frame, "SetAlpha", ns.db.enabled and 1 or 0.4) -- it changes nothing while the icons are off
+        usable.Set(ns.db.usableOnly and "usable" or "always")
+        local alpha = ns.db.enabled and 1 or 0.4 -- neither changes anything while the icons are off
+        Try(appear.frame, "SetAlpha", alpha)
+        Try(usable.frame, "SetAlpha", alpha)
 
         -- Size: the slider sits at the size in use, chosen or not.
         local chosen = ns.db.size
@@ -1802,7 +1825,8 @@ function Options.Open(tab)
         local ok, frame = pcall(BuildWindow)
         if not ok or not frame then
             ns.Print("the settings window could not be built on this client. The same settings work as "
-                .. "commands: /se on, /se when, /se corner, /se size, /se icon and /se track. (" .. tostring(frame) .. ")")
+                .. "commands: /se on, /se when, /se usable, /se corner, /se size, /se icon and /se track. ("
+                .. tostring(frame) .. ")")
             return false
         end
         window = frame
