@@ -1259,6 +1259,42 @@ test("reports: a spell that lost its icon earns it back by landing", function()
     Clean(w)
 end)
 
+test("reports: a status spell whose first three casts all miss has its icon back after two that land", function()
+    local w, ns = Bar({ saved = Proven() }, MORTAL, MARK)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(MARK) -- a real debuff, which lasts the whole scenario: the client is heard reporting it
+    w:advance(1)
+    w:drain()
+    for _ = 1, 3 do
+        w:cast(MORTAL, { miss = true })
+        w:advance(3.5)
+    end
+    eq(w:icon("ActionButton1"), nil, "three misses to begin with look just like a skill that leaves nothing")
+    check(w:drain():find("Mortal Strike left no status effect behind after 3 of 3 casts", 1, true), "said in chat")
+
+    w:cast(MORTAL)
+    w:advance(11)
+    eq(w:icon("ActionButton1"), nil, "1 of 4: one that lands is not enough")
+    eq(w:drain(), "")
+    w:cast(MORTAL)
+    w:advance(0.8)
+    eq(ns.db.learned["Mortal Strike"].hits, 2)
+    eq(ns.db.learned["Mortal Strike"].casts, 5)
+    eq(w:icon("ActionButton1"), "cross", "2 of 5: the icon is back, and knows about the cast that earned it")
+    check(w:drain():find("Mortal Strike does leave a status effect behind: 2 of its last 5 casts did. Its icon is back.",
+        1, true), "said in chat as well")
+    w:advance(9.5)
+    eq(w:icon("ActionButton1"), "check", "and it runs out like any other")
+    w:cast(MORTAL, { miss = true })
+    w:advance(3.5)
+    eq(w:icon("ActionButton1"), "check", "2 of 6: a miss now does not take it away again")
+    eq(w:drain(), "")
+    Clean(w)
+end)
+
 test("reports: a spell near the line does not keep losing and regaining its icon", function()
     local w, ns = Bar({ saved = Proven() }, BLOODTHIRST, MARK)
     local boar = w:addMob("Boar")
@@ -1271,7 +1307,7 @@ test("reports: a spell near the line does not keep losing and regaining its icon
         w:cast(BLOODTHIRST)
         w:advance(3.5)
     end
-    eq(w:icon("ActionButton1"), nil, "dropped after six silent casts")
+    eq(w:icon("ActionButton1"), nil, "dropped: six silent casts")
     w:drain()
     -- Now and then something else changes on the boar just as it is used.
     for _ = 1, 2 do
@@ -1650,6 +1686,8 @@ test("reports, area: a client that reports on your target but not on nameplates"
     end
     eq(ns.Trusted("plate"), false, "three casts with nothing heard through a nameplate")
     eq(ns.Trusted("target"), true, "the target is still judged by what it reports")
+    eq(ns.db.learned["Thunder Clap"], nil,
+        "and the target's silence is not held against the spell: it may have reached the others unreported")
     check(w:drain():find("the game has said nothing about the enemies around your target changing", 1, true),
         "it says so in chat")
     w:cast(CLAP, { hits = { mobs[2], mobs[3] } })
@@ -1882,18 +1920,18 @@ test("reports: a spell that keeps leaving nothing on the enemy loses its icon", 
     w:cast(MARK) -- a real debuff, which lasts the whole scenario: the client is heard reporting it
     w:advance(1)
     w:drain()
-    for cast = 1, 6 do
+    for cast = 1, 3 do
         eq(w:icon("ActionButton1"), "check", "still there before cast " .. cast)
         w:cast(BLOODTHIRST)
         w:advance(0.3)
         eq(w:icon("ActionButton1"), "check", "never red: nothing changed on the boar")
         w:advance(3.5)
     end
-    eq(ns.db.learned.Bloodthirst.casts, 6)
+    eq(ns.db.learned.Bloodthirst.casts, 3)
     eq(ns.db.learned.Bloodthirst.hits, 0)
-    eq(w:icon("ActionButton1"), nil, "dropped after six silent casts")
+    eq(w:icon("ActionButton1"), nil, "dropped: its first three casts all left nothing")
     local said = w:drain()
-    check(said:find("Bloodthirst left no status effect behind after 6 of 6 casts", 1, true),
+    check(said:find("Bloodthirst left no status effect behind after 3 of 3 casts", 1, true),
         "and it says so, so that the icon does not just go missing: " .. said)
     check(said:find("/se track Bloodthirst", 1, true), "with the way to get it back")
     w:advance(5)
@@ -2138,15 +2176,165 @@ test("a spell whose tooltip misleads loses its icon", function()
     eq(w:icon("ActionButton1"), "check", "trusted at first: it has a duration in its tooltip")
     w:cast(MARK) -- a real debuff, so the client's counts can be believed
     w:advance(1)
-    for _ = 1, 5 do
+    for _ = 1, 2 do
         w:cast(BLOODTHIRST)
         w:advance(3.5)
     end
-    eq(w:icon("ActionButton1"), "check", "five empty casts are not enough")
+    eq(w:icon("ActionButton1"), "check", "two empty casts are not enough")
     w:cast(BLOODTHIRST)
     w:advance(3.5)
-    eq(ns.db.learned.Bloodthirst.casts, 6)
-    eq(w:icon("ActionButton1"), nil, "dropped after six")
+    eq(ns.db.learned.Bloodthirst.casts, 3)
+    eq(w:icon("ActionButton1"), nil, "dropped after three that left nothing")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Times in a tooltip that are not how long an effect lasts
+--------------------------------------------------------------------------------
+
+local VICTORY = 402927
+local VICTORY_TEXT = "Instantly attack the target causing 180 damage and healing you for 10% of your maximum "
+    .. "health. Can only be used within 20 sec after you kill an enemy that yields experience or honor."
+
+test("a skill whose tooltip only says how soon it has to be used gets no icon", function()
+    local w = World()
+    w:addSpell(VICTORY, { name = "Victory Rush", harmful = true, description = VICTORY_TEXT })
+    w:addButton("ActionButton1", 1, VICTORY)
+    w:addButton("ActionButton2", 2, REND)
+    local ns = w:load(Proven())
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "20 sec is how long it can be used for, not how long anything lasts")
+    eq(w:icon("ActionButton2"), "check", "the skill next to it, which does leave an effect, has its icon")
+    w:drain()
+    local info = ns.Spells:Get(VICTORY, ns.Now())
+    eq(info.tooltipDuration, nil)
+    eq(info.tooltipPassed, "can only be used within 20 sec", "what was passed over, and why, is kept")
+
+    -- It is listened for like any skill without an icon, and nothing is said.
+    w:cast(REND)
+    w:advance(1)
+    for _ = 1, 4 do
+        w:cast(VICTORY)
+        w:advance(2)
+        eq(w:icon("ActionButton1"), nil)
+    end
+    eq(ns.db.learned["Victory Rush"].casts, 4)
+    eq(ns.db.learned["Victory Rush"].hits, 0)
+    eq(w:drain(), "", "it never had an icon to lose")
+    local noted = ns.db.report.spells
+    eq(noted["Victory Rush"].why, "none", "the saved report says it was not taken for a status skill")
+    eq(noted["Victory Rush"].passed, "can only be used within 20 sec", "and which words made the difference")
+    eq(noted["Victory Rush"].lasts, nil)
+    eq(noted.Rend.lasts, "causing 147 damage over 21 sec", "as it says where a length was read from")
+    eq(noted.Rend.passed, nil)
+    Clean(w)
+end)
+
+test("a skill whose casts were already seen to leave nothing has no icon after an update", function()
+    -- Saved by a version that still gave it an icon: four casts, and nothing
+    -- followed any of them. Its tooltip here would still fool the reader.
+    local saved = Proven()
+    saved.learned = { ["Victory Rush"] = { casts = 4, hits = 0 } }
+    local w = World()
+    w:addSpell(VICTORY, {
+        name = "Victory Rush", harmful = true,
+        description = "Instantly attack the target. Your victory is yours to claim for 20 sec.",
+    })
+    w:addButton("ActionButton1", 1, VICTORY)
+    local ns = w:load(saved)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    eq(ns.Spells:Get(VICTORY, ns.Now()).tooltipDuration, 20, "this wording reads like an effect")
+    eq(w:icon("ActionButton1"), nil, "but four casts that left nothing say otherwise, from the first moment")
+    check(w:drain():find("Victory Rush left no status effect behind after 4 of 4 casts", 1, true),
+        "and that is said once, since the icon was there before")
+    Clean(w)
+end)
+
+test("tooltip times are read by the words around them", function()
+    local w, ns = Bar(nil, REND)
+    local Parse = ns.Spells.ParseDuration
+    local lengths = {
+        -- What is on a warrior's bars.
+        { "Wounds the target causing them to bleed for 147 damage over 21 sec.", 21 },
+        { "Charge an enemy, generate 9 rage, and stun it for 1 sec. Cannot be used in combat.", 1 },
+        { "Maims the enemy, causing 18 damage and slowing the enemy's movement by 40% for 15 sec.", 15 },
+        { "Sunders the target's armor, reducing it by 180 per Sunder Armor and causes a high amount of threat. "
+            .. "Can be applied up to 5 times. Lasts 30 sec.", 30 },
+        { "The warrior shouts, increasing the melee attack power of all party members within 20 yards by 55. "
+            .. "Lasts 2 min.", 120 },
+        { "Blasts nearby enemies increasing the time between their attacks by 10% for 30 sec and doing 23 damage "
+            .. "to them. Will affect up to 4 targets.", 30 },
+        { "Generates 10 rage at the cost of health, and then generates an additional 10 rage over 10 sec. The "
+            .. "warrior is considered in combat for the duration.", 10 },
+        { "Instantly counterattack any enemy that strikes you in melee for 15 sec. Melee attacks made from "
+            .. "behind cannot be counterattacked. A maximum of 30 attacks will cause retaliation.", 15 },
+        { "A mocking attack that causes 23 damage, a moderate amount of threat and forces the target to focus "
+            .. "attacks on you for 6 sec.", 6 },
+        { "The warrior shouts, causing up to 5 enemies within 10 yards to cower in fear. The targeted enemy "
+            .. "will be unable to move while cowering. Lasts 8 sec.", 8 },
+        -- Other ways of saying how long.
+        { "Causes 12 damage every 3 sec for 15 sec.", 15 },
+        { "Strikes fear into the target, causing it to flee for up to 20 sec.", 20 },
+        { "Increases your attack speed for the next 15 sec.", 15 },
+        { "Slows the target by 50%. Lasts 12s.", 12 },
+        { "Marks the target. The mark has a duration of 5 min.", 300 },
+        { "Poisons the enemy for 1.5 sec.", 1.5 },
+        -- A time that might be something else, and is as likely an effect of that length.
+        { "Plants a charge on the target that goes off after 4 sec.", 4 },
+        { "Blasts the target. If it dies within 5 sec, you gain a Soul Shard.", 5 },
+        { "Charges an enemy, immobilizing it and interrupting any spell being cast for 4 sec.", 4 },
+        -- A length next to a time that is something else: the length is what counts.
+        { "Causes the target to bleed for 60 damage over 12 sec. Can only be used within 6 sec after a dodge.", 12 },
+        { "Deals 40 damage and slows the target for 8 sec. 1 min cooldown.", 8 },
+        { "Burns the enemy for 30 damage every 2 sec. Lasts 10 sec, or 20 sec after a critical strike.", 20 },
+    }
+    for i = 1, #lengths do
+        eq(Parse(lengths[i][1]), lengths[i][2], lengths[i][1])
+    end
+
+    local others = {
+        { VICTORY_TEXT, "can only be used within 20 sec" },
+        { "Overpowers the enemy, causing weapon damage. Usable for 5 sec after the target dodges.",
+            "weapon damage. usable for 5 sec" },
+        { "Strikes the target. Can be used for up to 6 sec after you parry.", "can be used for up to 6 sec" },
+        { "Pummel the target for 20 damage. It also interrupts spellcasting and prevents any spell in that school "
+            .. "from being cast for 4 sec.", "school from being cast for 4 sec" },
+        { "Deals 30 damage. This attack can be used once every 6 sec.", "can be used once every 6 sec" },
+        { "Reduces the remaining cooldown of your shouts by 30 sec.", "cooldown of your shouts by 30 sec" },
+        { "Reduces the remaining cooldown of your shouts by up to 30 sec.", "of your shouts by up to 30 sec" },
+        { "Strikes for 50 damage. Has a 30 sec cooldown.", "strikes for 50 damage. has a 30 sec cooldown" },
+        { "Deals 100 damage. 2 sec cast.", "deals 100 damage. 2 sec cast" },
+        { "Strikes for 50 damage. This skill has a cooldown of 1 min.", "skill has a cooldown of 1 min" },
+        { "Heals you for 20% of all damage taken in the last 5 sec.", "damage taken in the last 5 sec" },
+        { "Your next spell with a casting time of less than 10 sec becomes instant.",
+            "a casting time of less than 10 sec" },
+        { "Strikes hard. Only usable within the next 4 sec after a parry.", "only usable within the next 4 sec" },
+        { "Strikes hard. Usable only within 8 sec of a kill.", "hard. usable only within 8 sec" },
+        { "Restores 5 mana per 5 sec.", "restores 5 mana per 5 sec" },
+    }
+    for i = 1, #others do
+        local length, read, passed = Parse(others[i][1])
+        eq(length, nil, others[i][1])
+        eq(read, nil, others[i][1])
+        eq(passed, others[i][2], others[i][1])
+    end
+
+    -- Words that only happen to end like one of the telling ones change nothing.
+    eq(Parse("Thereafter 5 sec of silence follow."), 5)
+    eq(Parse("Stuns all enemies nearby 4 sec."), 4)
+    -- Only English words are read this way. Elsewhere every time still counts.
+    eq(Parse("Kann nur innerhalb von 20 Sek. nach dem Sieg benutzt werden."), 20)
+    eq(Parse("Inflige 147 points de dégâts en 21 s."), 21)
+    -- The words kept for the report are cut by bytes, and never begin with half a character.
+    local _, read = Parse("目标受到流血效果的影响，在21秒内受到伤害。")
+    check(read and not read:find("^[\128-\191]"), "begins with a whole character: " .. tostring(read))
+    check(read:find("21秒", 1, true), "and still holds the time: " .. read)
     Clean(w)
 end)
 
@@ -2516,18 +2704,18 @@ test("buffs: a helpful spell whose tooltip misleads loses its icon", function()
     w:applyBuff("Well Fed", 3600) -- a buff of yours that no spell on the bars explains
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "trusted at first: it has a duration in its tooltip")
-    for _ = 1, 5 do
+    for _ = 1, 2 do
         w:cast(MEND)
         w:advance(3)
     end
-    eq(w:icon("ActionButton1"), "check", "five empty casts are not enough")
+    eq(w:icon("ActionButton1"), "check", "two empty casts are not enough")
     w:drain()
     w:cast(MEND)
     w:advance(3)
-    eq(ns.db.learned["Mending Touch"].buffCasts, 6)
+    eq(ns.db.learned["Mending Touch"].buffCasts, 3)
     eq(ns.db.learned["Mending Touch"].buffHits, 0)
-    eq(w:icon("ActionButton1"), nil, "dropped after six")
-    check(w:drain():find("Mending Touch left no status effect behind after 6 of 6 casts", 1, true), "and it says so")
+    eq(w:icon("ActionButton1"), nil, "dropped after three that left nothing")
+    check(w:drain():find("Mending Touch left no status effect behind after 3 of 3 casts", 1, true), "and it says so")
     Clean(w)
 end)
 

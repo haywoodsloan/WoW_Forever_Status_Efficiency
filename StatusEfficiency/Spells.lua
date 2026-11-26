@@ -12,11 +12,13 @@
 --   2. The addon has seen an effect of yours carrying the spell's own name: a
 --      debuff on an enemy, or a buff on you. That also settles which of the two
 --      the spell leaves, whatever it can be cast on.
---   3. Its tooltip mentions a duration and the client says where it can land: on
---      enemies (a debuff), on friends or only on yourself (a buff). A few well
---      known area debuffs count too. Casting it must not have kept failing to
---      leave anything behind; if it has, it gets its icon back once its casts
---      are seen to leave something after all.
+--   3. Its tooltip says how long an effect lasts and the client says where it
+--      can land: on enemies (a debuff), on friends or only on yourself (a
+--      buff). A time that is something else, such as how soon after a kill the
+--      skill has to be used, does not count. A few well known area debuffs
+--      count too. Casting it must not have kept failing to leave anything
+--      behind; if it has, it gets its icon back once its casts are seen to
+--      leave something after all.
 --   4. Casting it has repeatedly been followed by a new effect of yours.
 
 local _, ns = ...
@@ -39,6 +41,11 @@ local LOAD_RETRY = 1.5
 -- misses, is dodged or meets an immune enemy now and then, so this asks for more
 -- than a short run of bad luck: of the first six casts, at most one may land.
 local DEMOTE_CASTS, DEMOTE_RATIO = 6, 0.2
+-- One that has never once left anything is found out sooner, by its first
+-- three casts. A real status spell that lands three times in four, which is
+-- what was measured in play, starts with three empty casts about one time in
+-- sixty, and then has its icon back after two casts that land.
+local EMPTY_CASTS = 3
 -- One that lost its icon has to do clearly better than that to get it back, so
 -- that a spell near the line does not keep losing and regaining it.
 local RESTORE_RATIO = 0.4
@@ -91,6 +98,18 @@ end
 
 --------------------------------------------------------------------------------
 -- Reading a duration out of tooltip text
+--
+-- A description names times that are not how long anything lasts: how soon
+-- after something the skill has to be used, how often an effect ticks, a
+-- cooldown, how much longer or shorter something else becomes. One of those
+-- taken for the length of an effect puts an icon on a skill that leaves
+-- nothing behind. So each time is read with the words around it, and the ones
+-- those words rule out are passed over.
+--
+-- The words are English ones. In another language every time counts, as it
+-- did before, and a skill that gets its icon that way loses it again after a
+-- few casts that leave nothing (see "How cast results change what is
+-- tracked").
 --------------------------------------------------------------------------------
 
 -- Seconds per unit, for the words that follow a number in a spell description.
@@ -128,15 +147,93 @@ local function SecondsPer(word)
     return nil
 end
 
---- The longest duration mentioned in a spell description, in seconds, or nil.
---- "X damage every 3 sec for 15 sec" gives 15.
+-- Words that can stand between the telling word and the number without
+-- changing what the number is: "by up to 6 sec", "used for the next 10 sec".
+local FILLERS = { "up to", "the next", "the first", "an additional", "at least", "at most" }
+
+-- Words right before a time that make it something other than the length of
+-- an effect. Only wordings that are never one are listed. A time the list
+-- lets through wrongly costs a skill three casts with an icon it should not
+-- have; one it keeps out wrongly costs a real status skill its icon until its
+-- casts have earned it, which takes longer. So "within" and "for" alone are
+-- not on it: "if the target dies within 5 sec" is an effect that lasts 5.
+local NOT_A_LENGTH = {
+    "every", "each", "per", -- how often something happens
+    -- How soon the skill has to be used: "can only be used within 20 sec after
+    -- you kill an enemy", "usable for 5 sec after the target dodges".
+    "used within", "used only within", "usable within", "usable only within",
+    "useable within", "useable only within", "use within", "cast within", "performed within",
+    "used for", "usable for", "useable for", "available for",
+    "by", -- how much something else changes
+    "the last", "the past", "the previous", -- looking back
+    "less than", "more than", "longer than", "shorter than", -- a condition
+    "cooldown of", "cooldown is",
+    "from being cast for", -- how long an interrupted spell stays locked: nothing the enemy shows
+}
+
+-- A word right after a time that does the same: "a 30 sec cooldown".
+local NOT_A_LENGTH_AFTER = { cooldown = true, recharge = true, cast = true }
+
+local LEAD = 40 -- characters before a time that are looked at
+local SHOWN = 28 -- of those, how many are kept for the saved report
+
+--- True when `lead` ends with the word or words in `phrase`.
+local function EndsWith(lead, phrase)
+    local before = #lead - #phrase
+    if before < 0 or lead:sub(before + 1) ~= phrase then
+        return false
+    end
+    return before == 0 or not lead:sub(before, before):find("%a")
+end
+
+--- Whether a time can be how long an effect lasts, going by the words before
+--- it (lower case, single spaces, none at the end) and the text after it.
+--- When it is the word after the time that rules it out, that word is
+--- returned as well.
+local function IsLength(lead, follow)
+    for i = 1, #FILLERS do
+        local filler = FILLERS[i]
+        if EndsWith(lead, filler) then
+            lead = lead:sub(1, #lead - #filler):gsub(" $", "")
+            break
+        end
+    end
+    for i = 1, #NOT_A_LENGTH do
+        if EndsWith(lead, NOT_A_LENGTH[i]) then
+            return false
+        end
+    end
+    local word = follow:match("^%s*(%a+)")
+    if word and NOT_A_LENGTH_AFTER[word] then
+        return false, word
+    end
+    return true
+end
+
+--- The last words before a time together with the time itself, for the saved
+--- report: "damage over 15 sec".
+local function Quote(lead, time)
+    if #lead > SHOWN then
+        lead = lead:sub(-SHOWN):gsub("^%S*%s", "")
+    end
+    -- Cut by bytes, so it may begin inside a character of more than one: drop
+    -- what is left of that character.
+    lead = lead:gsub("^[\128-\191]+", "")
+    return lead == "" and time or (lead .. " " .. time)
+end
+
+--- The longest time in a spell description that can be how long its effect
+--- lasts, in seconds, or nil. "X damage every 3 sec for 15 sec" gives 15, and
+--- "can only be used within 20 sec after you kill an enemy" gives nothing.
+--- Also returns the words that time was read from, and the first time that was
+--- passed over with the words that ruled it out (each nil when there is none).
 function Spells.ParseDuration(text)
     if type(text) ~= "string" or text == "" then
         return nil
     end
     text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " ")
 
-    local best
+    local best, read, passed
     local position = 1
     while true do
         local first, last, number, word = text:find("(%d+[%.,]?%d*)%s*([^%s%d%p]+)", position)
@@ -145,18 +242,20 @@ function Spells.ParseDuration(text)
         end
         position = last + 1
         local seconds = SecondsPer(word)
-        if seconds then
-            local value = tonumber((number:gsub(",", ".")))
-            local lead = text:sub(max(1, first - 8), first - 1):lower()
-            if value and not lead:find("every%s*$") then
-                value = value * seconds
-                if value >= MIN_DURATION and value <= MAX_DURATION and (not best or value > best) then
-                    best = value
-                end
+        local value = seconds and tonumber((number:gsub(",", ".")))
+        if value then
+            value = value * seconds
+            local lead = text:sub(max(1, first - LEAD), first - 1):lower():gsub("%s+", " "):gsub(" $", "")
+            local quote = Quote(lead, text:sub(first, last))
+            local length, after = IsLength(lead, text:sub(last + 1, last + 16):lower())
+            if not length then
+                passed = passed or (after and (quote .. " " .. after) or quote)
+            elseif value >= MIN_DURATION and value <= MAX_DURATION and (not best or value > best) then
+                best, read = value, quote
             end
         end
     end
-    return best
+    return best, read, passed
 end
 
 --------------------------------------------------------------------------------
@@ -184,7 +283,7 @@ local function Load(info, now)
         info.range = ns.SpellRange(id)
         local text = ns.SpellDescription(id)
         if text and text ~= "" then
-            info.tooltipDuration = Spells.ParseDuration(text)
+            info.tooltipDuration, info.tooltipRead, info.tooltipPassed = Spells.ParseDuration(text)
             info.done = true
         end
     end
@@ -200,7 +299,9 @@ local function Load(info, now)
 end
 
 --- Static facts about a spell: { id, name, harmful, helpful, selfOnly, passive,
---- range, tooltipDuration }.
+--- range, tooltipDuration, tooltipRead, tooltipPassed }. The last two are the
+--- words the duration was read from and the first time in the description
+--- that was not taken for one.
 --- Returns nil while the client does not know the spell's name, with a second
 --- value of true if it is still worth asking again.
 function Spells:Get(spellID, now)
@@ -247,6 +348,12 @@ local HITS_FIELD = { debuff = "hits", buff = "buffHits" }
 
 -- Set while a likely spell is without its icon because its casts left nothing.
 local DROPPED_FIELD = { debuff = "dropped", buff = "buffDropped" }
+
+--- True when casts of a spell have left too little behind for it to be taken
+--- for a status spell on the strength of its tooltip.
+local function LeavesNothing(casts, hits)
+    return (casts >= EMPTY_CASTS and hits == 0) or (casts >= DEMOTE_CASTS and hits / casts <= DEMOTE_RATIO)
+end
 
 --- Where the spell's effect lands: "debuff" (on enemies) or "buff" (on you, or
 --- on the friend you have targeted).
@@ -309,7 +416,7 @@ function Spells:Tracking(info)
         end
         if likely then
             local share = casts > 0 and hits / casts or 1
-            if (casts >= DEMOTE_CASTS and share <= DEMOTE_RATIO)
+            if LeavesNothing(casts, hits)
                 or (learned and learned[DROPPED_FIELD[kind]] and share < RESTORE_RATIO) then
                 source = "demoted"
             else
@@ -416,7 +523,7 @@ function Spells:Evidence(name, hit, kind)
     end
     learned[castsField], learned[hitsField] = casts, hits
     local dropped = DROPPED_FIELD[kind] or "dropped"
-    if casts >= DEMOTE_CASTS and hits / casts <= DEMOTE_RATIO then
+    if LeavesNothing(casts, hits) then
         learned[dropped] = true
     elseif hits / casts >= RESTORE_RATIO then
         learned[dropped] = nil

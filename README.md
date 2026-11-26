@@ -15,7 +15,7 @@ it is a debuff and there is no enemy to judge. Out of the box the icons also
 stay away until you target an enemy, and from a skill you cannot use right now
 (too close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.3.4 is an early draft. It loads and draws its icons in the real
+Version 0.3.5 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -42,7 +42,7 @@ few rough edges.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.3.4 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.3.5 loaded."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -199,10 +199,13 @@ A spell on your bars is treated as a status effect when, strongest first:
    opposite with `/se ignore`);
 2. the addon has read an effect of yours with the spell's own name: a debuff
    off an enemy, or a buff off you;
-3. its tooltip mentions a duration and the game says where it can land: on
-   enemies (a debuff), or on friends or only on yourself (a buff). A few well
-   known area debuffs (Thunder Clap, Frost Nova and the like) count too.
-   Casting it must not have kept leaving nothing behind;
+3. its tooltip says how long an effect lasts and the game says where it can
+   land: on enemies (a debuff), or on friends or only on yourself (a buff). A
+   time that is something else does not count: how soon the skill has to be
+   used ("can only be used within 20 sec after you kill an enemy"), how often
+   an effect ticks, a cooldown, how long an interrupted spell stays locked. A
+   few well known area debuffs (Thunder Clap, Frost Nova and the like) count
+   too. Casting it must not have kept leaving nothing behind;
 4. casting it has repeatedly been followed by a new effect of yours: six
    casts or more, and at least four in five of them. In combat, where the
    addon cannot see whose effect it was, a change the enemy reports right
@@ -284,8 +287,10 @@ It also keeps a short record of what your client really sent: how many changes
 were reported and through what, what came with them (described in words, such
 as "sealed table"; nothing is read out of it), how many were put down to an
 effect of yours running out, which requests the game refused, how each of the
-last 40 casts was judged ("changed", "silent", and so on), and how the casts
-of spells without an icon came out. `/se debug` prints the summary. The full
+last 40 casts was judged ("changed", "silent", and so on), how the casts
+of spells without an icon came out, and for each spell you cast which words of
+its tooltip were read as an effect's length and which time was passed over.
+`/se debug` prints the summary. The full
 record is saved with the addon's settings at the next `/reload` or logout,
 under `report` in `WTF\Account\<account>\SavedVariables\StatusEfficiency.lua`,
 and is the thing to send with a bug report. It holds spell names, counts and
@@ -344,18 +349,25 @@ window gave the page.
   down to that cast, and the button stays green.
 - **Only your own effects count.** The same debuff or buff put there by another
   player is not seen, so the button stays green.
-- **Spell detection is a guess from the tooltip.** A spell that mentions any
-  duration gets an icon, which includes some that leave nothing behind (an
-  interrupt that locks a spell school "for 3 sec", for example). Once the addon
-  has watched six casts of which at most one left anything, it drops the icon
-  by itself and says so in chat, so that an icon never just goes missing. It
-  can watch that out of combat, and in combat for a spell cast on enemies (the
-  enemy's effects do not change). For a buff it needs a client that lets it
-  count effects in combat. Otherwise use `/se ignore <spell>`. A real status
-  spell can lose its icon this way after a long run of misses or immune
-  enemies. It keeps being watched, and gets its icon back by itself, with a
-  line in chat, once at least two in five of its casts have left something.
-  `/se track <spell>` gives it back at once.
+- **Spell detection is a guess from the tooltip.** A spell whose tooltip
+  gives a time gets an icon unless the words around that time say it is
+  something other than an effect's length (see point 3 under
+  [Which spells get an icon](#which-spells-get-an-icon)). Those words are read
+  in English only, and no list of wordings is complete, so a skill that leaves
+  nothing behind can still start out with an icon. It does not keep it: once
+  its first three casts have all left nothing, or six casts have been watched
+  of which at most one left anything, the addon drops the icon by itself and
+  says so in chat, so that an icon never just goes missing. It can watch that
+  out of combat, and in combat for a spell cast on enemies (the enemy's
+  effects do not change). For a buff it needs a client that lets it count
+  effects in combat. Otherwise use `/se ignore <spell>`. A real status spell
+  can lose its icon this way when its first three casts all miss, or after a
+  long run of misses or immune enemies. It keeps being watched, and gets its
+  icon back by itself, with a line in chat, once at least two in five of its
+  casts have left something. `/se track <spell>` gives it back at once. The
+  other way round, a real status spell whose tooltip words its length
+  unusually is still given its icon, because only the wordings listed in
+  point 3 are ruled out.
 - **Spells with no target** cannot be recognised from the tooltip. An area
   debuff gets an icon when it is on the small built-in list, when you add it
   with `/se track <spell>`, or once its casts have been seen to work (point 4

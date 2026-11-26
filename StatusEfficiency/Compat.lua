@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.3.4"
+ns.VERSION = "0.3.5"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min

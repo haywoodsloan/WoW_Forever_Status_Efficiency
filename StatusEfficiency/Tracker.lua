@@ -644,6 +644,7 @@ local function Finish(cast, now, engaged)
     local name = cast.name
     local clean, unclear = false, false -- what counting the unit's effects showed
     local signalled, quiet = false, false -- what the unit's change reports showed
+    local blind = false -- a unit the cast may have changed without anyone being told
     local tally = {} -- how each unit came out, for the report: verdict -> units
     local delay -- how long after the cast a unit's effects were seen to change
     local unheard -- kinds of token that reported nothing, and never have
@@ -714,6 +715,7 @@ local function Finish(cast, now, engaged)
                     -- Relied on since an earlier session, and it has not been
                     -- heard from in this one: nothing is assumed either way.
                     verdict = "unproven"
+                    blind = true
                     if cast.tracked then
                         -- A spell with no icon may well leave nothing, so its
                         -- silence says nothing about the client.
@@ -731,8 +733,11 @@ local function Finish(cast, now, engaged)
                 if silent then
                     quiet = true -- told against the spell, though not against this cast
                     verdict = "assumed"
-                elseif told then
-                    verdict = "unproven"
+                else
+                    blind = true
+                    if told then
+                        verdict = "unproven"
+                    end
                 end
                 if mine then
                     rec.weak = true
@@ -757,6 +762,10 @@ local function Finish(cast, now, engaged)
     -- change at the very moment of a cast for another reason. For a buff they
     -- are no evidence at all, because your own effects come and go all through
     -- a fight, and counting them one way only would slowly talk a spell down.
+    --
+    -- Silence only tells against a spell when every unit it could have reached
+    -- would have reported a change. An area spell that left its effect on
+    -- enemies nobody reports on has not left nothing.
     local reports = cast.kind == "debuff"
     if cast.hit or (reports and signalled) then
         ns.Spells:Evidence(name, true, cast.kind)
@@ -771,7 +780,7 @@ local function Finish(cast, now, engaged)
                 end
             end
         end
-    elseif not unclear and not signalled and (clean or (reports and quiet)) then
+    elseif not unclear and not signalled and (clean or (reports and quiet and not blind)) then
         ns.Spells:Evidence(name, false, cast.kind)
     end
     ns.Note(cast, tally, delay, unheard)

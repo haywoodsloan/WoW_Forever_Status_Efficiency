@@ -705,7 +705,7 @@ local function Journal()
         },
         payload = {}, -- what came with the reports, in words: description -> how often
         verdicts = {}, -- how casts made with details hidden came out, by verdict
-        spells = {}, -- what the client says about the spells that were cast
+        spells = {}, -- what the client says about the spells that were cast, with or without an icon
         casts = {}, -- the last casts of spells with an icon, one line each
         learning = {}, -- casts of spells without one, by name: { casts, changed }
         usable = {}, -- what the game answered about using each skill, by spell name
@@ -913,7 +913,9 @@ local function Follow(entry, token)
     return entry
 end
 
---- Notes in the report what the client says about a spell that was just cast.
+--- Notes in the report what the client says about a spell that was just cast,
+--- and what was made of the times in its description: that is what decides
+--- whether a spell nothing else is known about gets an icon.
 local function NoteSpell(info, kind, source)
     local spells = Journal().spells
     if not spells[info.name] then
@@ -922,6 +924,8 @@ local function NoteSpell(info, kind, source)
             kind = kind,
             why = source or "none",
             secrecy = ns.SpellAuraSecrecy(info.id) or "unknown", -- 0 never hidden, 1 always, 2 depends
+            lasts = info.tooltipRead, -- the words its effect's length was read from
+            passed = info.tooltipPassed, -- a time that was not taken for an effect's length
         }
     end
 end
@@ -1475,9 +1479,7 @@ local function Landed(unit, castID, spellID, mustBeSent)
     }, now)
     -- A change reported just before the cast was announced is the cast's doing.
     PassOnChanges(now)
-    if tracked then
-        NoteSpell(info, kind, source)
-    end
+    NoteSpell(info, kind, source)
     if not (tracked and kind == "buff") then
         -- Out of combat, look at your buffs a moment from now: that is how a
         -- spell is found to leave one on you.
