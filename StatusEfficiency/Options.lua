@@ -86,8 +86,9 @@ local USABLE_CHOICES = {
         body = "Whether or not you can use the skill right now." },
     { key = "usable", label = "Only when the skill is usable", width = 172,
         words = "only on skills you can use right now", tip = "Only when the skill is usable",
-        body = "Not while the game says the skill cannot be used: you are too close or too far, short of rage, "
-            .. "mana or energy, in the wrong stance and the like. A cooldown does not hide the icon." },
+        body = "Not while the game says the skill cannot be used: you are too close or too far, in the wrong "
+            .. "stance and the like. Being short of rage, mana or energy does not hide the icon, and neither "
+            .. "does a cooldown." },
 }
 Options.USABLE_CHOICES = USABLE_CHOICES
 

@@ -573,6 +573,10 @@ function Mock.new(options)
         if options.usableAPI == "secret" then
             return Secret(not action.unusable), Secret(action.lacking == true)
         end
+        if options.usableAPI == "reason secret" then
+            -- Says whether, and keeps to itself whether rage is what is missing.
+            return not action.unusable, Secret(action.lacking == true)
+        end
         return not action.unusable, action.lacking == true
     end
     local function IsActionInRange(slot)

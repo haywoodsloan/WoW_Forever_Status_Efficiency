@@ -13,9 +13,9 @@ status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 No icon means there is nothing to say: the spell applies no status effect, or
 it is a debuff and there is no enemy to judge. Out of the box the icons also
 stay away until you target an enemy, and from a skill you cannot use right now
-(too close, too far, not enough rage). Both can be changed in the settings.
+(too close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.3.1 is an early draft. It loads and draws its icons in the real
+Version 0.3.2 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -42,7 +42,7 @@ few rough edges.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.3.1 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.3.2 loaded."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -66,12 +66,17 @@ is an enemy to check), or only during a fight, change **when the icons appear**
 in the settings or with `/se when`.
 
 A skill you cannot use right now shows no icon either, whatever the icon would
-have said: the target is too close or too far, you are short of rage, mana or
-energy, you are in the wrong stance, and so on. It is the same test the game
-uses to dim a button or turn its key red. A cooldown does not hide the icon:
-the short pause after every cast would make all the icons blink, and the game
-can keep cooldowns from addons during a fight. To see the icon on every skill
-regardless, pick **On every skill** in the settings or type `/se usable off`.
+have said: the target is too close or too far, you are in the wrong stance, the
+skill cannot be used during a fight, and so on. It is the test the game uses to
+grey a button out or turn its key red.
+
+Two things do not hide an icon. Being short of rage, mana or energy is one:
+rage comes and goes all through a fight, and an icon that left each time a
+skill had just been paid for would be gone at the very moment it has something
+new to say. A cooldown is the other: the short pause after every cast would
+make all the icons blink, and the game can keep cooldowns from addons during a
+fight. To see the icon on every skill regardless, pick **On every skill** in
+the settings or type `/se usable off`.
 
 A buff spell the game does not label as one gets its icon the first time the
 addon sees its buff on you out of combat. `/se buff <spell>` does the same by
@@ -94,8 +99,8 @@ The **Appearance** tab:
   - **When in combat**: only during a fight.
 - **On which skills**, under it: **On every skill**, or **Only when the skill
   is usable** (the default), which leaves a skill bare while you cannot use it:
-  too close or too far, short of rage, mana or energy, in the wrong stance and
-  the like.
+  too close or too far, in the wrong stance and the like. Being short of rage,
+  mana or energy does not count, and neither does a cooldown.
 - **Preview.** Three pretend buttons, one for each result, drawn as large as
   your action buttons with the icon where and as big as it is on the bars.
   Click one of the nine spots on any of them to move the icon: the four
@@ -279,10 +284,13 @@ character or account names.
 - **Spell detection is a guess from the tooltip.** A spell that mentions any
   duration gets an icon, which includes some that leave nothing behind (an
   interrupt that locks a spell school "for 3 sec", for example). Once the addon
-  has watched about four casts leave nothing, it drops the icon by itself. It
+  has watched six casts of which at most one left anything, it drops the icon
+  by itself and says so in chat, so that an icon never just goes missing. It
   can watch that out of combat, and in combat for a spell cast on enemies (the
   enemy's effects do not change). For a buff it needs a client that lets it
-  count effects in combat. Otherwise use `/se ignore <spell>`.
+  count effects in combat. Otherwise use `/se ignore <spell>`. A real status
+  spell can lose its icon this way after a long run of misses or immune
+  enemies; `/se track <spell>` gives it back.
 - **Spells with no target** cannot be recognised from the tooltip. An area
   debuff needs to be on the small built-in list or added with
   `/se track <spell>`. A buff (a shout for the whole party, an aura, a stance)

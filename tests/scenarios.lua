@@ -1144,23 +1144,51 @@ test("reports, area: on a client that reports nothing, enemies pulled in by the 
 end)
 
 test("reports: a spell that keeps leaving nothing on the enemy loses its icon", function()
-    local w, ns = Bar({ saved = Proven() }, BLOODTHIRST, REND)
+    local w, ns = Bar({ saved = Proven() }, BLOODTHIRST, MARK)
     local boar = w:addMob("Boar")
     w:showPlate(boar)
     w:target(boar)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "trusted at first: it has a duration in its tooltip")
-    w:cast(REND)
+    w:cast(MARK) -- a real debuff, which lasts the whole scenario: the client is heard reporting it
     w:advance(1)
-    for _ = 1, 4 do
+    w:drain()
+    for cast = 1, 6 do
+        eq(w:icon("ActionButton1"), "check", "still there before cast " .. cast)
         w:cast(BLOODTHIRST)
         w:advance(0.3)
         eq(w:icon("ActionButton1"), "check", "never red: nothing changed on the boar")
         w:advance(3.5)
     end
-    eq(ns.db.learned.Bloodthirst.casts, 4)
+    eq(ns.db.learned.Bloodthirst.casts, 6)
     eq(ns.db.learned.Bloodthirst.hits, 0)
-    eq(w:icon("ActionButton1"), nil, "dropped after four silent casts")
+    eq(w:icon("ActionButton1"), nil, "dropped after six silent casts")
+    local said = w:drain()
+    check(said:find("Bloodthirst left no status effect behind after 6 of 6 casts", 1, true),
+        "and it says so, so that the icon does not just go missing: " .. said)
+    check(said:find("/se track Bloodthirst", 1, true), "with the way to get it back")
+    w:advance(5)
+    eq(w:drain(), "", "said once")
+    Clean(w)
+end)
+
+test("reports: a run of misses does not cost a real status spell its icon", function()
+    local w, ns = Bar({ saved = Proven() }, MORTAL)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(MORTAL)
+    w:advance(11)
+    w:drain()
+    for _ = 1, 4 do
+        w:cast(MORTAL, { miss = true })
+        w:advance(3.5)
+    end
+    eq(ns.db.learned["Mortal Strike"].casts, 5)
+    eq(ns.db.learned["Mortal Strike"].hits, 1)
+    eq(w:icon("ActionButton1"), "check", "four misses in a row, and the icon is still there")
+    eq(w:drain(), "")
     Clean(w)
 end)
 
@@ -1398,15 +1426,15 @@ test("a spell whose tooltip misleads loses its icon", function()
     eq(w:icon("ActionButton1"), "check", "trusted at first: it has a duration in its tooltip")
     w:cast(MARK) -- a real debuff, so the client's counts can be believed
     w:advance(1)
-    for _ = 1, 3 do
+    for _ = 1, 5 do
         w:cast(BLOODTHIRST)
         w:advance(3.5)
     end
-    eq(w:icon("ActionButton1"), "check", "three empty casts are not enough")
+    eq(w:icon("ActionButton1"), "check", "five empty casts are not enough")
     w:cast(BLOODTHIRST)
     w:advance(3.5)
-    eq(ns.db.learned.Bloodthirst.casts, 4)
-    eq(w:icon("ActionButton1"), nil, "dropped after four")
+    eq(ns.db.learned.Bloodthirst.casts, 6)
+    eq(w:icon("ActionButton1"), nil, "dropped after six")
     Clean(w)
 end)
 
@@ -1775,16 +1803,18 @@ test("buffs: a helpful spell whose tooltip misleads loses its icon", function()
     w:applyBuff("Well Fed", 3600) -- a buff of yours that no spell on the bars explains
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "trusted at first: it has a duration in its tooltip")
-    for _ = 1, 3 do
+    for _ = 1, 5 do
         w:cast(MEND)
         w:advance(3)
     end
-    eq(w:icon("ActionButton1"), "check", "three empty casts are not enough")
+    eq(w:icon("ActionButton1"), "check", "five empty casts are not enough")
+    w:drain()
     w:cast(MEND)
     w:advance(3)
-    eq(ns.db.learned["Mending Touch"].buffCasts, 4)
+    eq(ns.db.learned["Mending Touch"].buffCasts, 6)
     eq(ns.db.learned["Mending Touch"].buffHits, 0)
-    eq(w:icon("ActionButton1"), nil, "dropped after four")
+    eq(w:icon("ActionButton1"), nil, "dropped after six")
+    check(w:drain():find("Mending Touch left no status effect behind after 6 of 6 casts", 1, true), "and it says so")
     Clean(w)
 end)
 
@@ -2493,16 +2523,113 @@ test("an icon only shows on a skill that can be used right now", function()
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "back in reach")
 
-    w:setUsable(1, false, true)
-    w:setUsable(3, false, true)
+    w:setUsable(1, false)
+    w:setUsable(3, false)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), nil, "no rage for Rend")
-    eq(w:icon("ActionButton3"), nil, "nor for Battle Shout: buffs follow the same rule")
+    eq(w:icon("ActionButton1"), nil, "the wrong stance for Rend")
+    eq(w:icon("ActionButton3"), nil, "and Battle Shout held back by the game: buffs follow the same rule")
     w:setUsable(1, true)
     w:setUsable(3, true)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check")
     eq(w:icon("ActionButton3"), "check")
+    Clean(w)
+end)
+
+test("being short of rage does not take an icon away", function()
+    local w, ns = Simple()
+    w:setUsable(1, false, true)
+    w:setUsable(3, false, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "no rage for Rend: it is still worth pressing once there is")
+    eq(w:icon("ActionButton3"), "check", "nor for Battle Shout: buffs follow the same rule")
+
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "no rage and out of reach: out of reach still counts")
+    w:setRange(1, true)
+    w:setUsable(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "and so does the wrong stance")
+    w:setUsable(1, false, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+
+    local said = ns.db.report.usable
+    check(said.Rend.yes and said.Rend.short and said.Rend.no and said.Rend["short, far"],
+        "what the game answered is kept for a look afterwards")
+    eq(said.Rend.short, 2, "counted each time the answer turned to it, not each time it was asked")
+    Clean(w)
+end)
+
+test("an icon stays through a fight in which every skill empties the rage bar", function()
+    -- A warrior's fight: each skill is pressed the moment there is rage for it,
+    -- and spends it, so the game dims every rage skill right after each press.
+    local w = World({ combatAuras = "none" })
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, CLAP)
+    w:addButton("ActionButton3", 3, BLOCK)
+    w:install()
+    local function Spend()
+        for slot = 1, 3 do
+            w:setUsable(slot, false, true)
+        end
+    end
+    local function Regain()
+        for slot = 1, 3 do
+            w:setUsable(slot, true)
+        end
+    end
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    Spend() -- no rage before the pull
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "before the pull, with an empty rage bar")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:enterCombat()
+    Regain()
+    w:advance(0.3)
+    w:cast(REND)
+    Spend()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "Rend went on, and its red X is there although the rage is gone")
+    eq(w:icon("ActionButton2"), "check", "Thunder Clap is still to come")
+    eq(w:icon("ActionButton3"), "check")
+
+    Regain()
+    w:advance(1.5)
+    w:cast(BLOCK)
+    Spend()
+    w:advance(0.3)
+    eq(w:icon("ActionButton3"), "cross", "Shield Block too")
+    eq(w:icon("ActionButton1"), "cross")
+    eq(w:icon("ActionButton2"), "check")
+
+    Regain()
+    w:advance(1.5)
+    w:cast(CLAP)
+    Spend()
+    for _ = 1, 20 do
+        w:advance(0.1)
+        eq(w:icon("ActionButton1"), "cross", "no blinking while the rage bar is empty")
+        eq(w:icon("ActionButton2"), "cross")
+        eq(w:icon("ActionButton3"), "cross")
+    end
+    Clean(w)
+end)
+
+test("when the game will not say why a skill cannot be used, the icon shows", function()
+    local w = Simple({ usableAPI = "reason secret" })
+    w:setUsable(1, false, true)
+    w:setUsable(3, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "it could be rage, and rage must not hide an icon")
+    eq(w:icon("ActionButton3"), "check", "so the doubt goes the icon's way here as well")
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "out of reach is still told plainly")
     Clean(w)
 end)
 
@@ -2620,6 +2747,9 @@ test("an older client's plain answers about using a skill are understood", funct
     w:setUsable(1, false)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil, "nothing at all for a skill that cannot be used")
+    w:setUsable(1, false, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "nothing and then 1 for a skill there is no rage for")
     Clean(w)
 end)
 
@@ -3833,6 +3963,8 @@ test("a failure while clicking in the panel is reported by the addon, not thrown
     eq(#w.errors, 0, "nothing reaches the client's error handler")
     check(w:drain():find("hit a problem", 1, true), "the addon reports it in chat")
     check(tostring(ns.lastError):find("simulated bug", 1, true), "and keeps it for /se debug")
+    local kept = ns.db.report.problems
+    check(kept and #kept == 1 and kept[1]:find("simulated bug", 1, true), "and in the saved report, for reading afterwards")
 end)
 
 --------------------------------------------------------------------------------

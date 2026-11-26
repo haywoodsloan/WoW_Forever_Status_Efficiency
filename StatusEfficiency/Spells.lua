@@ -34,7 +34,10 @@ local LOAD_TRIES = 8 -- spell text can arrive late, so ask a few times
 local LOAD_RETRY = 1.5
 
 -- How cast results change what is tracked.
-local DEMOTE_CASTS, DEMOTE_RATIO = 4, 0.25 -- a likely status spell that keeps leaving nothing
+-- A likely status spell that keeps leaving nothing loses its icon. A real one
+-- misses, is dodged or meets an immune enemy now and then, so this asks for more
+-- than a short run of bad luck: of the first six casts, at most one may land.
+local DEMOTE_CASTS, DEMOTE_RATIO = 6, 0.2
 local PROMOTE_CASTS, PROMOTE_RATIO = 6, 0.8 -- an unlikely one that keeps leaving something
 local EVIDENCE_CAP = 40 -- halve the counts past this so old results fade
 

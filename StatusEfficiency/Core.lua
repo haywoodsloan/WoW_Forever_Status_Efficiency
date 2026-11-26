@@ -128,6 +128,18 @@ end
 local reported = {}
 local reportCount = 0
 
+--- Keeps a problem in the saved report as well, so that it can be read there
+--- afterwards without anyone having to copy it out of the chat window.
+local function KeepProblem(err)
+    local journal = ns.Journal()
+    local problems = journal.problems
+    if type(problems) ~= "table" then
+        problems = {}
+        journal.problems = problems
+    end
+    problems[#problems + 1] = err
+end
+
 local function Report(err)
     err = tostring(err)
     ns.lastError = err
@@ -136,6 +148,9 @@ local function Report(err)
         reported[err] = true
         reportCount = reportCount + 1
         ns.Print("hit a problem and skipped an update. /se debug shows the details. (" .. err .. ")")
+        if ns.Journal then
+            pcall(KeepProblem, err)
+        end
     end
 end
 
@@ -330,23 +345,76 @@ ns.HideAll = HideAll
 local usableProbe = { usable = "not asked yet", range = "not asked yet" }
 ns.usableProbe = usableProbe
 
---- Whether the skill on a button can be used right now: not while the game dims
---- it (no rage, the wrong stance and so on) or its target is too far or too
---- close. An answer the game will not give counts as yes, and so does a
---- cooldown, which it can keep to itself during a fight.
+--- Keeps, in the saved report, what the game has answered about each skill:
+--- how often its answer turned to "yes", "short" (of rage, mana or energy),
+--- "no" (any other reason), "unsaid" (not usable, and it would not say why) or
+--- "silent" (no answer at all), each with ", far" while the target is out of
+--- reach or too close. That is how the rule below can be checked against a
+--- real client afterwards.
+local function NoteUsable(entry, usable, inRange, lacking)
+    local name = entry.info and entry.info.name
+    if not name then
+        return
+    end
+    local answer
+    if usable == nil then
+        answer = inRange == false and "silent, far" or "silent"
+    elseif usable then
+        answer = inRange == false and "yes, far" or "yes"
+    elseif lacking then
+        answer = inRange == false and "short, far" or "short"
+    elseif lacking == false then
+        answer = inRange == false and "no, far" or "no"
+    else
+        answer = inRange == false and "unsaid, far" or "unsaid"
+    end
+    if entry.said == answer and entry.saidOf == name then
+        return
+    end
+    entry.said, entry.saidOf = answer, name
+    local journal = ns.Journal()
+    local all = journal.usable
+    if type(all) ~= "table" then
+        all = {}
+        journal.usable = all
+    end
+    local answers = all[name]
+    if type(answers) ~= "table" then
+        answers = {}
+        all[name] = answers
+    end
+    answers[answer] = (answers[answer] or 0) + 1
+end
+
+--- Whether the skill on a button can be used right now: not while its target
+--- is too far or too close, and not while the game dims it for the wrong
+--- stance, a skill that cannot be used in a fight, and the like.
+---
+--- Being short of rage, mana or energy is not counted. The icon says whether
+--- the skill is worth its cost, and rage comes and goes all through a fight:
+--- an icon that went away each time a skill had just been paid for would be
+--- gone at the very moment it has something new to say.
+---
+--- An answer the game will not give counts as yes: that it can be used, or
+--- that rage is all that is missing. So does a cooldown, which the game can
+--- keep to itself during a fight.
 local function CanUse(entry)
     local slot = entry.slot
     if not slot then
         return true
     end
-    local usable, inRange = ns.ActionUsable(slot)
+    local usable, inRange, lacking = ns.ActionUsable(slot)
     usableProbe.usable = usable == nil and "no" or "yes"
     if inRange ~= nil then
         usableProbe.range = "yes"
     elseif usableProbe.range ~= "yes" then
         usableProbe.range = "no answer so far"
     end
-    return usable ~= false and inRange ~= false
+    NoteUsable(entry, usable, inRange, lacking)
+    if inRange == false then
+        return false
+    end
+    return usable ~= false or lacking ~= false
 end
 
 -- While the settings panel is open on its Appearance tab, and you are not in a
@@ -584,6 +652,7 @@ local function Journal()
         verdicts = {}, -- how casts made with details hidden came out, by verdict
         spells = {}, -- what the client says about the spells that were cast
         casts = {}, -- the last casts, one line each
+        usable = {}, -- what the game answered about using each skill, by spell name
         notes = {},
         refusals = ns.refusals, -- the error each refused aura query raised
         nameReads = ns.nameReads, -- what asking for an effect by name gave, with details hidden
@@ -1006,6 +1075,25 @@ local function BuffState(info, now, calm)
     return HasEffect(unit, key, info.name, now, calm, "buff") and "all" or "none"
 end
 
+--- Says in chat, once, that a skill has lost its icon because its casts kept
+--- leaving nothing behind: an icon must never just go missing. `back` is true
+--- once the skill has its icon again, so that the next time is told as well.
+local function TellDropped(name, kind, back)
+    local learned = ns.db.learned[name]
+    if not learned or (learned.told == true) ~= back then
+        return
+    end
+    if back then
+        learned.told = nil
+        return
+    end
+    learned.told = true
+    local casts, hits = Spells:Record(name, kind)
+    casts, hits = floor(casts + 0.5), floor(hits + 0.5)
+    ns.Print(format("%s left no status effect behind after %d of %d casts, so it gets no icon from now on. "
+        .. "If it does leave one, /se track %s brings the icon back.", name, casts - hits, casts, name))
+end
+
 local function Refresh(now)
     PassOnChanges(now)
     for i = 1, #TOKEN_KINDS do
@@ -1082,9 +1170,15 @@ local function Refresh(now)
         local info = entry.info
         local state
         if info and not entry.broken and Visible(entry.frame) then
-            local tracked, area, _, _, kind = Spells:Tracking(info)
+            local tracked, area, _, source, kind = Spells:Tracking(info)
+            if source == "demoted" then
+                TellDropped(info.name, kind, false)
+            end
             if tracked then
                 local name = info.name
+                if source ~= "you" then
+                    TellDropped(name, kind, true)
+                end
                 state = states[name]
                 if state == nil then
                     if kind == "buff" then
