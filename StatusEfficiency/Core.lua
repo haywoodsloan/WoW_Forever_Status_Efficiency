@@ -340,10 +340,48 @@ end
 
 ns.HideAll = HideAll
 
--- What the game said the last time it was asked whether a skill can be used,
--- for /se debug: "yes" when it answered, "no" when it would not.
+-- Who last answered whether a skill can be used, and whether its target is in
+-- reach, for /se usable and /se debug: "bar" (the action bar's own call),
+-- "spell" (the same asked about the spell), "look" (read off the button as the
+-- game has painted it), or "no" once nobody has answered for a moment.
 local usableProbe = { usable = "not asked yet", range = "not asked yet" }
 ns.usableProbe = usableProbe
+
+local PROBE_PATIENCE = 1 -- seconds without an answer, on any button, before it says "no"
+
+local function Probed(what, how, now)
+    local at = what .. "At"
+    if how then
+        usableProbe[what], usableProbe[at] = how, now
+    elseif not usableProbe[at] or now - usableProbe[at] >= PROBE_PATIENCE then
+        usableProbe[what] = "no"
+    end
+end
+
+--- Keeps, in the saved report, who answered about each button: how often the
+--- pair "usable / in reach" turned to each pair of sources, with "nobody" for
+--- no answer and "-" where reach was not asked. In a fight and out of one are
+--- kept apart, since a fight is when the game holds things back.
+local function NoteSource(entry, how, howRange, reachAsked)
+    local key = (how or "nobody") .. " / " .. (reachAsked and (howRange or "nobody") or "-")
+    local when = ns.InCombat() and "fight" or "calm"
+    if entry.from == key and entry.fromWhen == when then
+        return
+    end
+    entry.from, entry.fromWhen = key, when
+    local journal = ns.Journal()
+    local from = journal.usableFrom
+    if type(from) ~= "table" then
+        from = {}
+        journal.usableFrom = from
+    end
+    local counts = from[when]
+    if type(counts) ~= "table" then
+        counts = {}
+        from[when] = counts
+    end
+    counts[key] = (counts[key] or 0) + 1
+end
 
 --- Keeps, in the saved report, what the game has answered about each skill:
 --- how often its answer turned to "yes", "short" (of rage, mana or energy),
@@ -395,21 +433,26 @@ end
 --- an icon that went away each time a skill had just been paid for would be
 --- gone at the very moment it has something new to say.
 ---
---- An answer the game will not give counts as yes: that it can be used, or
---- that rage is all that is missing. So does a cooldown, which the game can
---- keep to itself during a fight.
-local function CanUse(entry)
+--- `unit` is whom the skill would go to: reach is judged to that unit, and
+--- not at all when it is you.
+---
+--- The game is asked about the action, then about the spell, and at last the
+--- button itself is looked at (see ns.ActionUsable). An answer nobody gives
+--- counts as yes: that it can be used, or that rage is all that is missing. So
+--- does a cooldown, which the game can keep to itself during a fight.
+local function CanUse(entry, unit)
     local slot = entry.slot
     if not slot then
         return true
     end
-    local usable, inRange, lacking = ns.ActionUsable(slot)
-    usableProbe.usable = usable == nil and "no" or "yes"
-    if inRange ~= nil then
-        usableProbe.range = "yes"
-    elseif usableProbe.range ~= "yes" then
-        usableProbe.range = "no answer so far"
+    local usable, inRange, lacking, how, howRange = ns.ActionUsable(slot, unit, entry.info and entry.info.id,
+        entry.frame)
+    local now = ns.Now()
+    Probed("usable", how, now)
+    if unit ~= "player" then
+        Probed("range", howRange, now)
     end
+    NoteSource(entry, how, howRange, unit ~= "player")
     NoteUsable(entry, usable, inRange, lacking)
     if inRange == false then
         return false
@@ -1007,6 +1050,17 @@ local function Look(unit, now, calm, kind, note)
     return key
 end
 
+--- Whom a skill would go to, for the question of whether it reaches. An
+--- attack goes to the enemy even when the effect it is tracked for lands on
+--- you. A buff goes to the friend you have targeted, if it can, and to you
+--- otherwise. No enemy to go to is nil.
+local function AimOf(info, kind)
+    if kind == "buff" and info.harmful ~= true then
+        return CastOnFriends(info) and friendUnit or "player"
+    end
+    return primaryUnit
+end
+
 local function AddToFight(unit, key)
     if inFight[key] then
         return
@@ -1206,7 +1260,7 @@ local function Refresh(now)
             end
             if not appear then
                 state = nil
-            elseif state and usableOnly and not CanUse(entry) then
+            elseif state and usableOnly and not CanUse(entry, AimOf(info, kind)) then
                 state = nil -- nothing to say about a skill that cannot be used right now
             end
             if samples then

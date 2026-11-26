@@ -121,7 +121,8 @@ local HELP = {
     "  /se icon <green | yellow | red> <icon name | file ID | texture path | none | default>   /se icons lists the names",
     "  /se debug - what the game lets the addon see right now",
     "  /se log - show or hide what the tracker is doing",
-    "  /se plain - draw the settings window without the game's own buttons and sliders, should they look wrong",
+    "  /se plain - have the settings window draw its own buttons and sliders instead of the game's. It does",
+    "    that by itself where the game's are missing or do not work",
     "  /se reset - forget every setting and everything learned",
 }
 
@@ -193,7 +194,9 @@ local USABLE_WORDS = {
     off = false, no = false, always = false, all = false, every = false,
 }
 
---- Owns up when the setting cannot do its work on this client.
+--- Owns up when the setting cannot do its work on this client: asked about
+--- the action, about the spell, and with the button itself looked at, nothing
+--- said whether a skill can be used.
 local function UsableNote()
     if ns.db.usableOnly and ns.usableProbe.usable == "no" then
         Print("this client is not telling the addon whether a skill can be used, so for now the icons show on "
@@ -452,7 +455,8 @@ function commands.plain()
     ns.db.plain = not ns.db.plain
     Print(ns.db.plain
         and "the settings window will draw its own buttons and sliders. Type /reload to see it. /se plain again brings the game's own back."
-        or "the settings window will use the game's own buttons and sliders again. Type /reload to see it.")
+        or "the settings window will use the game's own buttons and sliders again, wherever they work on this "
+            .. "client. Type /reload to see it.")
 end
 
 function commands.reset()
@@ -562,6 +566,15 @@ end
 
 local REPORT_LABELS = { player = "you", target = "your target", softenemy = "your soft target", plate = "nameplates" }
 
+-- Who answers whether a skill can be used, as ns.usableProbe names them.
+local USABLE_SOURCES = {
+    bar = "told by the action bar",
+    spell = "not told by the action bar, so asked about the spell",
+    look = "read off the button's own colours",
+    no = "nothing tells",
+    ["not asked yet"] = "not asked yet",
+}
+
 function commands.debug()
     local now = ns.Now()
     local ok, version, build, _, interface = pcall(GetBuildInfo)
@@ -594,6 +607,9 @@ function commands.debug()
         print("  No enemy targeted.")
     end
     print(format("  You right now: your buffs %s.", ReadableNow("player", "buff")))
+    local asked = ns.usableProbe
+    print(format("  Whether a skill can be used: %s. Whether its target is in reach: %s.",
+        USABLE_SOURCES[asked.usable] or tostring(asked.usable), USABLE_SOURCES[asked.range] or tostring(asked.range)))
 
     local probe = ns.probe
     print(ProbeLine("  Enemy debuffs, out of combat", probe.open, now, false, true))

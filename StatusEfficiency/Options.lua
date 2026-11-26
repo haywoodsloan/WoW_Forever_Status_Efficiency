@@ -6,13 +6,22 @@
 -- per spell on the action bars.
 --
 -- Buttons, tick boxes and the size slider are the game's own where this client
--- has them. Where it does not, or when /se plain says so, the panel draws its own
--- from plain frames and textures, so a missing template costs the look and
--- nothing else. Everything else here is plain frames and textures to begin with.
+-- has them and they pass a quick test. Where one is missing, fails its test, or
+-- breaks while the panel is being built, the panel draws its own from plain
+-- frames and textures instead, without being asked: a control of the game's
+-- that lets it down costs the look and nothing else. (/se plain asks for the
+-- plain drawing outright.) Everything else here is plain frames and textures to
+-- begin with.
+--
+-- Nothing is taken on trust about the text either. A font this client lacks is
+-- replaced by its nearest neighbour, and every label is measured once it is
+-- made: where the game's font, or the player's own, is too wide for the room a
+-- label has, the label is drawn smaller until it fits.
 --
 -- The panel appears in two places: in the game's Options window under AddOns,
 -- and in a window of its own that /se options opens (which also works when the
--- game's Options window will not).
+-- game's Options window will not). The copy in the Options window is drawn
+-- smaller if the page it is given is smaller than the panel.
 
 local _, ns = ...
 
@@ -21,18 +30,21 @@ local Icons, Spells, Tracker = ns.Icons, ns.Spells, ns.Tracker
 local Options = {}
 ns.Options = Options
 
-local pcall, type, tostring, tonumber, pairs = pcall, type, tostring, tonumber, pairs
-local floor, min, max = math.floor, math.min, math.max
+local pcall, type, tostring, tonumber, pairs, select = pcall, type, tostring, tonumber, pairs, select
+local floor, min, max, abs = math.floor, math.min, math.max, math.abs
 local concat = table.concat
 
 local TITLE = "Status Efficiency"
 local QUESTION = "Interface\\Icons\\INV_Misc_QuestionMark"
+local STANDARD_FONT = "Fonts\\FRIZQT__.TTF" -- the game's everyday typeface, for a client with no fonts to borrow
 
 -- Sizes and places, in the panel's own units. A page is the part under the tabs.
 local L = {
     width = 640,
     pageHeight = 514, -- as tall as fits the game's Options window
     bar = 28, -- the window's title bar
+    canvasTop = 86, -- the heading and the tabs above a page in the Options window
+    right = 624, -- nothing on a page goes further right than this
 
     headTop = -68, -- the headings "Preview", "Icon size": what is under them hangs off this
     tile = 30, -- an icon to pick
@@ -96,6 +108,54 @@ local views = {} -- every copy of the panel that has been built
 Options.views = views
 
 --------------------------------------------------------------------------------
+-- What this client turned out to lack
+--
+-- The panel checks what it is given and helps itself, so that nobody has to
+-- tell it that something of the game's is missing or misbehaves. What it found
+-- is kept in `notes` and saved with the settings (as `panel`), where it can be
+-- read afterwards without anyone having to describe what the panel looked like.
+--------------------------------------------------------------------------------
+
+local notes = {
+    controls = {}, -- kind of control -> "game", or "own: " and why the game's was not used
+    fonts = {}, -- font wanted -> the font used in its place
+    tight = {}, -- label -> "width/room", for labels that fill their room or more
+}
+Options.notes = notes
+
+local forcedPlain = false -- a build with the game's controls in it failed: this session draws its own
+local unusable = {} -- kinds of the game's controls found wanting this session
+local tightKept = 0
+
+--- True when the panel is to draw every control itself.
+local function Plain()
+    return forcedPlain or ns.db.plain == true
+end
+
+Options.Plain = Plain
+
+--- An error, short enough to keep.
+local function Brief(problem)
+    local text = tostring(problem):gsub("^.-StatusEfficiency[\\/]", "")
+    return text:sub(1, 140)
+end
+
+--- Copies the notes into the saved settings.
+local function SaveNotes()
+    local saved = {
+        version = ns.VERSION, build = ns.BuildKey(), plain = Plain(),
+        rebuilt = notes.rebuilt, failed = notes.failed, page = notes.page, scale = notes.scale,
+        controls = {}, fonts = {}, tight = {},
+    }
+    for _, name in pairs({ "controls", "fonts", "tight" }) do
+        for key, value in pairs(notes[name]) do
+            saved[name][key] = value
+        end
+    end
+    ns.db.panel = saved
+end
+
+--------------------------------------------------------------------------------
 -- Small building blocks
 --------------------------------------------------------------------------------
 
@@ -117,8 +177,61 @@ local function Try(object, method, ...)
     return pcall(fn, object, ...)
 end
 
+-- The fonts to try, nearest look first, when this client lacks one.
+local FONT_SPARES = {
+    GameFontHighlightHuge = { "GameFontNormalLarge", "GameFontHighlight", "GameFontNormal" },
+    GameFontNormalLarge = { "GameFontNormal", "GameFontHighlight" },
+    GameFontNormal = { "GameFontHighlight", "GameFontNormalSmall", "GameFontHighlightSmall" },
+    GameFontHighlight = { "GameFontNormal", "GameFontHighlightSmall", "GameFontNormalSmall" },
+    GameFontDisable = { "GameFontHighlight", "GameFontNormal", "GameFontDisableSmall" },
+    GameFontNormalSmall = { "GameFontHighlightSmall", "GameFontNormal", "GameFontHighlight" },
+    GameFontHighlightSmall = { "GameFontNormalSmall", "GameFontHighlight", "GameFontNormal" },
+    GameFontDisableSmall = { "GameFontHighlightSmall", "GameFontNormalSmall", "GameFontDisable", "GameFontNormal" },
+}
+local FONT_HEIGHTS = { GameFontHighlightHuge = 20, GameFontNormalLarge = 16 } -- the rest: 10 when small, else 12
+
+local fontNames = {} -- font wanted -> the font to use, or false when the client has none of them
+
+--- The name of a font this client has: the one asked for, or the nearest to it.
+local function FontName(font)
+    local name = fontNames[font]
+    if name == nil then
+        name = false
+        if type(_G[font]) == "table" then
+            name = font
+        else
+            local spares = FONT_SPARES[font]
+            for i = 1, spares and #spares or 0 do
+                if type(_G[spares[i]]) == "table" then
+                    name = spares[i]
+                    break
+                end
+            end
+            notes.fonts[font] = name or "none"
+        end
+        fontNames[font] = name
+    end
+    return name or nil
+end
+
+local function FontHeight(font)
+    return FONT_HEIGHTS[font] or (font:find("Small", 1, true) and 10 or 12)
+end
+
+--- A label in a font, or in the nearest font this client has.
+local function Label(parent, layer, font)
+    local name = FontName(font)
+    if name then
+        return parent:CreateFontString(nil, layer, name)
+    end
+    -- Not one font to borrow: a bare label in the game's everyday typeface.
+    local label = parent:CreateFontString(nil, layer)
+    label:SetFont(STANDARD_FONT, FontHeight(font), "")
+    return label
+end
+
 local function Text(parent, font, text)
-    local label = parent:CreateFontString(nil, "ARTWORK", font)
+    local label = Label(parent, "ARTWORK", font)
     label:SetJustifyH("LEFT")
     label:SetJustifyV("TOP")
     if text then
@@ -130,6 +243,151 @@ end
 local function Colour(label, colour)
     label:SetTextColor(colour[1], colour[2], colour[3])
 end
+
+--------------------------------------------------------------------------------
+-- Labels that fit
+--
+-- The panel is laid out for the game's standard font. Another language's font,
+-- or one the player has swapped in, can be a good deal wider, and a label that
+-- outgrows its room would run into its neighbour or out of its button. So each
+-- label is measured, and drawn smaller when it has to be.
+--------------------------------------------------------------------------------
+
+local SMALLEST = 0.7 -- how far letters shrink before a label is cut short instead: smaller cannot be read
+local TIGHT = 0.85 -- a label that fills this much of its room is worth a note
+local WRAPPED = 0.85 -- how much of its lines a label that wraps can be counted on to fill
+local TIGHT_KEPT = 24
+
+local fitted = {} -- label -> the build it was made in, for every label that has been fitted
+local build = 0 -- counts attempts at building a copy of the panel
+
+--- A width the client reports for a label, or nil when it has none to give.
+local function Measure(label, method)
+    local ok, width = Try(label, method)
+    width = ok and ns.PlainNumber(width) or nil
+    if width and width > 0 then
+        return width
+    end
+    return nil
+end
+
+--- Draws a label's letters at a scale. False on a client whose labels cannot be scaled.
+local function Scale(label, scale)
+    return (Try(label, "SetTextScale", scale))
+end
+
+local function LabelText(label)
+    local ok, text = Try(label, "GetText")
+    return ok and ns.PlainString(text) or nil
+end
+
+local function NoteTight(label, width, room)
+    if width <= room * TIGHT then
+        return
+    end
+    local text = LabelText(label)
+    if not text or text == "" then
+        return
+    end
+    text = text:sub(1, 40)
+    if notes.tight[text] == nil then
+        if tightKept >= TIGHT_KEPT then
+            return
+        end
+        tightKept = tightKept + 1
+    end
+    notes.tight[text] = floor(width + 0.5) .. "/" .. floor(room + 0.5)
+end
+
+--- Makes a one-line label fit the room it has. Its letters are drawn smaller,
+--- down to SMALLEST; a label too long even then is cut short. Returns the scale.
+--- Fitting again with the same words and room costs nothing unless `again`.
+local function Fit(label, room, again)
+    local text = LabelText(label)
+    if not again and label.fitScale and label.fitRoom == room and label.fitText == text and not label.fitLines then
+        return label.fitScale
+    end
+    fitted[label] = fitted[label] or build
+    label.fitRoom, label.fitText, label.fitLines = room, text, nil
+    if label.fitCut then
+        label.fitCut = nil
+        Try(label, "SetWidth", 0) -- as wide as its words again
+        Try(label, "SetWordWrap", true)
+    end
+    local scale = 1
+    if room > 0 and Scale(label, 1) then
+        local width = Measure(label, "GetUnboundedStringWidth") or Measure(label, "GetStringWidth")
+        if width then
+            if width > room then
+                scale = max(SMALLEST, room / width)
+                Scale(label, scale)
+                if width * scale > room + 0.5 then
+                    label.fitCut = true
+                    Try(label, "SetWidth", room)
+                    Try(label, "SetWordWrap", false)
+                end
+            end
+            NoteTight(label, width, room)
+        end
+    end
+    label.fitScale = scale
+    return scale
+end
+
+--- The same for a label that wraps: at most `lines` lines of `width`.
+local function FitLines(label, width, lines, again)
+    local text = LabelText(label)
+    if not again and label.fitScale and label.fitRoom == width and label.fitText == text and label.fitLines == lines then
+        return label.fitScale
+    end
+    fitted[label] = fitted[label] or build
+    label.fitRoom, label.fitText, label.fitLines = width, text, lines
+    Try(label, "SetMaxLines", lines) -- whatever its letters do, it never runs into what is under it
+    local scale = 1
+    if Scale(label, 1) then
+        local natural = Measure(label, "GetUnboundedStringWidth")
+        local room = width * lines * WRAPPED
+        if natural then
+            if natural > room then
+                scale = max(SMALLEST, room / natural)
+                Scale(label, scale)
+            end
+            NoteTight(label, natural, room)
+        end
+    end
+    label.fitScale = scale
+    return scale
+end
+
+--- Sets a label's words and fits them to its room in one go.
+local function Say(label, text, room)
+    label:SetText(text)
+    Fit(label, room)
+end
+
+--- How wide a label is drawn, or `guess` when the client will not say.
+local function Drawn(label, guess)
+    return Measure(label, "GetStringWidth") or guess
+end
+
+--- How wide a frame is, or `guess` when the client will not say.
+local function Wide(frame, guess)
+    return Measure(frame, "GetWidth") or guess
+end
+
+--- Measures every fitted label afresh: a font may only have been ready, or
+--- have changed, after the label was made.
+local function Refit()
+    for label in pairs(fitted) do
+        if label.fitLines then
+            FitLines(label, label.fitRoom, label.fitLines, true)
+        else
+            Fit(label, label.fitRoom, true)
+        end
+    end
+end
+
+Options.Refit = Refit
 
 --- The game's own click, so the panel sounds like the rest of the Options window.
 local function Sound(name)
@@ -176,18 +434,56 @@ local function OnClick(button, fn)
     end)
 end
 
---- Builds one of the game's own controls. `make` creates it and notes the frame
---- in the holder it is given; if anything in there fails, whatever it had made
---- so far is hidden and nil comes back, and the caller draws its own instead.
-local function Native(make, ...)
-    if ns.db.plain then
+--------------------------------------------------------------------------------
+-- The game's own controls, on probation
+--------------------------------------------------------------------------------
+
+--- False when a piece of a control's art is known not to exist on this client:
+--- the control would be there, and work, and not be seen.
+local function ArtMissing(texture)
+    if type(texture) ~= "table" then
+        return false
+    end
+    local ok, atlas = Try(texture, "GetAtlas")
+    atlas = ok and ns.PlainString(atlas) or nil
+    return atlas ~= nil and atlas ~= "" and ns.AtlasExists(atlas) == false
+end
+
+--- Fails when any of these pieces of art is known to be missing.
+local function NeedArt(what, ...)
+    for i = 1, select("#", ...) do
+        if ArtMissing((select(i, ...))) then
+            error("this client lacks the art for " .. what, 0)
+        end
+    end
+end
+
+--- What a widget's method gives, or nil when it has no such method or it fails.
+local function Ask(object, method)
+    local ok, answer = Try(object, method)
+    if ok then
+        return answer
+    end
+    return nil
+end
+
+--- Builds one of the game's own controls. `make` creates it, notes the frame in
+--- the holder it is given, and puts it through its paces; if anything in there
+--- fails, whatever it had made so far is hidden and nil comes back, and the
+--- caller draws its own instead. A kind that failed once is not tried again
+--- this session, so that a panel is all of a piece.
+local function Native(kind, make, ...)
+    if Plain() or unusable[kind] then
         return nil
     end
     local holder = {}
-    local ok = pcall(make, holder, ...)
+    local ok, problem = pcall(make, holder, ...)
     if ok and holder.frame then
+        notes.controls[kind] = "game"
         return holder.frame
     end
+    unusable[kind] = true
+    notes.controls[kind] = "own: " .. Brief(ok and "nothing was made" or problem)
     if holder.frame then
         Try(holder.frame, "Hide")
     end
@@ -215,9 +511,9 @@ local function PlainButton(parent, width, height, text)
     glow:SetAllPoints(button)
     glow:SetColorTexture(1, 1, 1, 0.15)
 
-    local label = button:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    local label = Label(button, "ARTWORK", "GameFontHighlightSmall")
     label:SetPoint("CENTER", button, "CENTER", 0, 0)
-    label:SetText(text)
+    Say(label, text, width - 6)
 
     -- Looks pressed while the mouse is down on it.
     button:SetScript("OnMouseDown", function()
@@ -231,42 +527,77 @@ local function PlainButton(parent, width, height, text)
     return button
 end
 
+--- The words on one of the game's buttons, as a label that can be fitted.
+local function ButtonLabel(button)
+    local label = Ask(button, "GetFontString")
+    if type(label) ~= "table" then
+        label = button.Text
+    end
+    return type(label) == "table" and label or nil
+end
+
 local function MakeGameButton(holder, parent, width, height, text)
     local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
     holder.frame = button
+    NeedArt("the game's button", button.Left, button.Middle, button.Right)
     button:SetSize(width, height)
     button:SetText(text)
+    if button:GetText() ~= text then
+        error("the game's button does not keep its words", 0)
+    end
 end
 
 --- A push button. button.SetLabel(text) changes what it says.
 local function PushButton(parent, width, height, text)
-    local button = Native(MakeGameButton, parent, width, height, text)
+    local button = Native("button", MakeGameButton, parent, width, height, text)
     if button then
         button.native = true
+        button.label = ButtonLabel(button)
+        if button.label then
+            Fit(button.label, width - 20) -- the art at its two ends takes the rest
+        end
         button.SetLabel = function(label)
             button:SetText(label)
+            if button.label then
+                Fit(button.label, width - 20)
+            end
         end
     else
         button = PlainButton(parent, width, height, text)
         button.SetLabel = function(label)
-            button.label:SetText(label)
+            Say(button.label, label, width - 6)
         end
     end
     return button
 end
 
 local function MakeGameTick(holder, parent)
-    -- Left at the size the game gives it: its art does not stretch with the box.
-    holder.frame = CreateFrame("CheckButton", nil, parent, "MinimalCheckboxTemplate")
+    local box = CreateFrame("CheckButton", nil, parent, "MinimalCheckboxTemplate")
+    holder.frame = box
+    NeedArt("the game's tick box", Ask(box, "GetNormalTexture"), Ask(box, "GetCheckedTexture"))
+    -- Left at the size the game gives it, since its art does not stretch with the
+    -- box, as long as that is a size the panel has room for.
+    local width, height = ns.PlainNumber(box:GetWidth()), ns.PlainNumber(box:GetHeight())
+    if not width or not height or width < 12 or width > 36 or height < 12 or height > 36 then
+        error("the game's tick box is " .. tostring(width) .. " by " .. tostring(height), 0)
+    end
+    -- It has to keep the tick it is given.
+    box:SetChecked(true)
+    local ticked = box:GetChecked()
+    box:SetChecked(false)
+    if not ticked or box:GetChecked() then
+        error("the game's tick box does not keep its tick", 0)
+    end
 end
 
 --- A tick box with its words beside it: control.Set(ticked), and
---- control.onChange(ticked) is called when a click changes it.
+--- control.onChange(ticked) is called when a click changes it. control.Fit(room)
+--- says how much room the words have.
 local function TickBox(parent, text, font)
     local control = { ticked = false }
 
     local mark
-    local box = Native(MakeGameTick, parent)
+    local box = Native("tick", MakeGameTick, parent)
     if box then
         control.native = true
     else
@@ -297,10 +628,17 @@ local function TickBox(parent, text, font)
     label:SetPoint("LEFT", box, "RIGHT", 4, 0)
 
     -- A click on the words counts as a click on the box.
-    local measured, width = Try(label, "GetStringWidth")
-    width = measured and ns.PlainNumber(width)
-    if width and width > 0 then
-        Try(box, "SetHitRectInsets", 0, -(width + 6), 0, 0)
+    local function Reach()
+        local width = Drawn(label)
+        if width then
+            Try(box, "SetHitRectInsets", 0, -(width + 6), 0, 0)
+        end
+    end
+    Reach()
+
+    function control.Fit(room)
+        Fit(label, room)
+        Reach()
     end
 
     function control.Set(ticked)
@@ -330,12 +668,38 @@ end
 local function MakeGameSlider(holder, parent, width, low, high, changed)
     local frame = CreateFrame("Frame", nil, parent, "MinimalSliderWithSteppersTemplate")
     holder.frame = frame
+    local slider = frame.Slider
+    if type(slider) ~= "table" or type(slider.GetValue) ~= "function" then
+        error("the game's slider has no slider in it", 0)
+    end
+    NeedArt("the game's slider", Ask(slider, "GetThumbTexture"), slider.Left, slider.Middle, slider.Right)
     frame:SetSize(width, 20)
     frame:Init(low, low, high, high - low) -- one step for each whole number
-    local event = type(frame.Event) == "table" and frame.Event.OnValueChanged or "OnValueChanged"
-    frame:RegisterCallback(event, function(_, value)
+
+    -- It has to go where it is sent.
+    frame:SetValue(low + 1)
+    local moved = ns.PlainNumber(slider:GetValue())
+    frame:SetValue(low)
+    local back = ns.PlainNumber(slider:GetValue())
+    if not moved or not back or abs(moved - (low + 1)) > 0.01 or abs(back - low) > 0.01 then
+        error("the game's slider does not go where it is sent", 0)
+    end
+
+    -- And it has to say when the player moves it. It is asked in two ways, its
+    -- own notice and the plain script under it, because neither can be tried
+    -- out from here; a move that is told twice is acted on once.
+    local function Moved(_, value)
         changed(value)
-    end, holder)
+    end
+    local told = false
+    if type(frame.RegisterCallback) == "function" then
+        local event = type(frame.Event) == "table" and frame.Event.OnValueChanged or "OnValueChanged"
+        told = pcall(frame.RegisterCallback, frame, event, Moved, holder)
+    end
+    local hooked = Try(slider, "HookScript", "OnValueChanged", Moved)
+    if not told and not hooked then
+        error("the game's slider cannot say when it is moved", 0)
+    end
 end
 
 --- A slider over whole numbers with a step button at each end:
@@ -346,16 +710,21 @@ local function NumberSlider(parent, width, low, high)
     local setting = false
 
     local function Changed(value)
-        if setting or type(value) ~= "number" then
+        value = ns.PlainNumber(value)
+        if setting or not value then
             return
         end
         value = max(low, min(high, floor(value + 0.5)))
+        if value == control.value then
+            return -- where it already is: nothing to tell
+        end
+        control.value = value
         if control.onChange then
             ns.Guard(control.onChange, value)
         end
     end
 
-    local frame = Native(MakeGameSlider, parent, width, low, high, Changed)
+    local frame = Native("slider", MakeGameSlider, parent, width, low, high, Changed)
     local widget
     if frame then
         control.native = true
@@ -477,9 +846,9 @@ local function Segmented(parent, choices)
         glow:SetAllPoints(button)
         glow:SetColorTexture(1, 1, 1, 0.12)
 
-        local label = button:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+        local label = Label(button, "ARTWORK", "GameFontHighlightSmall")
         label:SetPoint("CENTER", button, "CENTER", 0, 0)
-        label:SetText(choice.label)
+        Say(label, choice.label, choice.width - 8)
 
         button.edge, button.back, button.label = edge, back, label
         OnClick(button, function()
@@ -511,7 +880,7 @@ local function Segmented(parent, choices)
         end
     end
 
-    control.frame = frame
+    control.frame, control.width = frame, x + 1
     control.Set(nil)
     return control
 end
@@ -521,7 +890,12 @@ local function Input(parent, width)
     box:SetSize(width, 20)
     box:EnableMouse(true)
     box:SetAutoFocus(false)
-    box:SetFontObject(GameFontHighlightSmall)
+    local font = FontName("GameFontHighlightSmall")
+    if font then
+        box:SetFontObject(_G[font])
+    else
+        box:SetFont(STANDARD_FONT, 10, "")
+    end
     box:SetTextInsets(5, 5, 0, 0)
     box:SetMaxLetters(200)
 
@@ -673,8 +1047,9 @@ local function BuildEditor(view, page, state, left, top)
     note:SetPoint("TOPLEFT", editor, "TOPLEFT", 2, -29)
     note:SetWidth(194)
 
-    local function Say(text, colour)
+    local function Tell(text, colour)
         note:SetText(text)
+        FitLines(note, 194, 3) -- three lines is all the room there is above the next result
         Colour(note, colour or { 0.5, 0.5, 0.5 })
     end
 
@@ -696,7 +1071,7 @@ local function BuildEditor(view, page, state, left, top)
         local texture = Icons.ParseCustom(text)
         if not texture then
             editor.problem = true
-            Say("Not a texture. Type a file ID such as 136243, or a path that starts with Interface.", BAD)
+            Tell("Not a texture. Type a file ID such as 136243, or a path that starts with Interface.", BAD)
             return
         end
         box:ClearFocus()
@@ -739,13 +1114,13 @@ local function BuildEditor(view, page, state, left, top)
         if editor.problem then
             return -- the complaint stays up while the box is being corrected
         elseif not editor.box then
-            Say("/se icon " .. state.key .. " <file ID or path>")
+            Tell("/se icon " .. state.key .. " <file ID or path>")
         elseif editor.missing then
-            Say("The game has no texture there, so no icon shows.", WARN)
+            Tell("The game has no texture there, so no icon shows.", WARN)
         elseif current == "custom" then
-            Say("In use. Empty the box and press Enter to undo.")
+            Tell("In use. Empty the box and press Enter to undo.")
         else
-            Say("A file ID or a path, then Enter.")
+            Tell("A file ID or a path, then Enter.")
         end
     end
 
@@ -765,13 +1140,15 @@ local function BuildResult(view, page, index, state)
 
     local name = Text(page, "GameFontNormal", state.title)
     name:SetPoint("TOPLEFT", page, "TOPLEFT", 38, top)
+    Fit(name, 200)
     local detail = Text(page, "GameFontHighlightSmall", state.detail)
     detail:SetPoint("LEFT", name, "RIGHT", 10, 0)
+    view.names[key], view.details[key] = name, detail
 
     -- Says so when this result cannot be told from an earlier one.
     local clash = Text(page, "GameFontHighlightSmall")
     clash:SetJustifyH("RIGHT")
-    clash:SetPoint("TOPRIGHT", page, "TOPLEFT", 624, top - 1)
+    clash:SetPoint("TOPRIGHT", page, "TOPLEFT", L.right, top - 1)
     Colour(clash, WARN)
     clash:Hide()
     view.clashes[key] = clash
@@ -808,9 +1185,9 @@ local function BuildResult(view, page, index, state)
         Try(stroke, "SetThickness", 2)
         Try(stroke, "SetColorTexture", 0.6, 0.6, 0.65, 1)
     else
-        local dash = hidden:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+        local dash = Label(hidden, "ARTWORK", "GameFontDisableSmall")
         dash:SetPoint("CENTER", hidden, "CENTER", 0, 0)
-        dash:SetText("none")
+        Say(dash, "none", L.tile - 4)
     end
     OnClick(hidden, function()
         view.editing[key] = nil
@@ -825,9 +1202,9 @@ local function BuildResult(view, page, index, state)
     local editor = BuildEditor(view, page, state, 18 + (own + 2) * L.tileStep, top - 20)
     local custom = Tile(page, L.tile)
     custom:SetPoint("TOPLEFT", page, "TOPLEFT", 18 + (own + 1) * L.tileStep, top - 20)
-    local dots = custom:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    local dots = Label(custom, "ARTWORK", "GameFontHighlight")
     dots:SetPoint("CENTER", custom, "CENTER", 0, 3)
-    dots:SetText("...")
+    Say(dots, "...", L.tile - 4)
     custom.dots = dots
     OnClick(custom, function()
         view.editing[key] = true
@@ -847,6 +1224,7 @@ end
 local function BuildAppearance(view, page)
     view.previews, view.sets, view.current, view.clashes = {}, {}, {}, {}
     view.swatches, view.editors, view.inputs, view.editing = {}, {}, {}, {}
+    view.names, view.details = {}, {}
 
     -- On or off, when, and on which skills: the three read as one sentence.
     local enable = TickBox(page, "Show status icons")
@@ -859,6 +1237,8 @@ local function BuildAppearance(view, page)
 
     local appear = Segmented(page, APPEAR_CHOICES)
     appear.frame:SetPoint("LEFT", enable.label, "RIGHT", 14, 0)
+    -- The words get what the box before them and the choices after them leave.
+    enable.Fit(L.right - appear.width - 14 - (14 + Wide(enable.frame, 30) + 4))
     appear.onPick = function(key)
         Change(function()
             ns.SetAppear(key)
@@ -878,8 +1258,10 @@ local function BuildAppearance(view, page)
     -- A pretend button for each result.
     local previewLabel = Text(page, "GameFontNormal", "Preview")
     previewLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.headTop)
+    Fit(previewLabel, 80)
     local hint = Text(page, "GameFontHighlightSmall", "Click a spot on any button to move the icon.")
     hint:SetPoint("BOTTOMLEFT", previewLabel, "BOTTOMRIGHT", 10, 1)
+    view.previewLabel, view.hint = previewLabel, hint
 
     for index = 1, #Icons.STATES do
         local state = Icons.STATES[index]
@@ -889,12 +1271,12 @@ local function BuildAppearance(view, page)
 
     local sampleNote = Text(page, "GameFontDisableSmall")
     sampleNote:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.headTop - 112)
-    sampleNote:SetWidth(608)
     view.sampleNote = sampleNote
 
     -- Size: a slider, or follow the button.
     local sizeLabel = Text(page, "GameFontNormal", "Icon size")
     sizeLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop)
+    Fit(sizeLabel, L.right - 300)
 
     local slider = NumberSlider(page, 200, ns.SIZE_MIN, ns.SIZE_MAX)
     slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop - 18)
@@ -918,6 +1300,7 @@ local function BuildAppearance(view, page)
 
     local auto = TickBox(page, "Auto")
     auto.frame:SetPoint("LEFT", slider.frame, "RIGHT", 38, 0)
+    auto.Fit(L.right - (300 + 200 + 38) - Wide(auto.frame, 30) - 4)
     auto.onChange = function(ticked)
         Change(function()
             -- Unticked, the icon stays the size it was, as a size of its own.
@@ -931,6 +1314,7 @@ local function BuildAppearance(view, page)
     -- Sets: all three icons in one click.
     local setLabel = Text(page, "GameFontNormal", "Icon set")
     setLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop - 58)
+    Fit(setLabel, L.right - 300)
     for index = 1, #Icons.SETS do
         local set = Icons.SETS[index]
         local button = CreateFrame("Button", nil, page)
@@ -980,7 +1364,8 @@ local function BuildAppearance(view, page)
 
     local pointer = Text(page, "GameFontDisableSmall", "Spell by spell settings are on the Spells tab.")
     pointer:SetJustifyH("RIGHT")
-    pointer:SetPoint("TOPRIGHT", page, "TOPLEFT", 624, bottom - 6)
+    pointer:SetPoint("TOPRIGHT", page, "TOPLEFT", L.right, bottom - 6)
+    Fit(pointer, L.right - (16 + 150) - 12) -- what the reset button leaves
 
     local confirm = CreateFrame("Frame", nil, page)
     confirm:SetSize(608, 22)
@@ -989,6 +1374,8 @@ local function BuildAppearance(view, page)
     local question = Text(confirm, "GameFontHighlight", "Put the position, size and icons back to how they started?")
     question:SetJustifyV("MIDDLE")
     question:SetPoint("LEFT", confirm, "LEFT", 0, 0)
+    Fit(question, 608 - 12 - 90 - 6 - 90) -- what its two buttons leave
+    view.pointer, view.question = pointer, question
     local yes = PushButton(confirm, 90, 22, "Reset")
     yes:SetPoint("LEFT", question, "RIGHT", 12, 0)
     local no = PushButton(confirm, 90, 22, "Cancel")
@@ -1029,6 +1416,47 @@ local function BuildAppearance(view, page)
         end
     end
 
+    --- The three captions under the pretend buttons stand shoulder to shoulder,
+    --- so they are fitted together: all three shrink until each pair of
+    --- neighbours has a gap between them.
+    local function FitCaptions()
+        local scale, widths = 1, {}
+        for index = 1, #Icons.STATES do
+            local caption = view.previews[Icons.STATES[index].key].caption
+            if not Scale(caption, 1) then
+                return
+            end
+            widths[index] = Measure(caption, "GetUnboundedStringWidth")
+                or (not caption.fitCut and Measure(caption, "GetStringWidth")) or nil
+            if not widths[index] then
+                return
+            end
+        end
+        for index = 1, #widths - 1 do
+            scale = min(scale, (L.slotPitch - 4) * 2 / (widths[index] + widths[index + 1]))
+        end
+        -- Nor may the first run off the page, or the last into the next column.
+        local first = 16 + L.slotWidth / 2
+        local last = first + (#widths - 1) * L.slotPitch
+        scale = min(scale, (first - 4) * 2 / widths[1], (292 - last) * 2 / widths[#widths])
+        -- Letters only shrink so far. Past that each caption is cut to its own slot.
+        local cut = scale < SMALLEST
+        scale = max(SMALLEST, scale)
+        for index = 1, #widths do
+            local caption = view.previews[Icons.STATES[index].key].caption
+            Scale(caption, scale)
+            caption.fitScale = scale
+            if cut ~= (caption.fitCut == true) then
+                caption.fitCut = cut
+                Try(caption, "SetWidth", cut and L.slotPitch - 4 or 0)
+                Try(caption, "SetWordWrap", not cut)
+            end
+        end
+        if scale < 1 then
+            notes.tight["(captions under the preview)"] = floor(scale * 100 + 0.5) .. "%"
+        end
+    end
+
     --- The pretend buttons wear pictures from your own bars.
     local function RefreshFaces()
         local faces = PreviewFaces()
@@ -1064,8 +1492,12 @@ local function BuildAppearance(view, page)
         local chosen = ns.db.size
         local size = chosen > 0 and chosen or ns.AutoIconSize()
         slider.Set(max(ns.SIZE_MIN, min(ns.SIZE_MAX, size)))
-        readout:SetText(tostring(size))
+        Say(readout, tostring(size), 34)
         auto.Set(chosen == 0)
+
+        -- The hint has what the word "Preview" leaves it, up to the next column.
+        Fit(hint, 292 - (16 + Drawn(previewLabel, 50) + 10))
+        FitCaptions()
 
         -- The pretend buttons are as large as a real one looks from here, so the
         -- icon on them is the size it is on the bars.
@@ -1095,9 +1527,9 @@ local function BuildAppearance(view, page)
             end
             Shown(preview.icon, art ~= nil)
         end
-        sampleNote:SetText(ns.db.enabled
+        Say(sampleNote, ns.db.enabled
             and "Out of combat, your action buttons show sample icons while this tab is open."
-            or "Status icons are turned off, so your action buttons show none.")
+            or "Status icons are turned off, so your action buttons show none.", L.right - 16)
 
         local set = Icons.CurrentSet()
         for setKey, button in pairs(view.sets) do
@@ -1136,11 +1568,16 @@ local function BuildAppearance(view, page)
 
             view.editors[key].Refresh(current, custom, missing)
 
+            -- The result's sentence has what its heading leaves it, less the
+            -- note at the far end when that is up.
+            local clash, taken = view.clashes[key], 0
             local other = Icons.SharedWith(key)
             if other then
-                view.clashes[key]:SetText("Same icon as \"" .. other.title .. "\"")
+                Say(clash, "Same icon as \"" .. other.title .. "\"", 300)
+                taken = Drawn(clash, 190) + 12
             end
-            Shown(view.clashes[key], other ~= nil)
+            Shown(clash, other ~= nil)
+            Fit(view.details[key], L.right - (38 + Drawn(view.names[key], 130) + 10) - taken)
         end
     end
 end
@@ -1258,8 +1695,7 @@ local function BuildRow(view, page, index)
     local name = Text(row, "GameFontHighlight")
     name:SetJustifyV("MIDDLE")
     name:SetPoint("LEFT", row, "LEFT", 34, 0)
-    name:SetWidth(108)
-    Try(name, "SetMaxLines", 2) -- a long name takes two lines; a longer one still is cut short
+    name:SetWidth(108) -- a long name takes two lines, in smaller letters if it must; a longer one still is cut short
 
     local show = Segmented(row, SHOW_CHOICES)
     show.frame:SetPoint("LEFT", row, "LEFT", 146, 0)
@@ -1329,6 +1765,7 @@ local function BuildRow(view, page, index)
             if not seconds or seconds < Spells.MIN_DURATION or seconds > Spells.MAX_DURATION then
                 row.problem = "Type seconds, from " .. Spells.MIN_DURATION .. " to " .. Spells.MAX_DURATION .. "."
                 why:SetText(row.problem)
+                FitLines(why, 106, 2)
                 Colour(why, BAD)
                 return
             end
@@ -1393,6 +1830,7 @@ local function BuildRow(view, page, index)
         Try(icon, "SetDesaturated", not tracked)
         icon:SetAlpha(tracked and 1 or 0.6)
         name:SetText(info.name)
+        FitLines(name, 108, 2)
         if tracked then
             name:SetTextColor(1, 1, 1)
         else
@@ -1430,6 +1868,7 @@ local function BuildRow(view, page, index)
             why:SetText(short)
             why:SetTextColor(0.5, 0.5, 0.5)
         end
+        FitLines(why, 106, 2) -- a row is two lines tall
     end
 
     row.icon, row.name, row.show, row.on, row.lasts, row.why, row.whyArea = icon, name, show, on, lasts, why, whyArea
@@ -1445,11 +1884,17 @@ local function BuildSpells(view, page)
             .. "judge them. Change any it gets wrong.")
     intro:SetPoint("TOPLEFT", page, "TOPLEFT", 16, -10)
     intro:SetWidth(608)
+    FitLines(intro, 608, 2) -- the column headings start under its second line
+    list.intro = intro
 
     local headings = { { "Spell", 16 }, { "Show an icon", 158 }, { "Judged on", 296 }, { "Lasts", 462 }, { "Why", 516 } }
+    list.headings = {}
     for i = 1, #headings do
         local heading = Text(page, "GameFontNormalSmall", headings[i][1])
         heading:SetPoint("TOPLEFT", page, "TOPLEFT", headings[i][2], -38)
+        -- Each has the room up to the next one.
+        Fit(heading, (headings[i + 1] and headings[i + 1][2] or L.right) - headings[i][2] - 8)
+        list.headings[i] = heading
     end
     local rule = page:CreateTexture(nil, "ARTWORK")
     rule:SetPoint("TOPLEFT", page, "TOPLEFT", 12, -53)
@@ -1462,6 +1907,7 @@ local function BuildSpells(view, page)
 
     local empty = Text(page, "GameFontDisable", "No spells found on your action bars yet.")
     empty:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.listTop - 8)
+    Fit(empty, L.right - 16)
     empty:Hide()
     list.empty = empty
 
@@ -1470,7 +1916,8 @@ local function BuildSpells(view, page)
     list.count = count
     local more = Text(page, "GameFontDisableSmall", "Scroll for more.")
     more:SetJustifyH("RIGHT")
-    more:SetPoint("TOPRIGHT", page, "TOPLEFT", 624, L.listTop - L.rows * L.rowHeight - 12)
+    more:SetPoint("TOPRIGHT", page, "TOPLEFT", L.right, L.listTop - L.rows * L.rowHeight - 12)
+    Fit(more, 130)
     more:Hide()
     list.more = more
 
@@ -1517,8 +1964,9 @@ local function BuildSpells(view, page)
         if #items == 0 then
             count:SetText("")
         else
-            count:SetText((#items == 1 and "1 spell" or (#items .. " spells")) .. " on your bars, "
-                .. tracked .. " with an icon.")
+            -- It has the line to itself, but for "Scroll for more." at the far end.
+            Say(count, (#items == 1 and "1 spell" or (#items .. " spells")) .. " on your bars, "
+                .. tracked .. " with an icon.", L.right - 16 - 130 - 12)
         end
 
         Shown(more, last > 0)
@@ -1632,9 +2080,9 @@ local function Build(host, chrome)
         glow:SetAllPoints(button)
         glow:SetColorTexture(1, 1, 1, 0.08)
 
-        local label = button:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        local label = Label(button, "OVERLAY", "GameFontNormal")
         label:SetPoint("CENTER", button, "CENTER", 0, 0)
-        label:SetText(tab.label)
+        Say(label, tab.label, tab.width - 10)
 
         button.back, button.line, button.label = back, line, label
         button:SetScript("OnClick", function()
@@ -1691,6 +2139,7 @@ local function Build(host, chrome)
 
     --- Call when the panel comes on screen, and when it leaves.
     function view.Opened()
+        Refit() -- a font may only have been ready, or have changed, since the panel was built
         if view.tab == "spells" then
             view.RefreshSpells(true)
         end
@@ -1701,11 +2150,60 @@ local function Build(host, chrome)
     function view.Closed()
         view.Settle()
         Options.UpdateSampling()
+        SaveNotes()
     end
 
     views[#views + 1] = view
     view.Refresh()
     return view
+end
+
+--------------------------------------------------------------------------------
+-- Building a copy, and building it again
+--------------------------------------------------------------------------------
+
+--- Builds a copy of the panel with `make`, which is handed a list to note the
+--- frames it starts on. Should it fail with the game's own controls in it, what
+--- it had made is put away and it is run again with nothing but the addon's own
+--- drawing, which asks far less of the client; every copy built later this
+--- session is drawn that way too. Returns what `make` returned, or nil and the
+--- reason when it cannot be built either way.
+local function BuildSafely(make)
+    local ok, result
+    for attempt = 1, 2 do
+        local scrap, before = {}, #views
+        build = build + 1
+        ok, result = pcall(make, scrap)
+        if ok and result then
+            break
+        end
+        ok, result = false, ok and "nothing was built" or result
+        -- A view registers itself as the last thing it does, but may fail after.
+        for i = #views, before + 1, -1 do
+            views[i] = nil
+        end
+        for i = 1, #scrap do
+            Try(scrap[i], "Hide")
+        end
+        for label, made in pairs(fitted) do
+            if made == build then
+                fitted[label] = nil -- its labels are not worth measuring again
+            end
+        end
+        if attempt == 2 or Plain() then
+            break
+        end
+        notes.rebuilt = Brief(result)
+        forcedPlain = true
+    end
+    if not ok then
+        notes.failed = Brief(result)
+    end
+    pcall(SaveNotes)
+    if ok then
+        return result
+    end
+    return nil, tostring(result)
 end
 
 --------------------------------------------------------------------------------
@@ -1750,12 +2248,14 @@ end
 local function MakeGameClose(holder, parent)
     local button = CreateFrame("Button", nil, parent, "UIPanelCloseButtonNoScripts")
     holder.frame = button
+    NeedArt("the game's close button", Ask(button, "GetNormalTexture"))
     button:SetSize(22, 22)
     button:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -3, -3)
 end
 
-local function BuildWindow()
+local function BuildWindow(scrap)
     local frame = CreateFrame("Frame", WINDOW_NAME, UIParent)
+    scrap[#scrap + 1] = frame
     frame:Hide()
     frame:SetSize(L.width, L.bar + L.pageHeight)
     Place(frame)
@@ -1785,10 +2285,12 @@ local function BuildWindow()
     bar:SetHeight(L.bar - 1)
     bar:SetColorTexture(0.16, 0.16, 0.2, 1)
 
+    local tabsX = 150
     local caption = Text(frame, "GameFontNormal", TITLE)
     caption:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -8)
+    Fit(caption, tabsX - 12 - 8) -- the tabs start where it ends
 
-    local close = Native(MakeGameClose, frame)
+    local close = Native("close", MakeGameClose, frame)
     if not close then
         close = PlainButton(frame, 22, 20, "X")
         close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
@@ -1803,7 +2305,7 @@ local function BuildWindow()
     host:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
     host:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
 
-    local view = Build(host, { tabsOn = host, tabsX = 150, tabsY = -(L.bar - 24), lineAt = "TOP", backed = true,
+    local view = Build(host, { tabsOn = host, tabsX = tabsX, tabsY = -(L.bar - 24), lineAt = "TOP", backed = true,
         pageTop = -L.bar })
     frame:SetScript("OnShow", function()
         ns.Guard(view.Opened)
@@ -1811,7 +2313,7 @@ local function BuildWindow()
     frame:SetScript("OnHide", function()
         ns.Guard(view.Closed)
     end)
-    frame.view, frame.close = view, close
+    frame.view, frame.close, frame.caption = view, close, caption
 
     -- Lets the Escape key close it, like the game's own windows.
     if type(UISpecialFrames) == "table" then
@@ -1823,11 +2325,12 @@ end
 --- Opens the settings window, on a tab if one is named ("appearance" or "spells").
 function Options.Open(tab)
     if not window then
-        local ok, frame = pcall(BuildWindow)
-        if not ok or not frame then
+        local frame, problem = BuildSafely(BuildWindow)
+        if not frame then
+            -- Not even the addon's own drawing could be made: the commands are what is left.
             ns.Print("the settings window could not be built on this client. The same settings work as "
                 .. "commands: /se on, /se when, /se usable, /se corner, /se size, /se icon and /se track. ("
-                .. tostring(frame) .. ")")
+                .. problem .. ")")
             return false
         end
         window = frame
@@ -1869,34 +2372,41 @@ end
 -- The game's own Options window: Options > AddOns > Status Efficiency
 --------------------------------------------------------------------------------
 
+local SMALLEST_PAGE = 0.5 -- how far the whole panel shrinks to fit the page it is given
+
 local function Nothing() end
 
---- The page's heading, in the style the game uses for its own pages.
-local function BuildHeading(canvas)
-    local made, title = pcall(Text, canvas, "GameFontHighlightHuge", TITLE)
-    if not made or not title or ns.db.plain then
-        if made and title then
-            title:Hide()
-        end
-        title = Text(canvas, "GameFontNormalLarge", TITLE)
-        title:SetPoint("TOPLEFT", canvas, "TOPLEFT", 16, -16)
+--- The page's heading, in the style the game uses for its own pages. `page`
+--- is the whole page the Options window gives the panel: the game's divider
+--- runs across the middle of that, as it does on the game's own pages.
+local function BuildHeading(host, page)
+    local title
+    if Plain() then
+        title = Text(host, "GameFontNormalLarge", TITLE)
+        title:SetPoint("TOPLEFT", host, "TOPLEFT", 16, -16)
     else
-        title:SetPoint("TOPLEFT", canvas, "TOPLEFT", 7, -22)
+        title = Text(host, "GameFontHighlightHuge", TITLE)
+        title:SetPoint("TOPLEFT", host, "TOPLEFT", 7, -22)
     end
+    Fit(title, L.width - 32)
 
-    local divider = canvas:CreateTexture(nil, "ARTWORK")
-    divider:SetPoint("TOP", canvas, "TOP", 0, -50)
-    if ns.db.plain or not Try(divider, "SetAtlas", "Options_HorizontalDivider", true) then
+    local divider = host:CreateTexture(nil, "ARTWORK")
+    divider:SetPoint("TOP", page, "TOP", 0, -50)
+    if Plain() or ns.AtlasExists("Options_HorizontalDivider") == false
+        or not Try(divider, "SetAtlas", "Options_HorizontalDivider", true) then
         divider:ClearAllPoints()
-        divider:SetPoint("TOPLEFT", canvas, "TOPLEFT", 12, -50)
+        divider:SetPoint("TOPLEFT", host, "TOPLEFT", 12, -50)
         divider:SetSize(L.width - 24, 1)
         divider:SetColorTexture(0.4, 0.4, 0.45, 1)
     end
+    return title, divider
 end
 
-local function BuildCanvas(canvas)
-    BuildHeading(canvas)
-    return Build(canvas, { tabsOn = canvas, tabsX = 12, tabsY = -58, lineAt = "BOTTOM", pageTop = -86 })
+local function BuildCanvas(host, page)
+    local title, divider = BuildHeading(host, page)
+    local view = Build(host, { tabsOn = host, tabsX = 12, tabsY = -58, lineAt = "BOTTOM", pageTop = -L.canvasTop })
+    view.title, view.divider = title, divider
+    return view
 end
 
 --- Adds the panel to the game's Options window. Safe to call more than once.
@@ -1909,27 +2419,59 @@ function Options.Register()
         canvas:Hide()
         Options.canvas = canvas
 
-        local view, tried
+        local view, host, tried
+
+        --- The panel is laid out for the page this client's Options window was
+        --- seen to give it. Given a smaller page, by another client or by an
+        --- addon that reshapes the Options window, all of it is drawn smaller.
+        local function Rescale()
+            local width, height = Measure(canvas, "GetWidth"), Measure(canvas, "GetHeight")
+            local scale = 1
+            if width and height then
+                scale = max(SMALLEST_PAGE, min(1, width / L.width, height / (L.canvasTop + L.pageHeight)))
+                notes.page = floor(width + 0.5) .. " x " .. floor(height + 0.5)
+            end
+            if abs((host.pageScale or 1) - scale) < 0.001 or not Try(host, "SetScale", scale) then
+                return false
+            end
+            host.pageScale, notes.scale = scale, scale
+            return true
+        end
+
         canvas:SetScript("OnShow", function()
-            if view then
-                ns.Guard(view.Opened)
-            elseif not tried then
-                tried = true -- one attempt: a half-built panel is not built over again
-                local built, result = pcall(BuildCanvas, canvas)
+            if not view and not tried then
+                tried = true -- one go: a panel that cannot be built is not built over and over
+                local built, reason = BuildSafely(function(scrap)
+                    host = CreateFrame("Frame", nil, canvas)
+                    scrap[#scrap + 1] = host
+                    host:SetPoint("TOPLEFT", canvas, "TOPLEFT", 0, 0)
+                    host:SetSize(L.width, L.canvasTop + L.pageHeight)
+                    return BuildCanvas(host, canvas)
+                end)
                 if built then
-                    view = result
-                    canvas.view = view
-                    ns.Guard(view.Opened)
+                    view = built
+                    canvas.view, canvas.host = view, host
                 else
-                    Options.problem = tostring(result)
+                    -- Not even the addon's own drawing could be made here.
+                    Options.problem = reason
                     ns.Print("the settings panel could not be drawn here. /se options opens it in a window "
-                        .. "of its own. (" .. Options.problem .. ")")
+                        .. "of its own. (" .. reason .. ")")
                 end
+            end
+            if view then
+                ns.Guard(Rescale)
+                ns.Guard(view.Opened)
             end
         end)
         canvas:SetScript("OnHide", function()
             if view then
                 ns.Guard(view.Closed)
+            end
+        end)
+        -- The Options window may only settle on the page's size once it is up.
+        canvas:SetScript("OnSizeChanged", function()
+            if view and Rescale() and canvas:IsVisible() then
+                ns.Guard(view.Refresh)
             end
         end)
 

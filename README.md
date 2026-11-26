@@ -15,7 +15,7 @@ it is a debuff and there is no enemy to judge. Out of the box the icons also
 stay away until you target an enemy, and from a skill you cannot use right now
 (too close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.3.2 is an early draft. It loads and draws its icons in the real
+Version 0.3.3 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -42,7 +42,7 @@ few rough edges.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.3.2 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.3.3 loaded."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -77,6 +77,18 @@ new to say. A cooldown is the other: the short pause after every cast would
 make all the icons blink, and the game can keep cooldowns from addons during a
 fight. To see the icon on every skill regardless, pick **On every skill** in
 the settings or type `/se usable off`.
+
+Reach is judged to whoever the skill would go to. A buff that goes on you is
+never held back by how far away your target is.
+
+The addon gets all this from the game, and has three ways of asking. It asks
+about the action on the button. If the game will not answer that (a fight is
+when it holds things back), it asks the same about the spell. Failing that it
+reads the button itself, which the game has already painted for you: white for
+a skill you can use, blue for one you are short of rage for, grey for one you
+cannot use, and the key's name in red when the target is out of reach. Nothing
+needs to be switched on for this. If none of the three says anything, the icons
+show on every skill, and `/se usable` says so.
 
 A buff spell the game does not label as one gets its icon the first time the
 addon sees its buff on you out of combat. `/se buff <spell>` does the same by
@@ -130,9 +142,21 @@ The **Spells** tab has one row for every spell on your action bars:
   or empty the box to let the addon work it out again.
 - **Why**: what the addon's choice rests on. Hover it for the full sentence.
 
-The panel uses the game's own buttons, tick boxes and slider. If any of them
-looks wrong in this client, `/se plain` followed by `/reload` swaps them for
-plainer ones the addon draws itself.
+The panel uses the game's own buttons, tick boxes and slider where they work.
+It looks after the rest by itself:
+
+- Each of the game's controls is tried out as the panel is built. One that is
+  missing in this client, has no art to show, or does not do what it is told
+  is replaced by a plainer control the addon draws itself.
+- If the panel cannot be built with the game's controls in it at all, it is
+  built again with the addon's own.
+- A font this client does not have is replaced by the nearest one it does have.
+- A label that would not fit in this client's font is drawn smaller, and cut
+  short only if that is not enough.
+- If the Options window gives the page less room than the panel needs, the
+  whole page is drawn smaller.
+
+To have the plainer controls anyway, type `/se plain` and then `/reload`.
 
 ### Commands
 
@@ -161,7 +185,7 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se icon <green\|yellow\|red> <icon>` | Sets the icon for one result: an icon name, a file ID, a texture path, `none` for no icon, or `default`. |
 | `/se debug` | Shows what the game lets the addon see right now. Paste this into a bug report. |
 | `/se log` | Shows or hides a running commentary of what the tracker is doing. |
-| `/se plain` | Swaps the settings panel between the game's own controls and plainer ones the addon draws. Takes effect after `/reload`. |
+| `/se plain` | Has the settings panel draw its own plainer controls instead of the game's, or the game's again. Takes effect after `/reload`. The panel changes over by itself wherever the game's controls are missing or do not work. |
 | `/se reset` | Forgets every setting and everything learned. |
 
 ## How it decides
@@ -253,6 +277,13 @@ next `/reload` or logout, under `report` in
 to send with a bug report. It holds spell names, counts and timings, and no
 character or account names.
 
+The same record says what the game answered about each skill being usable
+(`usable`) and which of the three ways of asking got the answer, in a fight and
+out of one (`usableFrom`). Next to it, under `panel`, is what the settings panel
+found out about this client: which of the game's controls it kept, which fonts
+it had to replace, which labels were a tight fit, and how much room the Options
+window gave the page.
+
 ## Known limitations
 
 - **In combat the addon is told that a unit's effects changed, not which
@@ -324,6 +355,14 @@ character or account names.
   what was on it.
 - **Action bars.** The default bars are supported. Bartender4, Dominos and ElvUI
   buttons are picked up by name but have not been tried.
+- **Whether a skill can be used is only as good as what the game tells.** Where
+  the game answers about the action, that answer is used as it comes. Where it
+  does not, and the addon falls back on the spell or on the button's colours, a
+  "cannot be used" from either is believed only once that source has been
+  right: checked against the action bar while it still answered, or seen to say
+  "yes" or "short of rage" about the same skill. Until then the icon shows. On
+  a bar addon that paints its buttons in colours of its own, or keeps them from
+  being read, the colours say nothing and the icon shows as well.
 - **The game's own icons** (ready check marks, raid markers) are named by their
   usual texture paths. If one shows up blank in this client, pick another.
 
@@ -350,7 +389,10 @@ game. The mock imitates secret values (they throw when compared, indexed or
 used in arithmetic), the different ways a client might restrict aura queries
 in combat, and the reports a client sends when a unit's effects change. By
 default it behaves like the documented client: every aura query is refused in
-combat and only those reports get through.
+combat and only those reports get through. It can also be told to lack or
+break the game's controls, fonts and art, to draw text wider, to give the
+Options page less room, and to keep back what it says about using a skill, so
+that each thing the addon does by itself has a scenario.
 
 ```
 pip install lupa

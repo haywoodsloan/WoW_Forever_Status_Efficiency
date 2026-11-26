@@ -37,18 +37,48 @@
 --                  "spell" it gives the macro's spell id with subType "spell".
 --   noTemplates    true: CreateFrame knows none of the game's own templates.
 --                  A set of template names: it does not know those.
---   brokenTemplates set of template names that exist but whose methods fail.
+--   brokenTemplates template name -> what is wrong with it. True: its methods
+--                  fail (the slider's Init). Or, by template:
+--                    slider      "stuck" does not move when sent somewhere,
+--                                "hollow" has no slider inside, "no notice" cannot
+--                                be asked to tell of a move its own way, "no hook"
+--                                cannot have its script hooked, "mute" neither
+--                    tick box    "forgets" does not keep its tick, "huge" is far
+--                                larger than a tick box
+--                    button      "wordless" does not keep its words, "late"
+--                                is made without complaint and fails when it is
+--                                given something to do on a click
 --   missingFonts   set of font objects this client does not have.
+--   fontWidth      how many times wider than usual every letter is drawn (1).
+--   noTextScale    true: labels have no SetTextScale.
 --   missingTextures set of textures (paths or file ids) that do not exist.
 --   quietTextures  true: Texture:SetTexture does not say whether it worked.
 --   noAtlas        true: textures have no SetAtlas.
+--   missingAtlases set of named pieces of art this client does not have.
+--   noAtlasQuery   true: C_Texture does not exist, so art cannot be asked after.
+--   settingsPage   { width, height } of the page the Options window gives an
+--                  addon's panel. Default 665 by 601.
 --   noLines        true: frames have no CreateLine.
 --   noSounds       true: PlaySound and SOUNDKIT do not exist.
 --   noSpellTexture true: C_Spell.GetSpellTexture does not exist.
 --   usableAPI      how the client says whether an action can be used: nil for
 --                  C_ActionBar.IsUsableAction and IsActionInRange, "globals" for
 --                  the old plain functions that answer 1 and nil, "secret" when
---                  the answers are secret values, "none" when there is no such call.
+--                  the answers are secret values, "reason secret" when only the
+--                  reason (short of rage or not) is, "none" when there is no such
+--                  call, "no unit" when the range call fails if told whose range,
+--                  "combat secret" when the answers are secret only in a fight.
+--   spellAPI       how it answers the same about a spell (C_Spell.IsSpellUsable
+--                  and IsSpellInRange). Nil: as usableAPI has it for an action,
+--                  and not at all on a "globals" client. "plain": openly, whatever
+--                  usableAPI says. "none": no such calls. "strange": every spell
+--                  "cannot be used", as for a spell the client does not know.
+--   buttonLook     how an action button shows it. Nil: as the game's own bars do,
+--                  the picture white, blue (short of rage) or grey, and the key's
+--                  name red out of reach. "none": nothing an addon can read.
+--                  "secret": the colours come back secret. "dim": every picture
+--                  is drawn grey whatever the skill. "red icon": out of reach
+--                  turns the picture red, as some bar addons have it.
 
 local Mock = {}
 
@@ -560,7 +590,37 @@ function Mock.new(options)
 
     -- Whether an action can be used right now, and whether its target is in
     -- reach. Tests set `unusable`, `lacking` and `inRange` on world.actions[slot]
-    -- through world:setUsable and world:setRange.
+    -- through world:setUsable and world:setRange, which tell the spell in the
+    -- slot the same, so that the action bar, the spell and the look of the
+    -- button agree as they do in the game.
+
+    --- The reach of an action or a spell to a unit: `inRange` to your target,
+    --- `rangeTo[unit]` to anyone else. Nil when there is nothing to judge it on.
+    local function Reach(subject, unit)
+        if unit ~= nil and type(unit) ~= "string" then
+            error("bad unit", 3)
+        end
+        if unit ~= nil and unit ~= "target" then
+            local mob = world.tokens[unit]
+            if mob == nil then
+                return nil
+            end
+            if mob ~= world.tokens.target then
+                local to = subject.rangeTo
+                return to and to[unit]
+            end
+        end
+        return subject.inRange
+    end
+
+    --- How openly the client answers right now.
+    local function Candour(mode)
+        if mode == "combat secret" then
+            return world.combat and "secret" or nil
+        end
+        return mode
+    end
+
     local function IsUsableAction(slot)
         if type(slot) ~= "number" then
             error("IsUsableAction: bad slot", 2)
@@ -570,25 +630,38 @@ function Mock.new(options)
         if not action then
             return false, false
         end
-        if options.usableAPI == "secret" then
+        local mode = Candour(options.usableAPI)
+        if mode == "secret" then
             return Secret(not action.unusable), Secret(action.lacking == true)
         end
-        if options.usableAPI == "reason secret" then
+        if mode == "reason secret" then
             -- Says whether, and keeps to itself whether rage is what is missing.
             return not action.unusable, Secret(action.lacking == true)
         end
         return not action.unusable, action.lacking == true
     end
-    local function IsActionInRange(slot)
+    local function IsActionInRange(slot, unit)
         if type(slot) ~= "number" then
             error("IsActionInRange: bad slot", 2)
         end
+        if unit ~= nil and options.usableAPI == "no unit" then
+            error("IsActionInRange: takes a slot and nothing else", 2)
+        end
+        local asked = world.rangeAsked
+        if not asked then
+            asked = {}
+            world.rangeAsked = asked
+        end
+        asked[unit or "nobody named"] = (asked[unit or "nobody named"] or 0) + 1
         local action = world.actions[slot]
-        local inRange = action and action.inRange
+        local inRange = nil
+        if action then
+            inRange = Reach(action, unit)
+        end
         if inRange == nil then
             return nil -- no target, or range does not come into it
         end
-        if options.usableAPI == "secret" then
+        if Candour(options.usableAPI) == "secret" then
             return Secret(inRange)
         end
         return inRange
@@ -609,6 +682,93 @@ function Mock.new(options)
     elseif options.usableAPI ~= "none" then
         env.C_ActionBar.IsUsableAction = IsUsableAction
         env.C_ActionBar.IsActionInRange = IsActionInRange
+    end
+
+    -- The same two questions about a spell instead of an action.
+    local spellMode = options.spellAPI
+    if spellMode == nil then
+        spellMode = options.usableAPI
+        if spellMode == "globals" then
+            spellMode = "none" -- so old a client has no such calls about a spell
+        elseif spellMode == "no unit" then
+            spellMode = nil
+        end
+    elseif spellMode == "plain" then
+        spellMode = nil
+    end
+    if spellMode ~= "none" then
+        function env.C_Spell.IsSpellUsable(spell)
+            world.spellAsked = (world.spellAsked or 0) + 1
+            local data = FindSpell(spell)
+            if not data or data.strange or spellMode == "strange" then
+                return false, false -- `strange` marks one spell the client does not know by this number
+            end
+            local usable, lacking = not data.unusable, data.lacking == true
+            local mode = Candour(spellMode)
+            if mode == "secret" then
+                return Secret(usable), Secret(lacking)
+            end
+            if mode == "reason secret" then
+                return usable, Secret(lacking)
+            end
+            return usable, lacking
+        end
+        function env.C_Spell.IsSpellInRange(spell, unit)
+            local data = FindSpell(spell)
+            local inRange = nil
+            if data and not data.strange and spellMode ~= "strange" then
+                inRange = Reach(data, unit)
+            end
+            if inRange == nil then
+                return nil
+            end
+            if Candour(spellMode) == "secret" then
+                return Secret(inRange)
+            end
+            return inRange
+        end
+    end
+
+    -- How the game's own bars paint a button. Read off the world each time it
+    -- is looked at, as the game repaints its buttons the moment a thing changes.
+    local function IconColour(slot)
+        world.lookAsked = (world.lookAsked or 0) + 1
+        local action = world.actions[slot]
+        if options.buttonLook == "dim" then
+            return 0.4, 0.4, 0.4, 1
+        end
+        if options.buttonLook == "red icon" and action and action.inRange == false then
+            return 0.8, 0.1, 0.1, 1
+        end
+        if not action or (action.unusable and not action.lacking) then
+            return 0.4, 0.4, 0.4, 1
+        end
+        if action.unusable then
+            return 0.5, 0.5, 1.0, 1
+        end
+        return 1, 1, 1, 1
+    end
+    local function KeyColour(slot)
+        local action = world.actions[slot]
+        if action and action.inRange == false and options.buttonLook ~= "red icon" then
+            return 1.0, 0.1, 0.1, 1
+        end
+        return 0.6, 0.6, 0.6, 1
+    end
+
+    -- Named art. Whether a piece exists can be asked; one that does not shows nothing.
+    local function HasAtlas(atlas)
+        return not (options.missingAtlases and options.missingAtlases[atlas])
+    end
+    if not options.noAtlasQuery then
+        env.C_Texture = {
+            GetAtlasExists = function(atlas)
+                if type(atlas) ~= "string" then
+                    error("GetAtlasExists: bad atlas", 2)
+                end
+                return HasAtlas(atlas)
+            end,
+        }
     end
 
     env.SlashCmdList = {}
@@ -727,11 +887,21 @@ function Mock.new(options)
         end
         self.height = height
     end
+    -- A region stretched over another with SetAllPoints is as large as that one.
     function Region:GetWidth()
+        if self.width == nil and type(self.allPoints) == "table" then
+            return self.allPoints:GetWidth()
+        end
         return self.width or 0
     end
     function Region:GetHeight()
+        if self.height == nil and type(self.allPoints) == "table" then
+            return self.allPoints:GetHeight()
+        end
         return self.height or 0
+    end
+    function Region:GetSize()
+        return self:GetWidth(), self:GetHeight()
     end
     function Region:SetAlpha(alpha)
         if type(alpha) ~= "number" then
@@ -776,18 +946,45 @@ function Mock.new(options)
         self.path, self.atlas = nil, nil
     end
     if not options.noAtlas then
+        --- Art the client does not have shows nothing, without complaint.
         function Texture:SetAtlas(atlas, useAtlasSize)
             if type(atlas) ~= "string" then
                 error("SetAtlas: bad atlas", 2)
             end
-            self.atlas, self.atlasSize = atlas, useAtlasSize
+            self.atlas, self.atlasSize = HasAtlas(atlas) and atlas or nil, useAtlasSize
+            self.wantedAtlas = atlas
             self.path, self.color = nil, nil
+        end
+        --- The name it was given, whether or not there is such art.
+        function Texture:GetAtlas()
+            return self.wantedAtlas
         end
     end
     function Texture:SetTexCoord(...)
         self.texCoord = { ... }
     end
-    function Texture:SetVertexColor() end
+    function Texture:SetVertexColor(r, g, b, a)
+        if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+            error("SetVertexColor: bad colour", 2)
+        end
+        self.vertex = { r, g, b, a or 1 }
+    end
+    --- Secret once a secret has been put into it, as the client has it. A
+    --- region the game paints by itself (a button's picture) has a `paint`
+    --- that says what colour it is in at this moment.
+    function Texture:GetVertexColor()
+        local r, g, b, a
+        if self.paint then
+            r, g, b, a = self.paint()
+        else
+            local vertex = self.vertex or { 1, 1, 1, 1 }
+            r, g, b, a = vertex[1], vertex[2], vertex[3], vertex[4]
+        end
+        if self.vertexSecret then
+            return Secret(r), Secret(g), Secret(b), Secret(a)
+        end
+        return r, g, b, a
+    end
     function Texture:SetDesaturated(desaturated)
         self.desaturated = desaturated and true or false
     end
@@ -814,15 +1011,50 @@ function Mock.new(options)
     local FontString = setmetatable({}, { __index = Region })
     FontString.__index = FontString
     function FontString:SetText(text)
+        if not self.font and not self.fontFile then
+            error("FontString:SetText(): Font not set", 2)
+        end
         self.text = text
     end
     function FontString:GetText()
         return self.text
     end
-    --- Roughly how wide the text is drawn, in the panel's units.
-    function FontString:GetStringWidth()
-        return #tostring(self.text or "") * (FONTS[self.font] or 12) * 0.5
+    function FontString:SetFont(file, height, flags)
+        if type(file) ~= "string" or type(height) ~= "number" then
+            error("SetFont: bad font", 2)
+        end
+        self.fontFile, self.fontHeight, self.fontFlags = file, height, flags
+        return true
     end
+    function FontString:GetFont()
+        return self.fontFile, self.fontHeight or FONTS[self.font], self.fontFlags
+    end
+    --- Roughly how wide the text would be drawn with all the room in the world,
+    --- in the panel's units. `fontWidth` stands for a wider font than usual.
+    function FontString:GetUnboundedStringWidth()
+        local height = self.fontHeight or FONTS[self.font] or 12
+        return #tostring(self.text or "") * height * 0.5 * (options.fontWidth or 1) * (self.textScale or 1)
+    end
+    --- And how wide it is drawn: no wider than the label, when that has a width.
+    function FontString:GetStringWidth()
+        local width = self:GetUnboundedStringWidth()
+        if self.width and self.width > 0 then
+            return math.min(width, self.width)
+        end
+        return width
+    end
+    if not options.noTextScale then
+        function FontString:SetTextScale(scale)
+            if type(scale) ~= "number" or scale <= 0 then
+                error("SetTextScale: bad scale", 2)
+            end
+            self.textScale = scale
+        end
+        function FontString:GetTextScale()
+            return self.textScale or 1
+        end
+    end
+    FontString.SetVertexColor, FontString.GetVertexColor = Texture.SetVertexColor, Texture.GetVertexColor
     function FontString:SetJustifyH(justify)
         self.justifyH = justify
     end
@@ -835,6 +1067,8 @@ function Mock.new(options)
         end
         self.textColor = { r, g, b, a }
     end
+    FontString.SetVertexColor = Texture.SetVertexColor
+    FontString.GetVertexColor = Texture.GetVertexColor
     function FontString:SetWordWrap(wrap)
         self.wordWrap = wrap
     end
@@ -901,6 +1135,24 @@ function Mock.new(options)
     function Frame:GetScript(kind)
         return self.scripts[kind]
     end
+    --- Adds a handler that runs after whatever the script already does.
+    function Frame:HookScript(kind, fn)
+        if type(fn) ~= "function" then
+            error("HookScript: handler is not a function", 2)
+        end
+        local extra = EXTRA_SCRIPTS[self.frameType]
+        if not FRAME_SCRIPTS[kind] and not (extra and extra[kind]) then
+            error(tostring(self.frameType) .. " doesn't have a \"" .. tostring(kind) .. "\" script", 2)
+        end
+        local before = self.scripts[kind]
+        self:SetScript(kind, function(...)
+            if before then
+                before(...)
+            end
+            fn(...)
+        end)
+        return true
+    end
     function Frame:SetFrameLevel(level)
         if type(level) ~= "number" then
             error("SetFrameLevel: bad level", 2)
@@ -934,8 +1186,17 @@ function Mock.new(options)
     function Frame:SetHitRectInsets(left, right, top, bottom)
         self.hitInsets = { left, right, top, bottom }
     end
-    --- How large the frame is drawn next to the screen: tests set `scale` on a
-    --- frame to stand for SetScale.
+    function Frame:SetScale(scale)
+        if type(scale) ~= "number" or scale <= 0 then
+            error("SetScale: bad scale", 2)
+        end
+        self.scale = scale
+    end
+    function Frame:GetScale()
+        return self.scale or 1
+    end
+    --- How large the frame is drawn next to the screen. Tests may also set
+    --- `scale` on a frame directly.
     function Frame:GetEffectiveScale()
         local scale, frame = 1, self
         while frame do
@@ -1067,11 +1328,21 @@ function Mock.new(options)
     function Button:IsEnabled()
         return self.enabled ~= false
     end
+    --- A button's words are a label of its own, once it has one.
     function Button:SetText(text)
         self.text = text
+        if self.fontString then
+            self.fontString.text = text
+        end
     end
     function Button:GetText()
         return self.text
+    end
+    function Button:GetFontString()
+        return self.fontString
+    end
+    function Button:GetNormalTexture()
+        return self.normalTexture
     end
 
     local CheckButton = setmetatable({}, { __index = Button })
@@ -1081,6 +1352,9 @@ function Mock.new(options)
     end
     function CheckButton:GetChecked()
         return self.checked == true
+    end
+    function CheckButton:GetCheckedTexture()
+        return self.checkedTexture
     end
 
     local Slider = setmetatable({}, { __index = Frame })
@@ -1121,6 +1395,9 @@ function Mock.new(options)
     function Slider:SetThumbTexture(texture)
         self.thumb = texture
     end
+    function Slider:GetThumbTexture()
+        return self.thumb
+    end
     function Slider:GetValue()
         return self.value or self.low or 0
     end
@@ -1145,6 +1422,14 @@ function Mock.new(options)
         if type(font) ~= "table" then
             error("SetFontObject: not a font object", 2)
         end
+        self.font = font.fontObject
+    end
+    function EditBox:SetFont(file, height, flags)
+        if type(file) ~= "string" or type(height) ~= "number" then
+            error("SetFont: bad font", 2)
+        end
+        self.fontFile, self.fontHeight, self.fontFlags = file, height, flags
+        return true
     end
     function EditBox:SetTextInsets() end
     function EditBox:SetMaxLetters() end
@@ -1204,24 +1489,89 @@ function Mock.new(options)
 
     -- The few of the game's own templates the addon uses, as far as it uses
     -- them. `kind` is the widget each one is for; `build` adds what it brings.
-    local function Sized(width, height, level)
-        return function(frame)
-            frame.width, frame.height, frame.level = width, height, level
-        end
+    local function Broken(template)
+        return options.brokenTemplates and options.brokenTemplates[template] or nil
     end
+
+    local function Atlas(frame, layer, atlas)
+        local texture = frame:CreateTexture(nil, layer)
+        texture:SetAtlas(atlas, true)
+        return texture
+    end
+
     local TEMPLATES = {
-        UIPanelButtonTemplate = { kind = "Button", build = Sized(40, 22) },
-        UIPanelCloseButtonNoScripts = { kind = "Button", build = Sized(24, 24, 510) },
-        MinimalCheckboxTemplate = { kind = "CheckButton", build = Sized(30, 29) },
+        UIPanelButtonTemplate = { kind = "Button" },
+        UIPanelCloseButtonNoScripts = { kind = "Button" },
+        MinimalCheckboxTemplate = { kind = "CheckButton" },
         MinimalSliderWithSteppersTemplate = { kind = "Frame" },
     }
 
+    -- Blizzard_SharedXML/Mainline/SharedUIPanelTemplates.xml, in outline: a
+    -- three-part face out of an old texture file, and a label for the words.
+    function TEMPLATES.UIPanelButtonTemplate.build(frame)
+        frame.width, frame.height = 40, 22
+        for _, key in ipairs({ "Left", "Middle", "Right" }) do
+            local part = frame:CreateTexture(nil, "BACKGROUND")
+            part:SetTexture("Interface\\Buttons\\UI-Panel-Button-Up")
+            frame[key] = part
+        end
+        frame.Text = frame:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        frame.fontString = frame.Text
+        local broken = Broken("UIPanelButtonTemplate")
+        if broken == "wordless" then
+            function frame:GetText()
+                return nil
+            end
+        elseif broken == "late" then
+            local set = frame.SetScript
+            function frame:SetScript(kind, fn)
+                if kind == "OnClick" then
+                    error("this button takes no click script", 2)
+                end
+                return set(self, kind, fn)
+            end
+        end
+    end
+
+    function TEMPLATES.UIPanelCloseButtonNoScripts.build(frame)
+        frame.width, frame.height, frame.level = 24, 24, 510
+        if not options.noAtlas then
+            frame.normalTexture = Atlas(frame, "ARTWORK", "RedButton-Exit")
+        end
+    end
+
+    -- Blizzard_SharedXML/Shared/Button/CheckButtonTemplates.xml, in outline.
+    function TEMPLATES.MinimalCheckboxTemplate.build(frame)
+        local broken = Broken("MinimalCheckboxTemplate")
+        frame.width, frame.height = 30, 29
+        if broken == "huge" then
+            frame.width, frame.height = 64, 64
+        end
+        if not options.noAtlas then
+            frame.normalTexture = Atlas(frame, "ARTWORK", "checkbox-minimal")
+            frame.checkedTexture = Atlas(frame, "OVERLAY", "checkmark-minimal")
+        end
+        if broken == "forgets" then
+            function frame:GetChecked()
+                return false
+            end
+        end
+    end
+
     -- Blizzard_SharedXML/Shared/Slider/MinimalSlider.lua and .xml, in outline.
     function TEMPLATES.MinimalSliderWithSteppersTemplate.build(frame)
+        local broken = Broken("MinimalSliderWithSteppersTemplate")
         frame.width, frame.height = 250, 40
         local slider = env.CreateFrame("Slider", nil, frame)
         slider:SetPoint("TOPLEFT", 19, 0)
         slider:SetPoint("BOTTOMRIGHT", -19, 0)
+        if not options.noAtlas then
+            slider.Left = Atlas(slider, "ARTWORK", "Minimal_SliderBar_Left")
+            slider.Right = Atlas(slider, "ARTWORK", "Minimal_SliderBar_Right")
+            slider.Middle = Atlas(slider, "ARTWORK", "_Minimal_SliderBar_Middle")
+            slider.Thumb = Atlas(slider, "OVERLAY", "Minimal_SliderBar_Button")
+            slider:SetThumbTexture(slider.Thumb)
+        end
         local back = env.CreateFrame("Button", nil, frame)
         back:SetSize(11, 19)
         back:SetPoint("RIGHT", slider, "LEFT", -4, 0)
@@ -1229,11 +1579,17 @@ function Mock.new(options)
         forward:SetSize(9, 18)
         forward:SetPoint("LEFT", slider, "RIGHT", 4, 0)
         frame.Slider, frame.Back, frame.Forward = slider, back, forward
+        if broken == "hollow" then
+            frame.Slider = nil
+        end
         frame.Event = { OnValueChanged = "OnValueChanged", OnInteractStart = "OnInteractStart",
             OnInteractEnd = "OnInteractEnd" }
 
         local callbacks = {}
         function frame:RegisterCallback(event, func, owner)
+            if broken == "no notice" or broken == "mute" then
+                error("CallbackRegistryMixin: no such event")
+            end
             if type(event) ~= "string" then
                 error("CallbackRegistryMixin::RegisterCallback 'event' requires string type.")
             elseif type(func) ~= "function" then
@@ -1243,6 +1599,9 @@ function Mock.new(options)
             end
             callbacks[event] = callbacks[event] or {}
             callbacks[event][owner or {}] = func
+        end
+        if broken == "no hook" or broken == "mute" then
+            slider.HookScript = false -- not a function: this slider's scripts cannot be hooked
         end
         local function Trigger(event, ...)
             for owner, func in pairs(callbacks[event] or {}) do
@@ -1260,7 +1619,7 @@ function Mock.new(options)
             forward:SetEnabled(value < high - step * 0.5)
         end
         function frame:Init(value, minValue, maxValue, steps)
-            if options.brokenTemplates and options.brokenTemplates.MinimalSliderWithSteppersTemplate then
+            if broken == true then
                 error("attempt to call method 'Init' (a nil value)", 2)
             end
             slider:SetMinMaxValues(minValue, maxValue)
@@ -1273,6 +1632,9 @@ function Mock.new(options)
             end)
         end
         function frame:SetValue(value)
+            if broken == "stuck" then
+                return
+            end
             slider:SetValue(value)
         end
         function frame:SetEnabled(enabled)
@@ -1527,6 +1889,22 @@ function Mock.new(options)
             frame.width, frame.height = 45, 45
         end
         frame.action = slot
+        if options.buttonLook ~= "none" and not frame.icon then
+            -- The picture and the key's name, as the game's buttons have them.
+            -- They are the game's, so they are kept out of what the addon made.
+            local icon = setmetatable({ owner = frame, layer = "BACKGROUND", shown = true }, Texture)
+            local key = setmetatable({ owner = frame, layer = "ARTWORK", shown = true }, FontString)
+            icon.paint = function()
+                return IconColour(frame.action)
+            end
+            key.paint = function()
+                return KeyColour(frame.action)
+            end
+            if options.buttonLook == "secret" then
+                icon.vertexSecret, key.vertexSecret = true, true
+            end
+            frame.icon, frame.HotKey = icon, key
+        end
         if kind == "macro" then
             self.macros[slot] = spellID
             self.actions[slot] = { kind = "macro", id = slot }
@@ -1538,18 +1916,37 @@ function Mock.new(options)
         return frame
     end
 
+    --- The spell an action casts, and the spell that one is swapped for.
+    local function SpellsOf(self, action)
+        local data = self.spells[action.kind == "macro" and self.macros[action.id] or action.id]
+        return data, data and data.override and self.spells[data.override] or nil
+    end
+
     --- Says whether the skill in a slot can be used (enough rage, the right
     --- stance and so on). `lacking` marks it as short of rage, mana or energy.
     function world:setUsable(slot, usable, lacking)
         local action = assert(self.actions[slot], "no action in that slot")
-        action.unusable = not usable
-        action.lacking = lacking and true or nil
+        local spell, swapped = SpellsOf(self, action)
+        for _, subject in pairs({ action, spell, swapped }) do
+            subject.unusable = not usable
+            subject.lacking = lacking and true or nil
+        end
     end
 
-    --- Says whether the target is in the skill's reach: true, false (too far or
-    --- too close), or nil when range does not come into it.
-    function world:setRange(slot, inRange)
-        assert(self.actions[slot], "no action in that slot").inRange = inRange
+    --- Says whether a unit is in the skill's reach: true, false (too far or
+    --- too close), or nil when range does not come into it. With no unit named
+    --- it is your target.
+    function world:setRange(slot, inRange, unit)
+        local action = assert(self.actions[slot], "no action in that slot")
+        local spell, swapped = SpellsOf(self, action)
+        for _, subject in pairs({ action, spell, swapped }) do
+            if unit == nil or unit == "target" then
+                subject.inRange = inRange
+            else
+                subject.rangeTo = subject.rangeTo or {}
+                subject.rangeTo[unit] = inRange
+            end
+        end
     end
 
     function world:addMob(name, fields)
@@ -1573,6 +1970,15 @@ function Mock.new(options)
         self:fire("PLAYER_TARGET_CHANGED")
         if mob then
             Handover("target")
+        end
+    end
+
+    --- The enemy the game picks by itself while nothing is targeted.
+    function world:softTarget(mob)
+        self.tokens.softenemy = mob
+        self:fire("PLAYER_SOFT_ENEMY_CHANGED")
+        if mob then
+            Handover("softenemy")
         end
     end
 
@@ -1915,7 +2321,8 @@ function Mock.new(options)
             self.settingsPanel = env.CreateFrame("Frame", nil, env.UIParent)
             self.settingsPanel:Hide()
             self.settingsCanvas = env.CreateFrame("Frame", nil, self.settingsPanel)
-            self.settingsCanvas:SetSize(665, 601)
+            local page = options.settingsPage or { 665, 601 }
+            self.settingsCanvas:SetSize(page[1], page[2])
             self.settingsCanvas:Hide()
         end
         self.settingsPanel:Show()

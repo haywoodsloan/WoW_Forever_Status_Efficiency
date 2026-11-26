@@ -16,9 +16,10 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.3.2"
+ns.VERSION = "0.3.3"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
+local setmetatable, max, min = setmetatable, math.max, math.min
 
 local PREFIX = "|cff66ccffStatus Efficiency|r: "
 
@@ -583,6 +584,21 @@ function ns.WallClock()
     return type(text) == "string" and text or "unknown"
 end
 
+--- Whether the game has a piece of art by this name: true, false, or nil when
+--- the client cannot be asked.
+function ns.AtlasExists(atlas)
+    local art = C_Texture
+    local exists = Flag(art and art.GetAtlasExists, atlas)
+    if exists == nil then
+        -- Clients from before that call describe the art, or give nothing for none.
+        local info, known = Call(art and art.GetAtlasInfo, atlas)
+        if known then
+            exists = info ~= nil
+        end
+    end
+    return exists
+end
+
 --------------------------------------------------------------------------------
 -- Spells
 --------------------------------------------------------------------------------
@@ -736,37 +752,263 @@ function ns.SlotSpell(slot)
     return nil
 end
 
---- Whether the game would let the action in a slot be used right now, as far as
---- it tells an addon: usable, inRange, lacking. Each is true, false, or nil when
---- the game will not say or the question does not come into it.
+--------------------------------------------------------------------------------
+-- Whether a skill can be used right now
+--------------------------------------------------------------------------------
+--
+-- The game is asked three ways, each only when the one before gave no answer
+-- an addon may read: about the action in the slot, about the spell it casts,
+-- and at last the button is looked at, which the game's own code has painted
+-- for the player in colours that say the same.
+
+-- Who answered, as /se debug and the saved report have it.
+local BAR, SPELL, LOOK = "bar", "spell", "look"
+
+--- Asks a call of the "can it be used" kind. Returns usable, lacking: each
+--- true, false, or nil when the call is not there, failed or kept it secret.
+local function AskUsable(ask, id)
+    if type(ask) ~= "function" then
+        return nil, nil
+    end
+    local ok, first, second = pcall(ask, id)
+    if not ok then
+        return nil, nil
+    end
+    local usable, lacking = nil, nil
+    -- Older clients answer 1 and nothing where newer ones say true and false.
+    if not IsSecret(first) then
+        usable = first and true or false
+    end
+    if not IsSecret(second) then
+        lacking = second and true or false
+    end
+    return usable, lacking
+end
+
+--- Asks a call of the "is it in reach" kind. Returns inRange, known. A known
+--- nil is the game saying that reach does not come into it: there is nobody
+--- to judge it on, or the skill has no range.
+local function AskRange(ask, id, unit)
+    if type(ask) ~= "function" then
+        return nil, false
+    end
+    local ok, range = false, nil
+    if unit and unit ~= "target" then
+        -- Someone other than your target: say who. A call that takes no unit,
+        -- or has nothing to say of this one, is asked the plain way after all.
+        ok, range = pcall(ask, id, unit)
+        if ok and IsSecret(range) then
+            return nil, false
+        end
+        if range == nil then
+            ok = false
+        end
+    end
+    if not ok then
+        ok, range = pcall(ask, id)
+    end
+    if not ok or IsSecret(range) then
+        return nil, false
+    end
+    if range == nil then
+        return nil, true
+    end
+    return not (range == false or range == 0), true -- older clients answer 1 and 0
+end
+
+--- The colour a part of a button is drawn in, when that can be read.
+local function Tint(region)
+    local get = Field(region, "GetVertexColor")
+    if type(get) ~= "function" then
+        return nil
+    end
+    local ok, r, g, b = pcall(get, region)
+    if not ok then
+        return nil
+    end
+    r, g, b = PlainNumber(r), PlainNumber(g), PlainNumber(b)
+    if not (r and g and b) then
+        return nil
+    end
+    return r, g, b
+end
+
+--- What a button shows, as the game's own bars and the bar addons that copy
+--- them paint it: the picture white while the skill can be used, blue while
+--- rage, mana or energy is short, grey while it cannot be used for any other
+--- reason, and the key's name (on some bars the picture) red while the target
+--- is out of reach. Returns usable, lacking, far: each nil when the button
+--- does not show it in colours an addon may read.
+local function ButtonLook(button)
+    local usable, lacking, far = nil, nil, nil
+    local r, g, b = Tint(Field(button, "icon"))
+    if r then
+        if r >= 0.95 and g >= 0.95 and b >= 0.95 then
+            usable, lacking = true, false
+        elseif b >= 0.9 and r <= 0.7 and g <= 0.7 then
+            usable, lacking = false, true
+        elseif r >= 0.7 and g <= 0.4 and b <= 0.4 then
+            far = true
+        elseif r <= 0.6 and g <= 0.6 and b <= 0.6 and max(r, g, b) - min(r, g, b) <= 0.1 then
+            usable, lacking = false, false
+        end
+    end
+    r, g, b = Tint(Field(button, "HotKey"))
+    if r then
+        if r >= 0.9 and g <= 0.35 and b <= 0.35 then
+            far = true
+        elseif far == nil then
+            far = false
+        end
+    end
+    return usable, lacking, far
+end
+
+-- How far the spell and the look are believed. Either can say "cannot be
+-- used" of a skill for good: of a spell the game does not know by the number
+-- the bar gives, or on a bar that paints every picture dim. An icon must not
+-- vanish for good on such a say-so, so a plain "cannot be used" from either
+-- counts only once that source has been right. While the action bar answers,
+-- each is checked against it: one that agrees with it on something other than
+-- a plain "no" is believed from then on, one that contradicts it three times
+-- running is never asked again, and once two spells (or two buttons) have
+-- been proved this way the rest are believed too. Where the action bar never
+-- answers, a source is believed about a skill once it has said "yes" or
+-- "short of rage" about it, which a source that says "no" to everything
+-- never does.
+local PROOF, DOUBTS = 2, 3
+
+local function Trust()
+    return { keys = setmetatable({}, { __mode = "k" }), proven = 0 }
+end
+
+local spellTrust, lookTrust = Trust(), Trust() -- by spell id, by button
+
+local function Believed(trust, key)
+    local state = trust.keys[key]
+    return state == true or (state == nil and trust.proven >= PROOF)
+end
+
+--- Checks what a source says against what the action bar just said.
+local function Check(trust, key, usable, lacking, barUsable, barLacking)
+    if usable == nil then
+        return
+    end
+    local keys = trust.keys
+    local agrees = usable == barUsable
+        and (usable or lacking == nil or barLacking == nil or lacking == barLacking)
+    if not agrees then
+        local doubts = (keys[key] or 0) + 1
+        keys[key] = doubts < DOUBTS and doubts or false
+    elseif usable or lacking then
+        keys[key] = true
+        trust.proven = trust.proven + 1
+    else
+        keys[key] = nil -- both say a plain "no": that proves nothing, and clears nothing but the doubts
+    end
+end
+
+--- Takes what a source says when the action bar has not answered: nothing
+--- from one that was caught out, and no plain "cannot be used" from one that
+--- has not been right about this skill yet.
+local function Heard(trust, key, usable, lacking)
+    local keys = trust.keys
+    if usable == nil or keys[key] == false then
+        return nil, nil
+    end
+    if usable or lacking then
+        keys[key] = true
+    elseif lacking == false and not Believed(trust, key) then
+        return nil, nil
+    end
+    return usable, lacking
+end
+
+--- Adds what another source says to the answer so far: all of it where there
+--- was none, and only the reason where "cannot be used" came without one.
+local function Merge(usable, lacking, how, can, short, source)
+    if usable == nil then
+        if can ~= nil then
+            return can, short, source
+        end
+    elseif usable == false and lacking == nil and can == false and short ~= nil then
+        return false, short, how
+    end
+    return usable, lacking, how
+end
+
+--- Whether the game would let the skill on a button be used right now, as far
+--- as it tells an addon: usable, inRange, lacking, and then who answered each
+--- of the two questions ("bar", "spell" or "look"; nil for nobody). The first
+--- three are true, false, or nil when the game will not say or the question
+--- does not come into it.
 ---   usable   false while the game dims the button: not enough rage, mana or
 ---            energy, the wrong stance, a target the skill is no use on
----   inRange  false while the target is out of the skill's reach, which
----            includes too close for a skill with a shortest range
+---   inRange  false while `unit`, whom the skill would go to, is out of its
+---            reach, which includes too close for a skill with a shortest
+---            range. Never asked for "player": you are in reach of yourself.
 ---   lacking  true when rage, mana or energy is what is missing: the game's
 ---            own buttons turn blue for that, and grey for everything else
 --- A cooldown is part of none of them: the game can keep cooldowns from
 --- addons during a fight.
-function ns.ActionUsable(slot)
-    local bar = C_ActionBar
-    local usable, lacking = nil, nil
-    local ask = bar and bar.IsUsableAction or IsUsableAction
-    if type(ask) == "function" then
-        local ok, first, second = pcall(ask, slot)
-        if ok then
-            -- Older clients answer 1 and nothing where newer ones say true and false.
-            if not IsSecret(first) then
-                usable = first and true or false
+function ns.ActionUsable(slot, unit, spellID, button)
+    local bar, book = C_ActionBar, C_Spell
+    local askSpell = book and book.IsSpellUsable
+    local usable, lacking = AskUsable(bar and bar.IsUsableAction or IsUsableAction, slot)
+    local how = usable ~= nil and BAR or nil
+    local looked, lookUsable, lookLacking, lookFar = false, nil, nil, nil
+
+    if usable == nil or (usable == false and lacking == nil) then
+        -- No answer, or "no" without the reason: the spell, then the button.
+        if spellID then
+            local can, short = Heard(spellTrust, spellID, AskUsable(askSpell, spellID))
+            usable, lacking, how = Merge(usable, lacking, how, can, short, SPELL)
+        end
+        if button and (usable == nil or (usable == false and lacking == nil)) then
+            looked = true
+            lookUsable, lookLacking, lookFar = ButtonLook(button)
+            local can, short = Heard(lookTrust, button, lookUsable, lookLacking)
+            usable, lacking, how = Merge(usable, lacking, how, can, short, LOOK)
+        end
+    else
+        -- The action bar told it all. The other two are held against it until
+        -- it is settled whether they can stand in for it.
+        local state = spellID and spellTrust.keys[spellID]
+        if spellID and state ~= true and state ~= false then
+            local can, short = AskUsable(askSpell, spellID)
+            Check(spellTrust, spellID, can, short, usable, lacking)
+        end
+        state = button and lookTrust.keys[button]
+        if button and state ~= true and state ~= false then
+            looked = true
+            lookUsable, lookLacking, lookFar = ButtonLook(button)
+            Check(lookTrust, button, lookUsable, lookLacking, usable, lacking)
+        end
+    end
+
+    local inRange, howRange = nil, nil
+    if unit ~= "player" then
+        local known
+        inRange, known = AskRange(bar and bar.IsActionInRange or IsActionInRange, slot, unit)
+        if known then
+            howRange = BAR
+        elseif spellID then
+            inRange, known = AskRange(book and book.IsSpellInRange, spellID, unit)
+            if known then
+                howRange = SPELL
             end
-            if not IsSecret(second) then
-                lacking = second and true or false
+        end
+        if not known and button then
+            if not looked then
+                lookUsable, lookLacking, lookFar = ButtonLook(button)
+            end
+            if lookFar ~= nil then
+                howRange = LOOK
+                if lookFar then
+                    inRange = false
+                end
             end
         end
     end
-    local range, known = Call(bar and bar.IsActionInRange or IsActionInRange, slot)
-    local inRange = nil
-    if known and range ~= nil then
-        inRange = not (range == false or range == 0) -- older clients answer 1 and 0
-    end
-    return usable, inRange, lacking
+    return usable, inRange, lacking, how, howRange
 end

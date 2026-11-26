@@ -230,7 +230,11 @@ local OPTIONAL_READS = {
     -- Whole parts of the API that some of the pretend clients leave out.
     issecretvalue = true, C_Secrets = true, C_UnitAuras = true, Settings = true,
     InterfaceOptions_AddCategory = true, GetSpellTexture = true, SOUNDKIT = true, PlaySound = true,
-    IsUsableAction = true, IsActionInRange = true,
+    IsUsableAction = true, IsActionInRange = true, C_Texture = true,
+    -- Fonts, which the settings panel looks for before it borrows one.
+    GameFontNormal = true, GameFontNormalLarge = true, GameFontNormalSmall = true, GameFontHighlight = true,
+    GameFontHighlightSmall = true, GameFontHighlightHuge = true, GameFontDisable = true,
+    GameFontDisableSmall = true,
 }
 
 --- Fails the scenario if the addon wrote a global of its own, or read one that
@@ -2522,6 +2526,10 @@ test("an icon only shows on a skill that can be used right now", function()
     w:setRange(1, true)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "back in reach")
+    w:drain()
+    w:slash("debug")
+    check(w:drain():find("Whether a skill can be used: told by the action bar. Whether its target is in reach: "
+        .. "told by the action bar.", 1, true), "/se debug says who answers")
 
     w:setUsable(1, false)
     w:setUsable(3, false)
@@ -2621,7 +2629,8 @@ test("an icon stays through a fight in which every skill empties the rage bar", 
 end)
 
 test("when the game will not say why a skill cannot be used, the icon shows", function()
-    local w = Simple({ usableAPI = "reason secret" })
+    -- Not of the action, not of the spell, and on a button with no colours to read.
+    local w = Simple({ usableAPI = "reason secret", buttonLook = "none" })
     w:setUsable(1, false, true)
     w:setUsable(3, false)
     w:advance(0.3)
@@ -2714,8 +2723,9 @@ test("/se usable says and sets on which skills the icons appear", function()
 end)
 
 test("when the game will not say whether a skill can be used, the icon shows", function()
+    -- Not of the action, not of the spell, and on a button with no colours to read.
     for _, api in ipairs({ "none", "secret" }) do
-        local w = Simple({ usableAPI = api })
+        local w = Simple({ usableAPI = api, buttonLook = "none" })
         w:setRange(1, false)
         w:setUsable(3, false)
         w:advance(0.3)
@@ -2750,6 +2760,317 @@ test("an older client's plain answers about using a skill are understood", funct
     w:setUsable(1, false, true)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "nothing and then 1 for a skill there is no rage for")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Other ways of finding out whether a skill can be used
+--------------------------------------------------------------------------------
+
+test("when the action bar will not say whether a skill can be used, the spell is asked", function()
+    local w, ns = Simple({ usableAPI = "secret", spellAPI = "plain", buttonLook = "none" })
+    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:setUsable(1, false)
+    w:setUsable(3, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "the wrong stance for Rend, as the game says of the spell")
+    eq(w:icon("ActionButton3"), nil, "and Battle Shout held back")
+    w:setUsable(1, false, true)
+    w:setUsable(3, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "only short of rage: that does not hide an icon")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:setUsable(1, true)
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "out of reach, as the game says of the spell")
+    w:setRange(1, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+
+    w:drain()
+    w:slash("usable")
+    check(not w:drain():find("not telling", 1, true), "nothing to own up to: the setting does its work")
+    w:slash("debug")
+    local said = w:drain()
+    check(said:find("Whether a skill can be used: not told by the action bar, so asked about the spell. Whether "
+        .. "its target is in reach: not told by the action bar, so asked about the spell.", 1, true),
+        "/se debug says who answers: " .. said)
+    local from = ns.db.report.usableFrom
+    check(from and from.calm["spell / spell"], "and so does the saved report, for Rend")
+    check(from.calm["spell / -"], "and for Battle Shout, whose reach is not asked: it goes on you")
+    eq(from.fight, nil, "nothing from a fight: there was none")
+    Clean(w)
+end)
+
+test("when neither the action bar nor the spell will say, the button itself is looked at", function()
+    local w = Simple({ usableAPI = "secret" })
+    eq(w:icon("ActionButton1"), "check", "the game has painted the picture white: the skill can be used")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:setUsable(1, false)
+    w:setUsable(3, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "Rend is painted grey")
+    eq(w:icon("ActionButton3"), nil, "and so is Battle Shout")
+    w:setUsable(1, false, true)
+    w:setUsable(3, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "blue is short of rage, which does not hide an icon")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:setUsable(1, true)
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "the key's name is red: out of reach")
+    w:setRange(1, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+
+    w:drain()
+    w:slash("usable")
+    check(not w:drain():find("not telling", 1, true), "nothing to own up to")
+    w:slash("debug")
+    local said = w:drain()
+    check(said:find("Whether a skill can be used: read off the button's own colours. Whether its target is in "
+        .. "reach: read off the button's own colours.", 1, true), "/se debug says how it knows: " .. said)
+    Clean(w)
+
+    -- Some bar addons turn the whole picture red out of reach, not the key's name.
+    w = Simple({ usableAPI = "secret", buttonLook = "red icon" })
+    eq(w:icon("ActionButton1"), "check")
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "a red picture is out of reach as well")
+    w:setRange(1, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+
+    -- Colours an addon may not read say nothing, so the icons show.
+    w = Simple({ usableAPI = "secret", buttonLook = "secret" })
+    w:setRange(1, false)
+    w:setUsable(3, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "secret colours: Rend")
+    eq(w:icon("ActionButton3"), "check", "secret colours: Battle Shout")
+    w:drain()
+    w:slash("usable")
+    check(w:drain():find("not telling the addon whether a skill can be used", 1, true), "and /se usable owns up")
+    Clean(w)
+end)
+
+test("why a skill cannot be used is found out another way when the action bar keeps it back", function()
+    -- Rend is short of rage and Battle Shout is held back for another reason. The
+    -- action bar says of both that they cannot be used, and of neither why.
+    local function Told(options, how)
+        local w = Simple(options)
+        w:setUsable(1, false, true)
+        w:setUsable(3, false)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check", how .. ": short of rage, so the icon stays")
+        eq(w:icon("ActionButton3"), nil, how .. ": not rage, so it goes")
+        w:setUsable(3, false, true)
+        w:advance(0.3)
+        eq(w:icon("ActionButton3"), "check", how .. ": and comes back when rage is all that is missing")
+        Clean(w)
+    end
+    Told({ usableAPI = "reason secret", spellAPI = "plain", buttonLook = "none" }, "asked of the spell")
+    Told({ usableAPI = "reason secret" }, "read off the button, blue for rage and grey for the rest")
+end)
+
+test("a skill does not lose its icon for good to a source that says no to everything", function()
+    -- The game does not know the spells by the numbers the bar gives: asked
+    -- about them, it says "cannot be used" every time.
+    local w = Simple({ usableAPI = "secret", spellAPI = "strange", buttonLook = "none" })
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check", "a \"no\" from a source that has never said anything else is not believed")
+    eq(w:icon("ActionButton3"), "check")
+    w:drain()
+    w:slash("usable")
+    check(w:drain():find("not telling the addon whether a skill can be used", 1, true), "and /se usable owns up")
+    Clean(w)
+
+    -- The bars paint every picture dim, whatever the skill.
+    w = Simple({ usableAPI = "none", buttonLook = "dim" })
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check", "a bar that is all grey says nothing")
+    eq(w:icon("ActionButton3"), "check")
+    Clean(w)
+
+    -- Once a button has shown that it can be told apart, its grey counts.
+    w = Simple({ usableAPI = "none" })
+    eq(w:icon("ActionButton1"), "check")
+    w:setUsable(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "white a moment ago, grey now")
+    Clean(w)
+end)
+
+--- Rend, Thunder Clap and Battle Shout on the bar and a boar targeted, on a
+--- client that answers about skills out of a fight and not in one.
+local function QuietInFights(options)
+    options = options or {}
+    options.usableAPI = "combat secret"
+    local w = World(options)
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, CLAP)
+    w:addButton("ActionButton3", 3, SHOUT)
+    return w
+end
+
+local function Pull(w)
+    local ns = w:load()
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.6)
+    return ns
+end
+
+test("what a fight hides about skills is read off the buttons, which were checked while the game still answered", function()
+    local w = QuietInFights()
+    w:setUsable(1, false) -- the wrong stance for Rend, from the start
+    local ns = Pull(w)
+    eq(w:icon("ActionButton1"), nil, "out of a fight the action bar says so")
+    eq(w:icon("ActionButton2"), "check")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:enterCombat()
+    w:advance(0.6)
+    eq(w:icon("ActionButton1"), nil, "in the fight Rend's grey is believed, although Rend was never seen any "
+        .. "other way: the other two buttons proved that these bars paint as the game does")
+    eq(w:icon("ActionButton2"), "check")
+    eq(w:icon("ActionButton3"), "check")
+    w:setUsable(1, true)
+    w:setUsable(2, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the right stance at last")
+    eq(w:icon("ActionButton2"), nil, "and Thunder Clap held back")
+
+    local from = ns.db.report.usableFrom
+    check(from.calm["bar / bar"], "the saved report: the action bar answered out of the fight")
+    check(from.fight["look / look"] or from.fight["look / bar"], "and the buttons' colours in it")
+    Clean(w)
+end)
+
+test("a button whose colours contradict the action bar is not believed once the bar falls silent", function()
+    local w = QuietInFights({ spellAPI = "none" })
+    -- A fourth skill, on a bar addon's button that is drawn dim whatever the skill.
+    local odd = w:addButton("BT4Button1", 4, MARK)
+    odd.icon.paint = function()
+        return 0.4, 0.4, 0.4, 1
+    end
+    Pull(w)
+    eq(w:icon("BT4Button1"), "check", "out of a fight the action bar says it can be used")
+
+    w:enterCombat()
+    w:advance(0.6)
+    eq(w:icon("BT4Button1"), "check", "grey, and not believed: it was grey while the action bar said yes")
+    w:setUsable(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "the game's own buttons are still read")
+    w:drain()
+    w:slash("usable")
+    check(not w:drain():find("not telling", 1, true), "one button without an answer is not the client keeping quiet")
+    Clean(w)
+end)
+
+test("a spell the game answers wrongly about is not believed once the action bar falls silent", function()
+    local w = QuietInFights({ spellAPI = "plain", buttonLook = "none" })
+    w:addButton("ActionButton4", 4, MARK)
+    w.spells[MARK].strange = true -- it says "cannot be used" of this one whatever happens
+    Pull(w)
+    eq(w:icon("ActionButton4"), "check", "out of a fight the action bar says it can be used")
+
+    w:enterCombat()
+    w:advance(0.6)
+    eq(w:icon("ActionButton4"), "check", "\"cannot be used\", and not believed: it said so while the action bar said yes")
+    w:setUsable(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "what it says of the other spells still counts")
+    Clean(w)
+end)
+
+test("the spell and the button are left alone once it is settled that they agree with the action bar", function()
+    local w = Simple()
+    w:advance(1)
+    w.spellAsked, w.lookAsked = 0, 0
+    w:setUsable(1, false)
+    w:advance(1)
+    w:setUsable(1, true)
+    w:setRange(1, false)
+    w:advance(1)
+    eq(w.spellAsked, 0, "the action bar answers, so the spell is not asked")
+    eq(w.lookAsked, 0, "and the button is not looked at")
+    Clean(w)
+end)
+
+test("reach is judged to whoever the skill would go to", function()
+    -- A buff that goes on you does not mind how far away your target is.
+    local w = Simple()
+    w:setRange(3, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton3"), "check", "Battle Shout, with the boar out of reach")
+    Clean(w)
+
+    -- An attack that leaves its effect on you still has to reach the enemy.
+    w = Bar(nil, RAMPAGE)
+    w:slash("buff Rampage") -- judged as a buff on you from here on
+    local wolf = w:addMob("Wolf")
+    w:showPlate(wolf)
+    w:target(wolf)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "Rampage, with the wolf in reach")
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "the wolf is out of reach, and Rampage strikes the wolf")
+    Clean(w)
+
+    -- A buff for a friend does mind how far the friend is.
+    w = Bar(nil, FORT)
+    local guard = w:addMob("Guard", { hostile = false })
+    w:target(guard)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "Fortitude for the guard")
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "the guard is out of reach")
+    w:target(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "with nobody targeted it goes on you, and you are always in reach")
+    Clean(w)
+
+    -- With nothing targeted, a debuff goes to the enemy the game picks by itself.
+    w = Bar(nil, REND)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:softTarget(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "Rend for the boar the game picked")
+    w:setRange(1, false, "softenemy")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "which is out of reach")
+    check(w.rangeAsked.softenemy, "the game was asked about that boar by name")
+    w:setRange(1, true, "softenemy")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+
+    -- A client whose call takes no unit is asked the plain way. (Nothing else
+    -- to go by here: no call about the spell, no colours on the button.)
+    w = Bar({ usableAPI = "no unit", spellAPI = "none", buttonLook = "none" }, REND)
+    boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:softTarget(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "its own notion of who the skill goes to")
     Clean(w)
 end)
 
@@ -2898,6 +3219,389 @@ test("settings: a client short of a font, an atlas, lines or sounds still gets t
         "a spell whose picture cannot be asked for gets a question mark")
     w:slash("options")
     check(w.env.StatusEfficiencyOptions:IsShown())
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- The settings panel: looking after itself
+--
+-- Nobody should have to type a command, or even notice, when something of the
+-- game's is missing or does not behave: the panel finds out and helps itself.
+--------------------------------------------------------------------------------
+
+--- Every label that has been made in this world, on screen or not.
+local function Labels(w)
+    local list = {}
+    for i = 1, #w.frames do
+        for _, label in ipairs(w.frames[i].strings) do
+            list[#list + 1] = label
+        end
+    end
+    return list
+end
+
+--- How many frames were made from one of the game's templates.
+local function Made(w, template)
+    local count = 0
+    for i = 1, #w.frames do
+        if w.frames[i].template == template then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local SLIDER, TICK, BUTTON = "MinimalSliderWithSteppersTemplate", "MinimalCheckboxTemplate", "UIPanelButtonTemplate"
+
+test("settings: a control of the game's that fails its test is replaced without a word", function()
+    -- What is wrong with it, which control that is, and how to try the replacement.
+    local faults = {
+        { SLIDER, "stuck", "slider" }, { SLIDER, "hollow", "slider" }, { SLIDER, "mute", "slider" },
+        { TICK, "forgets", "tick" }, { TICK, "huge", "tick" }, { BUTTON, "wordless", "button" },
+    }
+    for _, fault in ipairs(faults) do
+        local what = fault[2] .. " " .. fault[3]
+        local w, ns = Simple({ brokenTemplates = { [fault[1]] = fault[2] } })
+        w:drain()
+        local view = w:openSettings().view
+        check(view ~= nil, "the panel is built with a " .. what)
+        eq(view.size.slider.native == true, fault[3] ~= "slider", "the slider, with a " .. what)
+        eq(view.enable.native == true, fault[3] ~= "tick", "the tick box, with a " .. what)
+        eq(view.size.auto.native == true, fault[3] ~= "tick", "the Auto tick box, with a " .. what)
+        eq(view.reset.native == true, fault[3] ~= "button", "the reset button, with a " .. what)
+        eq(Made(w, fault[1]), 1, "one that failed is not tried again for the next control, with a " .. what)
+
+        -- Everything still works.
+        w:slide(view.size.slider.widget, 26)
+        eq(ns.db.size, 26, "the size slider works, with a " .. what)
+        w:click(view.enable.frame)
+        eq(ns.db.enabled, false, "the tick box works, with a " .. what)
+        w:click(view.enable.frame)
+        w:click(view.reset)
+        w:click(view.confirm.yes)
+        eq(ns.db.size, 0, "the reset button works, with a " .. what)
+
+        -- The window of its own goes the same way, and nothing is said in chat.
+        w:slash("options")
+        local window = w.env.StatusEfficiencyOptions.view
+        eq(window.size.slider.native == true, fault[3] ~= "slider", "the window's slider, with a " .. what)
+        eq(Made(w, fault[1]), 1, "nor is it tried again for the window, with a " .. what)
+        eq(w:drain(), "", "nothing is said, with a " .. what)
+
+        -- Why is kept, and saved with the settings once the panel closes.
+        check(ns.Options.notes.controls[fault[3]]:find("^own: "), "the reason is noted, with a " .. what)
+        w:closeSettings()
+        eq(ns.db.panel.controls[fault[3]], ns.Options.notes.controls[fault[3]], "and saved, with a " .. what)
+        Clean(w)
+    end
+end)
+
+test("settings: the game's slider is heard whichever way it tells of a move, and once", function()
+    for _, fault in ipairs({ false, "no notice", "no hook" }) do
+        local what = fault or "nothing wrong"
+        local w, ns = Simple(fault and { brokenTemplates = { [SLIDER] = fault } } or nil)
+        local view = w:openSettings().view
+        eq(view.size.slider.native, true, "the game's slider is kept, with " .. what)
+
+        local changes = 0
+        local relayout = ns.Relayout
+        ns.Relayout = function(...)
+            changes = changes + 1
+            return relayout(...)
+        end
+        w:slide(view.size.slider.widget, 26)
+        eq(ns.db.size, 26, "a drag is heard, with " .. what)
+        eq(changes, 1, "and acted on once, with " .. what)
+        Step(w, view, 1)
+        eq(ns.db.size, 27, "so is a step, with " .. what)
+        eq(changes, 2, "once, with " .. what)
+        eq(view.size.readout:GetText(), "27")
+        Clean(w)
+    end
+end)
+
+test("settings: a control whose art this client lacks is not used, since it would not be seen", function()
+    local w = Simple({ missingAtlases = { ["checkmark-minimal"] = true } })
+    local view = w:openSettings().view
+    eq(view.enable.native, nil, "a tick box whose tick would not show")
+    eq(view.size.slider.native, true, "the slider's art is all there")
+    check(w.ns.Options.notes.controls.tick:find("art", 1, true), "and why is noted")
+    Clean(w)
+
+    w = Simple({ missingAtlases = { Minimal_SliderBar_Button = true } })
+    view = w:openSettings().view
+    eq(view.size.slider.native, nil, "a slider with no thumb to drag")
+    eq(view.enable.native, true)
+    Clean(w)
+
+    w = Simple({ missingAtlases = { ["RedButton-Exit"] = true, Options_HorizontalDivider = true } })
+    local canvas = w:openSettings()
+    w:slash("options")
+    eq(w.env.StatusEfficiencyOptions.close.template, nil, "a close button with no face")
+    local line
+    for _, texture in ipairs(canvas.host.textures) do
+        line = line or texture.color
+        eq(texture.wantedAtlas, nil, "the heading's rule is not left to art that is not there")
+    end
+    check(line, "the addon draws the rule under the heading itself")
+    Clean(w)
+
+    -- A client that cannot be asked about its art is taken at its word.
+    w = Simple({ noAtlasQuery = true })
+    view = w:openSettings().view
+    eq(view.enable.native, true)
+    eq(view.size.slider.native, true)
+    Clean(w)
+end)
+
+test("settings: if the panel breaks while it is built with the game's controls, it is built again with its own", function()
+    -- The game's button is made without complaint, and fails once it is given a click to act on.
+    local w, ns = Simple({ brokenTemplates = { [BUTTON] = "late" } })
+    w:drain()
+    local canvas = w:openSettings()
+    local view = canvas.view
+    check(view ~= nil, "there is a panel all the same")
+    eq(w:drain(), "", "and nothing is said about it")
+    eq(view.reset.native, nil, "its buttons are the addon's own")
+    eq(view.enable.native, nil, "and so is the rest, so that it is all of a piece")
+    eq(view.size.slider.native, nil)
+    eq(#ns.Options.views, 1, "the half-built copy is not kept")
+    check(canvas.host:IsVisible(), "the copy that worked is the one on screen")
+    local hidden = 0
+    for _, child in ipairs(canvas.children) do
+        if not child.shown then
+            hidden = hidden + 1
+        end
+    end
+    eq(hidden, 1, "and the half-built one is put away")
+
+    w:click(view.previews.none.zones.RIGHT)
+    eq(ns.db.corner, "RIGHT", "it works")
+    w:click(view.reset)
+    w:click(view.confirm.yes)
+    eq(ns.db.corner, "TOPLEFT")
+
+    -- Later copies do not try the game's controls again this session.
+    local made = Made(w, BUTTON)
+    w:slash("options")
+    local window = w.env.StatusEfficiencyOptions
+    check(window:IsShown(), "the window of its own opens")
+    eq(window.view.reset.native, nil)
+    eq(window.close.template, nil)
+    eq(Made(w, BUTTON), made, "the game's button is not made again")
+    eq(w:drain(), "")
+
+    check(ns.Options.notes.rebuilt:find("click script", 1, true), "what went wrong is noted")
+    w:closeSettings()
+    check(ns.db.panel.rebuilt:find("click script", 1, true), "and saved with the settings")
+    eq(ns.db.plain, false, "the player's own choice of drawing is left alone")
+    Clean(w)
+
+    -- The same when the window of its own is the first copy to be built.
+    w, ns = Simple({ brokenTemplates = { [BUTTON] = "late" } })
+    w:drain()
+    w:slash("options")
+    window = w.env.StatusEfficiencyOptions
+    check(window:IsShown(), "the window opens")
+    eq(w:drain(), "")
+    eq(window.view.reset.native, nil)
+    eq(#w.env.UISpecialFrames, 1, "Escape closes it, and only it")
+    eq(#ns.Options.views, 1)
+    w:click(window.close)
+    eq(window:IsShown(), false)
+    eq(w:openSettings().view.reset.native, nil, "and the Options window follows suit")
+    Clean(w)
+end)
+
+test("settings: in the game's standard font no label is drawn smaller", function()
+    local w = Bar(nil, REND, HEROIC, SHOUT, CLAP, MARK, HAWK)
+    local view = w:openSettings().view
+    w:click(view.swatches.some.check) -- two results share an icon, so the note at the far end is up
+    w:click(view.tabs.spells)
+    w:slash("options")
+    local fitted = 0
+    for _, label in ipairs(Labels(w)) do
+        if label.fitRoom then
+            fitted = fitted + 1
+            eq(label.textScale or 1, 1, "the scale of \"" .. tostring(label.text) .. "\"")
+            check(not label.fitCut, "\"" .. tostring(label.text) .. "\" is whole")
+        end
+    end
+    check(fitted > 100, "the panel's labels are measured: " .. fitted)
+    for _, preview in pairs(view.previews) do
+        eq(preview.caption.textScale or 1, 1, "the captions under the preview")
+    end
+    eq(next(w.ns.Options.notes.fonts), nil, "no font had to be replaced")
+    Clean(w)
+end)
+
+--- Fails unless every fitted label in the world is inside the room it has.
+local function Fits(w, what)
+    local smaller = 0
+    for _, label in ipairs(Labels(w)) do
+        local scale = label.textScale or 1
+        check(scale >= 0.7 - 1e-9, "\"" .. tostring(label.text) .. "\" is too small to read, " .. what)
+        if scale < 1 then
+            smaller = smaller + 1
+        end
+        if label.fitLines then
+            eq(label.maxLines, label.fitLines, "lines \"" .. tostring(label.text) .. "\" may take, " .. what)
+        elseif label.fitRoom then
+            check(label:GetStringWidth() <= label.fitRoom + 0.5, string.format("\"%s\" is %.0f wide in room for %.0f, %s",
+                tostring(label.text), label:GetStringWidth(), label.fitRoom, what))
+        end
+    end
+    return smaller
+end
+
+test("settings: in a wider font labels are drawn smaller, and none outgrows its room", function()
+    for _, wider in ipairs({ 1.15, 1.4, 2.5 }) do
+        local what = "letters " .. wider .. " times as wide"
+        local w, ns = Bar({ fontWidth = wider }, REND, HEROIC, SHOUT, CLAP, MARK, HAWK)
+        local view = w:openSettings().view
+        w:click(view.swatches.some.check)
+        w:click(view.tabs.spells)
+        w:slash("options")
+        check(Fits(w, what) > 0, "some labels had to shrink, with " .. what)
+
+        -- The three captions under the pretend buttons keep clear of each other.
+        local keys = { "none", "some", "all" }
+        for i = 1, 2 do
+            local left, right = view.previews[keys[i]].caption, view.previews[keys[i + 1]].caption
+            check((left:GetStringWidth() + right:GetStringWidth()) / 2 + 4 <= 92.01,
+                "captions " .. i .. " and " .. (i + 1) .. " keep a gap, with " .. what)
+        end
+
+        -- A sentence beside a heading gives way to the note at the far end.
+        w:click(view.tabs.appearance)
+        local page = view.pages.appearance
+        for _, key in ipairs(keys) do
+            local name, detail, clash = view.names[key], view.details[key], view.clashes[key]
+            local ends = 38 + name:GetStringWidth() + 10 + detail:GetStringWidth()
+            local starts = clash:IsShown() and 624 - clash:GetStringWidth() or 624
+            check(ends <= starts + 0.5, "the sentence for " .. key .. " ends before the note, with " .. what)
+        end
+        check(page:IsVisible())
+
+        -- A click on a tick box's words still lands on the box, and no further.
+        local reach = -view.enable.frame.hitInsets[2] - 6
+        near(reach, view.enable.label:GetStringWidth(), "how far the tick box reaches, with " .. what)
+
+        -- What had to give is noted for later.
+        w:closeSettings()
+        check(next(ns.db.panel.tight) ~= nil, "tight labels are saved with the settings, with " .. what)
+        Clean(w)
+    end
+end)
+
+test("settings: a client whose labels cannot be drawn smaller still gets the whole panel", function()
+    local w, ns = Bar({ fontWidth = 1.4, noTextScale = true }, REND, HEROIC, SHOUT)
+    local view = w:openSettings().view
+    check(view ~= nil, "the panel is built")
+    for _, label in ipairs(Labels(w)) do
+        eq(label.textScale, nil)
+    end
+    w:click(view.tabs.spells)
+    eq(view.spells.rows[1].why.maxLines, 2, "what wraps is still kept to the lines it has room for")
+    w:click(view.tabs.appearance)
+    w:click(view.previews.none.zones.RIGHT)
+    eq(ns.db.corner, "RIGHT")
+    Clean(w)
+end)
+
+test("settings: a font this client lacks is replaced by its nearest neighbour", function()
+    local w, ns = Simple({ missingFonts = { GameFontHighlightSmall = true, GameFontDisableSmall = true } })
+    local view = w:openSettings().view
+    eq(view.appear.buttons.always.label.font, "GameFontNormalSmall", "the font of a choice")
+    eq(view.sampleNote.font, "GameFontNormalSmall", "the font of a note")
+    eq(view.inputs.none.font, "GameFontNormalSmall", "the font of a box to type in")
+    eq(ns.Options.notes.fonts.GameFontHighlightSmall, "GameFontNormalSmall", "it is noted")
+    w:click(view.appear.buttons.combat)
+    eq(ns.db.appear, "combat")
+    Clean(w)
+
+    -- Not one of the fonts: the game's everyday typeface, by its file.
+    local all = {}
+    for _, font in ipairs({ "GameFontNormal", "GameFontNormalLarge", "GameFontNormalSmall", "GameFontHighlight",
+        "GameFontHighlightSmall", "GameFontHighlightHuge", "GameFontDisable", "GameFontDisableSmall" }) do
+        all[font] = true
+    end
+    w, ns = Simple({ missingFonts = all, noTemplates = true })
+    w:drain()
+    view = w:openSettings().view
+    check(view ~= nil, "the panel is built without a single font to borrow")
+    eq(w:drain(), "")
+    eq(view.sampleNote.fontFile, "Fonts\\FRIZQT__.TTF")
+    eq(view.sampleNote.fontHeight, 10, "small text stays small")
+    eq(view.tabs.spells.label.fontHeight, 12)
+    eq(view.inputs.none.fontFile, "Fonts\\FRIZQT__.TTF", "boxes to type in too")
+    eq(ns.Options.notes.fonts.GameFontNormal, "none")
+    w:click(view.tabs.spells)
+    eq(view.spells.rows[1].name:GetText(), "Battle Shout")
+    w:slash("options")
+    check(w.env.StatusEfficiencyOptions:IsShown())
+    Clean(w)
+end)
+
+test("settings: on a smaller page of the Options window the whole panel is drawn smaller", function()
+    local w, ns = Simple()
+    local canvas = w:openSettings()
+    eq(canvas.host.scale, nil, "the usual page: drawn as it is")
+    eq(ns.Options.notes.page, "665 x 601", "the page it was given is noted")
+    near(canvas.view.previews.none.button.width, 45, "the pretend buttons are life-size")
+    local point, anchor, _, x = canvas.view.divider:GetPoint(1)
+    check(point == "TOP" and anchor == canvas and x == 0,
+        "the game's divider runs across the middle of the page, which is wider than the panel, as on the game's own pages")
+    Clean(w)
+
+    w, ns = Simple({ settingsPage = { 500, 450 } })
+    canvas = w:openSettings()
+    near(canvas.host.scale, 0.75, "three quarters as large, to fit 500 by 450")
+    check(640 * canvas.host.scale <= 500 and 600 * canvas.host.scale <= 450, "all of it is on the page")
+    near(canvas.view.previews.none.button.width, 60,
+        "the pretend buttons grow in the panel's units, so that they stay life-size on screen")
+    w:click(canvas.view.previews.none.zones.RIGHT)
+    eq(ns.db.corner, "RIGHT")
+
+    -- The Options window settles on another size while the panel is up.
+    w.settingsCanvas:SetSize(320, 601)
+    canvas.scripts.OnSizeChanged(canvas, 320, 601)
+    near(canvas.host.scale, 0.5, "half as large, and no smaller than that")
+    w.settingsCanvas:SetSize(900, 700)
+    canvas.scripts.OnSizeChanged(canvas, 900, 700)
+    near(canvas.host.scale, 1, "back to full size on a roomy page, and never larger")
+    near(canvas.view.previews.none.button.width, 45)
+    w:closeSettings()
+    eq(ns.db.panel.page, "900 x 700")
+    eq(ns.db.panel.scale, 1)
+    Clean(w)
+
+    -- A window of its own is not at the mercy of anybody's page.
+    w:slash("options")
+    eq(w.env.StatusEfficiencyOptions.scale, nil)
+    Clean(w)
+end)
+
+test("settings: what the panel found out about this client is saved with the settings", function()
+    local w, ns = Simple()
+    eq(ns.db.panel, nil, "nothing until the panel has been built")
+    w:openSettings()
+    local saved = ns.db.panel
+    eq(saved.version, ns.VERSION)
+    eq(saved.build, BUILD)
+    eq(saved.plain, false)
+    eq(saved.controls.button, "game")
+    eq(saved.controls.tick, "game")
+    eq(saved.controls.slider, "game")
+    eq(saved.rebuilt, nil)
+    eq(saved.failed, nil)
+    w:slash("options")
+    eq(ns.db.panel.controls.close, "game", "the window adds its close button")
+    Clean(w)
+
+    w, ns = Simple({ noTemplates = true })
+    w:openSettings()
+    check(ns.db.panel.controls.tick:find("^own: .*MinimalCheckboxTemplate"), "a missing template is named")
     Clean(w)
 end)
 
