@@ -10,8 +10,15 @@
 --     effect is taken to have landed then, and to last as long as the spell
 --     says. If they do not, the cast missed, was dodged or resisted, and
 --     nothing is recorded.
---   * Until those reports have been seen to arrive in combat on this client,
---     and for a unit nobody is reporting on, a cast is assumed to land.
+--   * A change that comes just as one of your own effects on the unit was due
+--     to run out is put down to that, and not to a cast. That is given up for
+--     a spell whose endings turn out to go unreported more often than not.
+--   * A cast is assumed to land only where there is nothing to go on: a unit
+--     nobody reports on, a client that has stopped reporting, and a spell
+--     tracked on your say-so that reports cannot see.
+--   * A spell with no icon is listened for all the same. That is how one that
+--     lost its icon earns it back, and how one that never looked like a status
+--     spell is found to be one.
 --   * If the client still lets us count your effects on the unit (or see their
 --     instance ids), a cast that adds nothing is treated as a miss, an effect
 --     that drops off early is removed, and one that outlives its timer is kept.
@@ -39,6 +46,8 @@ local SENT_TTL = 15 -- forget a cast that was sent but never finished
 local HOLD = 0.5 -- an effect we can still see stays alive at least this long between looks
 local FOREVER = 3600 -- stand-in timer for an effect that has no duration
 local CHANGE_TTL = 5 -- how long the time of a unit's last change is kept
+local DUE_EARLY, DUE_LATE = 0.1, 0.3 -- how long before and after an effect was due to end a report is still its ending
+local LINGER = 0.5 -- an effect that ran out is remembered this long, so the report of its ending is known for what it is
 
 Tracker.GRACE = GRACE
 
@@ -51,6 +60,14 @@ Tracker.GRACE = GRACE
 --     weak      assumed from a cast and never confirmed
 --     signal    made when the unit's effects were seen to change after a cast
 --     sticky    tracked on your say-so: a lack of evidence never removes it
+--     exact     its end is known to the moment, if the spell's length is
+--               right: put there at a known instant, or read off the unit
+--     renewed   put there on top of the same effect, which the game may have
+--               given extra time: when it ends is not held for or against
+--               the spell
+--     told      when the client's report of its ending was heard
+--     moot      a change when it was due went to a cast, so whether its
+--               ending was reported is left open
 -- }
 local records = {}
 local pending = {} -- casts inside their grace period, oldest first
@@ -58,6 +75,11 @@ local sent = {} -- cast id -> snapshot taken when the cast was sent
 local lastSent -- newest snapshot, for casts whose id cannot be matched
 local lastChange = {} -- unit key -> when the client last reported its effects changing
 local credited = {} -- unit key -> the change (by its time) already put down to a cast
+local holders = {} -- unit key -> the cast it was put down to
+-- unit -> the changes at one moment that were held against your effects there
+-- running out: { when, n = how many, [1..n] = true for one put down to an
+-- ending, [unit token] = how many of them were heard under that name }
+local endings = {}
 local heard = {} -- kind of unit token -> true once it has reported a change while details were hidden
 
 --------------------------------------------------------------------------------
@@ -174,40 +196,82 @@ function Tracker:Claim(castID, name, now)
     return nil
 end
 
+--- The unit a book belongs to: a unit's buffs and its debuffs are kept apart.
+local function Owner(key)
+    local unit = key:gsub("%+buffs$", "")
+    return unit
+end
+
+--- True when a change on the unit at `when` was put down to one of your
+--- effects there running out.
+local function PutDown(unit, when)
+    local note = endings[unit]
+    if note and note.when == when then
+        for i = 1, note.n do
+            if note[i] then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 --- The effects on a watched unit changed while a cast of yours was on its way
 --- there: take the cast as having landed at that moment.
 local function Witness(cast, key, unit, when)
     credited[key] = when
+    holders[key] = cast
     unit.signal = when
 
     local name = cast.name
-    local rec = Live(key, name, when)
-    if not rec then
-        rec = Start(key, name, when, cast.duration)
-        rec.fresh = cast
+    if cast.tracked then
+        local rec = Live(key, name, when)
+        local new = rec == nil
+        if new then
+            rec = Start(key, name, when, cast.duration)
+            rec.fresh = cast
+        end
+        rec.applied = when
+        rec.duration = cast.duration
+        rec.expires = when + cast.duration
+        rec.endless = nil
+        rec.weak = nil
+        rec.signal = true
+        rec.exact = true
+        -- A renewed effect can be given extra time by the game, so whether it
+        -- is reported ending on time says nothing about the spell or the client.
+        rec.renewed = not new or nil
+        rec.told = nil
+        rec.moot = nil
     end
-    rec.applied = when
-    rec.duration = cast.duration
-    rec.expires = when + cast.duration
-    rec.endless = nil
-    rec.weak = nil
-    rec.signal = true
     ns.Spells:Landed(name, when - cast.time)
     ns.Log("%s: the unit's effects changed %.2fs after the cast, so it landed", name, when - cast.time)
 end
 
+--- True for a cast that is judged by what the unit reports. The others are
+--- only credited with a change nobody else is waiting for: a spell taken to
+--- land anyway, and one with no icon that is only being learned about.
+local function Judged(cast)
+    return cast.tracked and not cast.forced
+end
+
 --- A cast went off.
---- spell = { name, tracked, area, duration, forced, wait }
----   forced  tracked on your say-so and not yet borne out by what was seen, so
----           it is assumed to land whatever is seen
----   wait    how long a unit is given to show the cast, when reports of its
----           changes are all there is to judge by
+--- spell = { name, info, tracked, area, duration, forced, wait, learning }
+---   info      what Spells:Get gave for the spell
+---   forced    tracked on your say-so where reports cannot be relied on to
+---             show what it leaves, so it is assumed to land whatever is seen
+---   wait      how long a unit is given to show the cast, when reports of its
+---             changes are all there is to judge by
+---   learning  it has no icon, but is listened for all the same: that is how
+---             a spell earns one, or earns back the one it lost
 function Tracker:Succeeded(snapshot, spell, now)
     local name = spell.name
     local cast = {
         name = name,
+        info = spell.info,
         kind = snapshot.kind or "debuff",
         tracked = spell.tracked,
+        learning = (not spell.tracked and spell.learning) or nil,
         area = spell.area,
         duration = spell.duration,
         forced = spell.forced,
@@ -227,7 +291,7 @@ function Tracker:Succeeded(snapshot, spell, now)
             unit = { pre = not snapshot.late and was.pre or nil, engaged = true }
         end
         if unit then
-            if was.watched and spell.tracked then
+            if was.watched and (spell.tracked or cast.learning) then
                 unit.watched = true
                 unit.via = was.via
                 cast.watched = true
@@ -247,7 +311,7 @@ function Tracker:Succeeded(snapshot, spell, now)
         cast.ends = now + spell.wait
     end
 
-    if not spell.tracked then
+    if not spell.tracked and not (cast.learning and cast.trusted) then
         -- A spell we only learn from: pointless to follow if nothing can be compared.
         local comparable = false
         for _, unit in pairs(cast.units) do
@@ -274,6 +338,7 @@ function Tracker:Succeeded(snapshot, spell, now)
                     rec.duration = spell.duration
                     rec.expires = now + spell.duration
                     rec.endless = nil
+                    rec.exact = nil
                     rec.pending = cast
                 end
             elseif not spell.area or (unit.pre == nil and unit.engaged) then
@@ -296,6 +361,18 @@ function Tracker:Succeeded(snapshot, spell, now)
             local when = lastChange[key]
             if when and when >= cast.from and credited[key] ~= when then
                 Witness(cast, key, unit, when)
+            elseif when and when >= cast.from and Judged(cast) and holders[key] and not Judged(holders[key]) then
+                -- It went to a cast that is only credited when nobody else is
+                -- waiting, because this one had not been announced yet.
+                local other = holders[key].units[key]
+                if other and other.signal == when then
+                    other.signal = nil
+                end
+                Witness(cast, key, unit, when)
+            elseif Judged(cast) and PutDown(Owner(key), now) then
+                -- A change on the unit this very frame was put down to an
+                -- effect of yours running out, before this cast was announced.
+                Witness(cast, key, unit, now)
             end
         end
     end
@@ -303,9 +380,10 @@ end
 
 --- The client reported that the effects on a unit changed. It does not say
 --- which effect or whose, so the newest cast still waiting on that unit gets
---- the credit. A spell that is taken to land anyway only gets it when no other
---- cast is waiting: it may well leave nothing, and must not take the proof
---- away from a cast that is judged by it.
+--- the credit. A spell that is taken to land anyway, or that has no icon and
+--- is only being learned about, gets it when no other cast is waiting: it may
+--- well leave nothing, and must not take the proof away from a cast that is
+--- judged by it.
 function Tracker:Changed(key, when)
     if lastChange[key] == when then
         return -- one change, reported once for each name the unit goes by
@@ -316,7 +394,7 @@ function Tracker:Changed(key, when)
         local cast = pending[i]
         local unit = cast.units[key]
         if unit and unit.watched and not unit.signal and not unit.settled and when >= cast.from then
-            if not cast.forced then
+            if Judged(cast) then
                 Witness(cast, key, unit, when)
                 return
             end
@@ -326,6 +404,146 @@ function Tracker:Changed(key, when)
     if spare then
         Witness(spare, key, spare.units[key], when)
     end
+end
+
+--- True when a cast that is judged by reports was announced in this very
+--- frame and is still waiting on this unit. A change reported in the frame of
+--- a cast is that cast landing far more often than it is anything else.
+local function Announced(unit, when)
+    for i = #pending, 1, -1 do
+        local cast = pending[i]
+        if cast.time == when and Judged(cast) then
+            for book = 1, 2 do
+                local waiting = cast.units[book == 1 and unit or (unit .. "+buffs")]
+                if waiting and waiting.watched and not waiting.signal and not waiting.settled then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+--- True while a cast is waiting to see whether this unit's effects change:
+--- one that has gone off, or one that was sent and not heard of since.
+local function Awaited(unit, when)
+    local buffs = unit .. "+buffs"
+    for i = 1, #pending do
+        local units = pending[i].units
+        for book = 1, 2 do
+            local waiting = units[book == 1 and unit or buffs]
+            if waiting and waiting.watched and not waiting.signal and not waiting.settled then
+                return true
+            end
+        end
+    end
+    for _, snapshot in pairs(sent) do
+        if when - snapshot.time <= SENT_TTL and (snapshot.units[unit] or snapshot.units[buffs]) then
+            return true
+        end
+    end
+    local last = lastSent
+    return last ~= nil and when - last.time <= SENT_TTL and (last.units[unit] or last.units[buffs]) ~= nil
+end
+
+--- True when this record's effect is expected to be reported ending at `when`.
+local function ComesDue(rec, when)
+    return rec.exact and not rec.told and not rec.pending
+        and when >= rec.expires - DUE_EARLY and when <= rec.expires + DUE_LATE
+end
+
+--- An effect of yours on the unit that was due to run out at `when`: its
+--- record, its name, and whether endings of that spell are known to be
+--- reported on time. One for which they are is picked first.
+local function Due(unit, when)
+    local found, foundName
+    for book = 1, 2 do
+        local set = records[book == 1 and unit or (unit .. "+buffs")]
+        if set then
+            for name, rec in pairs(set) do
+                if ComesDue(rec, when) then
+                    if ns.Spells:EndsOnTime(name) then
+                        return rec, name, true
+                    end
+                    if not found then
+                        found, foundName = rec, name
+                    end
+                end
+            end
+        end
+    end
+    return found, foundName, false
+end
+
+--- True when a change reported at `when` could be one of your effects running
+--- out, on whatever unit: only then is it worth working out whose change it is.
+function Tracker:Expecting(when)
+    for _, note in pairs(endings) do
+        if note.when == when then
+            return true
+        end
+    end
+    for _, set in pairs(records) do
+        for _, rec in pairs(set) do
+            if ComesDue(rec, when) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+--- Is the change the client reported on a unit at `when` one of your own
+--- effects there running out? An effect whose end is known to the moment is
+--- expected to be reported just then, and that report says nothing about a
+--- cast. Each ending answers for one change. `unit` is the unit's own key: its
+--- debuffs and its buffs are both looked through. `token` is the name the
+--- report came under: one change is reported under every name a unit goes by.
+---
+--- This is relied on from the start, and given up for a spell whose endings
+--- turn out to go unreported more often than not: a report that fits is then
+--- only counted, and passed on like any other. And a change in the very frame
+--- a cast on the unit is announced goes to the cast, whatever else was due.
+--- That one exception is what keeps a cast that landed from being lost here:
+--- where the game reports a landing, it does so in the frame of the cast.
+function Tracker:Explained(unit, when, token)
+    local note = endings[unit]
+    if note and note.when ~= when then
+        note = nil
+    end
+    local nth = (note and note[token] or 0) + 1 -- which of this moment's changes, under this name
+    if note then
+        note[token] = nth
+        if nth <= note.n then
+            return note[nth] -- one already looked into, heard under another of the unit's names
+        end
+    end
+    local rec, name, relied = Due(unit, when)
+    if not rec then
+        return false
+    end
+    if not note then
+        note = { when = when, n = 0, [token] = 1 }
+        endings[unit] = note
+    end
+    note.n = note.n + 1
+    if Announced(unit, when) then
+        -- The game may have sent one report for the landing and the ending
+        -- both, so whether this ending was reported is left open.
+        rec.moot = true
+        note[note.n] = false
+        return false
+    end
+    rec.told = when
+    note[note.n] = relied
+    if not rec.renewed and not Awaited(unit, when) then
+        -- Nothing else it could have been: this spell's endings are reported, and on time.
+        ns.Spells:Ended(name, true)
+    end
+    if relied then
+        ns.Log("%s: ran out on time, which is the change the unit reported", name)
+    end
+    return relied
 end
 
 --- The client has been seen to report a change through one kind of unit token
@@ -394,6 +612,7 @@ local function Confirm(cast, key, unit, gained, sample, now)
     rec.duration = cast.duration
     rec.expires = landed + cast.duration
     rec.endless = nil
+    rec.exact = nil
     rec.weak = nil
     rec.fresh = nil
     if type(gained) == "number" then
@@ -495,8 +714,12 @@ local function Finish(cast, now, engaged)
                     -- Relied on since an earlier session, and it has not been
                     -- heard from in this one: nothing is assumed either way.
                     verdict = "unproven"
-                    unheard = unheard or {}
-                    unheard[unit.via] = true
+                    if cast.tracked then
+                        -- A spell with no icon may well leave nothing, so its
+                        -- silence says nothing about the client.
+                        unheard = unheard or {}
+                        unheard[unit.via] = true
+                    end
                     if mine then
                         rec.weak = true
                     end
@@ -537,6 +760,17 @@ local function Finish(cast, now, engaged)
     local reports = cast.kind == "debuff"
     if cast.hit or (reports and signalled) then
         ns.Spells:Evidence(name, true, cast.kind)
+        if not cast.tracked and cast.info and ns.Spells:Tracking(cast.info) then
+            -- This very cast earned the spell its icon. What it left is put
+            -- in the books, so that the icon does not start out green.
+            for key, unit in pairs(cast.units) do
+                if unit.signal and not Live(key, name, now) then
+                    local rec = Start(key, name, unit.signal, cast.duration)
+                    rec.signal = true
+                    rec.exact = true
+                end
+            end
+        end
     elseif not unclear and not signalled and (clean or (reports and quiet)) then
         ns.Spells:Evidence(name, false, cast.kind)
     end
@@ -565,6 +799,7 @@ local function Lose(cast, key, unit)
         rec.duration = cast.duration
         rec.expires = cast.time + cast.duration
         rec.endless = nil
+        rec.exact = nil
     end
 end
 
@@ -601,6 +836,7 @@ local function Reconcile(key, sample, now)
                 verified = verified + 1
                 if rec.expires < now + HOLD then
                     rec.expires = now + HOLD
+                    rec.exact = nil
                 end
             elseif not rec.pending then
                 set[name] = nil
@@ -660,7 +896,11 @@ function Tracker:Update(now, seen, engaged, direct)
             end
             -- A unit is done with once the effect was seen on it, or once it
             -- reported a change and there is no count that could say otherwise.
-            if not unit.settled and (countable or not unit.signal) then
+            -- A cast that only gets the changes nobody else is waiting for is
+            -- held a moment longer: the cast the change belongs to may not
+            -- have been announced yet.
+            if not unit.settled and (countable or not unit.signal
+                or (not Judged(cast) and now < unit.signal + EARLY)) then
                 waiting = true
             end
         end
@@ -681,7 +921,16 @@ function Tracker:Update(now, seen, engaged, direct)
     for key, set in pairs(records) do
         for name, rec in pairs(set) do
             if not IsLive(rec, now) then
-                set[name] = nil
+                -- An effect that just ran out on a known timer stays a moment
+                -- longer, dead, until the report of its ending has been heard.
+                local awaited = rec.exact and not rec.told
+                if not (awaited and now <= rec.expires + LINGER) then
+                    if awaited and not rec.moot and not rec.renewed and ns.InSight(key) then
+                        -- The unit was there to report it, and did not.
+                        ns.Spells:Ended(name, false)
+                    end
+                    set[name] = nil
+                end
             end
         end
         if next(set) == nil then
@@ -693,6 +942,12 @@ function Tracker:Update(now, seen, engaged, direct)
         if now - when > CHANGE_TTL then
             lastChange[key] = nil
             credited[key] = nil
+            holders[key] = nil
+        end
+    end
+    for unit, note in pairs(endings) do
+        if now - note.when > CHANGE_TTL then
+            endings[unit] = nil
         end
     end
 end
@@ -712,8 +967,14 @@ function Tracker:Observe(key, name, aura, now)
     local duration = aura.duration and aura.duration > 0 and aura.duration or nil
     local expires = aura.expires and aura.expires > 0 and aura.expires or nil
     rec.duration = duration or rec.duration
+    if expires ~= rec.expires then
+        rec.told = nil
+        rec.moot = nil
+    end
     rec.expires = expires or (now + FOREVER)
     rec.endless = expires == nil or nil
+    rec.exact = expires ~= nil or nil -- the end time is the game's own
+    rec.renewed = nil
     rec.applied = duration and expires and (expires - duration) or rec.applied
     rec.id = aura.id or rec.id
     rec.weak = nil
@@ -794,6 +1055,8 @@ function Tracker:ForgetUnit(key)
     records[key] = nil
     lastChange[key] = nil
     credited[key] = nil
+    holders[key] = nil
+    endings[Owner(key)] = nil -- kept under the unit, whichever book this is
     for i = 1, #pending do
         pending[i].units[key] = nil
     end
@@ -813,6 +1076,12 @@ function Tracker:Reset()
     for key in pairs(lastChange) do
         lastChange[key] = nil
         credited[key] = nil
+    end
+    for key in pairs(holders) do
+        holders[key] = nil
+    end
+    for unit in pairs(endings) do
+        endings[unit] = nil
     end
 end
 

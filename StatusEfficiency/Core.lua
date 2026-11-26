@@ -78,7 +78,9 @@ local function Defaults()
         icons = {}, -- the icon chosen for each result; empty means the default
         custom = {}, -- your own texture for a result set to "custom"
         spells = {}, -- your choices by spell name: { track, kind, aoe, duration }
-        learned = {}, -- what play has shown by spell name: { exact, casts, hits, buff, buffCasts, buffHits, duration }
+        -- What play has shown, by spell name: { exact, casts, hits, dropped, buff,
+        -- buffCasts, buffHits, buffDropped, duration, lag, timed, due, late, told }
+        learned = {},
     }
 end
 
@@ -597,16 +599,24 @@ ns.KeyOf = KeyOf
 -- nameplates. All that is passed on to the tracker is "the effects on this unit
 -- changed at this moment"; it decides whether a cast of yours explains it.
 --
+-- These reports are what a cast is judged by from the first one on: nothing is
+-- taken to have landed until the unit says so. A client that turns out to say
+-- nothing is found out after a few casts, and from then on a cast there is
+-- taken to land, as it has to be wherever there is nothing to go on.
+--
 -- What the client really sends is also written to a report kept with the
 -- settings, so that this can be checked against a real client afterwards.
 --------------------------------------------------------------------------------
 
 local SETTLE = 0.5 -- seconds a token counts as new after it was handed to another unit
 local RECENT = 0.5 -- how long a report waits for a cast that has not been announced yet
-local QUIET_LIMIT = 3 -- casts in a row with nothing reported before proof from earlier sessions is dropped
+-- Casts in a row with nothing at all reported before the client is taken not
+-- to report there: more of them where an earlier session on this build heard it.
+local QUIET_LIMIT, QUIET_PROVEN = 3, 6
 local REPORT_CASTS = 40 -- casts kept in the saved report
 local REPORT_SESSIONS = 2 -- earlier sessions kept in it
 local REPORT_NOTES = 20
+local REPORT_SHAPES = 12 -- different descriptions of what a report carried kept in it
 
 local MAIN_TOKENS = { "target", "softenemy" }
 
@@ -617,8 +627,8 @@ local everyone = -100 -- when every token was last handed out afresh
 
 -- How often the client has reported a change while details were hidden, this
 -- session, through each kind of unit token. Until it has, silence through that
--- kind of token proves nothing: a client could report on your target and not
--- on nameplates, or the other way round.
+-- kind of token is not held against a cast: a client could report on your
+-- target and not on nameplates, or the other way round.
 local TOKEN_KINDS = { "player", "target", "softenemy", "plate" }
 local signals = {}
 for i = 1, #TOKEN_KINDS do
@@ -691,10 +701,13 @@ local function Journal()
             plate = { hidden = 0, calm = 0, readable = 0, masked = 0 },
             sameFrame = 0, -- ignored: the token was handed to another unit that very frame
             handover = 0, -- ignored: only a token the unit had just been given reported it
+            ended = 0, -- put down to an effect of yours running out just then
         },
+        payload = {}, -- what came with the reports, in words: description -> how often
         verdicts = {}, -- how casts made with details hidden came out, by verdict
         spells = {}, -- what the client says about the spells that were cast
-        casts = {}, -- the last casts, one line each
+        casts = {}, -- the last casts of spells with an icon, one line each
+        learning = {}, -- casts of spells without one, by name: { casts, changed }
         usable = {}, -- what the game answered about using each skill, by spell name
         notes = {},
         refusals = ns.refusals, -- the error each refused aura query raised
@@ -726,11 +739,11 @@ local function TokenKind(token)
     return "plate"
 end
 
---- True when the client is known to report changes through this kind of unit
---- token while details are hidden: it has done so this session, or did in an
---- earlier one on this same build.
+--- True when a cast is judged by the changes reported through this kind of
+--- unit token. It is from the start. Only a client build that was found to say
+--- nothing there while details are hidden is doubted, until it does speak.
 local function Trusted(kind)
-    return signals[kind].heard > 0 or Kept("proof")[kind] == BuildKey()
+    return signals[kind].heard > 0 or Kept("doubt")[kind] ~= BuildKey()
 end
 
 ns.Trusted = Trusted
@@ -756,10 +769,29 @@ local function Reassigned(token)
     end
 end
 
+--- Keeps count of what came with the reports, by Compat's description of it.
+local function NotePayload(journal, shape, secret)
+    local payload = journal.payload
+    local text = (secret and "hidden, " or "open, ") .. shape
+    if not payload[text] then
+        local shapes = 0
+        for _ in pairs(payload) do
+            shapes = shapes + 1
+        end
+        if shapes >= REPORT_SHAPES then
+            text = "others"
+        end
+    end
+    payload[text] = (payload[text] or 0) + 1
+end
+
 --- The client reported that the effects on the unit behind a token changed.
-local function OnAuraChange(token, readable)
+--- `shape` is Compat's description of the details that came with the report:
+--- "secret" when they are a value an addon may not look at.
+local function OnAuraChange(token, shape)
     local now = ns.Now()
-    local counts = Journal().reports
+    local journal = Journal()
+    local counts = journal.reports
     if token ~= "player" and Since(token) == now then
         -- Handed to another unit this very frame: that is the change reported.
         counts.sameFrame = counts.sameFrame + 1
@@ -768,6 +800,8 @@ local function OnAuraChange(token, readable)
     local kind = TokenKind(token)
     local count = counts[kind]
     local secret = ns.AurasSecret()
+    local readable = shape ~= "secret"
+    NotePayload(journal, shape, secret)
     if secret or not readable then
         count.hidden = count.hidden + 1
         if readable then
@@ -781,10 +815,19 @@ local function OnAuraChange(token, readable)
         if state.heard == 1 then
             Tracker:Heard(kind)
             Kept("proof")[kind] = BuildKey()
-            ns.Log("the client reports changes through \"%s\" in combat: casts are judged by them from now on", kind)
+            Kept("doubt")[kind] = nil
+            ns.Log("the client reports changes through \"%s\" in combat: casts are judged by them", kind)
         end
     else
         count.calm = count.calm + 1
+    end
+    -- A change that comes just as one of your own effects on the unit was due
+    -- to run out is that, and says nothing about a cast.
+    local unit = Tracker:Expecting(now) and ns.Exists(token) and ns.UnitKey(token)
+    if unit and Tracker:Explained(unit, now, token) then
+        counts.ended = (counts.ended or 0) + 1
+        stateDirty = true -- the icon goes green now, not at the next look
+        return
     end
     changes[token] = now
     if Tracker:HasPending() then
@@ -792,8 +835,8 @@ local function OnAuraChange(token, readable)
     end
 end
 
-local function AuraChanged(token, readable)
-    Guard(OnAuraChange, token, readable)
+local function AuraChanged(token, shape)
+    Guard(OnAuraChange, token, shape)
 end
 
 --- True when the unit has another name that has pointed at it for a while and
@@ -885,29 +928,61 @@ end
 
 local VERDICTS = { "seen", "changed", "nothing new", "silent", "unproven", "unclear", "assumed", "unknown" }
 
+-- Whose changes each kind of unit token reports, for a line in chat.
+local WHOSE = {
+    player = "your own effects",
+    target = "your target",
+    softenemy = "your soft target",
+    plate = "the enemies around your target",
+}
+
 --- The tracker has finished judging a cast. `tally` counts the units by how
 --- they came out, `delay` is how long after the cast one was seen to change,
 --- and `unheard` names the kinds of token that reported nothing and never have.
 function ns.Note(cast, tally, delay, unheard)
     if unheard and cast.hidden then
-        -- Proof carried over from an earlier session is not kept against a
-        -- run of casts that nothing at all was reported for.
-        local proof = Kept("proof")
+        -- A client that reports nothing at all for a run of casts is taken not
+        -- to report there. Waiting for it any longer would keep every icon
+        -- green however many casts landed.
+        local proof, doubt = Kept("proof"), Kept("doubt")
+        local build = BuildKey()
+        local whose
         for kind in pairs(unheard) do
             local state = signals[kind]
             state.quiet = state.quiet + 1
-            if state.quiet >= QUIET_LIMIT and proof[kind] then
+            local limit = proof[kind] == build and QUIET_PROVEN or QUIET_LIMIT
+            if state.quiet >= limit and doubt[kind] ~= build then
+                doubt[kind] = build
                 proof[kind] = nil
                 Remark(format("nothing was reported through \"%s\" after %d casts in a row, so casts are taken to "
-                    .. "land there again until a change is reported", kind, state.quiet))
+                    .. "land there until a change is reported", kind, state.quiet))
+                whose = whose or {}
+                whose[#whose + 1] = WHOSE[kind] or kind
             end
         end
-    end
-    if not cast.tracked then
-        return
+        if whose then
+            table.sort(whose)
+            ns.Print(format("the game has said nothing about %s changing after several casts in a row. Until it "
+                .. "does, a cast there is taken to have landed.", table.concat(whose, " or ")))
+        end
     end
 
     local journal = Journal()
+    if not cast.tracked then
+        -- No icon rides on it: a count is enough.
+        local learning = journal.learning
+        local line = learning[cast.name]
+        if not line then
+            line = { casts = 0, changed = 0 }
+            learning[cast.name] = line
+        end
+        line.casts = line.casts + 1
+        if delay then
+            line.changed = line.changed + 1
+        end
+        return
+    end
+
     local parts = {}
     for i = 1, #VERDICTS do
         local verdict = VERDICTS[i]
@@ -923,7 +998,7 @@ function ns.Note(cast, tally, delay, unheard)
     if cast.forced then
         following = "taken to land on your say-so"
     elseif cast.watched then
-        following = cast.trusted and "waited for a report" or "reports not proven yet"
+        following = cast.trusted and "waited for a report" or "the game is not reporting, taken to land"
     end
     local line = format("%s %s (%s, %s, %s): %s", Stamp(cast.time), cast.name, cast.kind,
         cast.hidden and "hidden" or "open", following, #parts > 0 and table.concat(parts, ", ") or "nobody to judge")
@@ -1131,21 +1206,26 @@ end
 
 --- Says in chat, once, that a skill has lost its icon because its casts kept
 --- leaving nothing behind: an icon must never just go missing. `back` is true
---- once the skill has its icon again, so that the next time is told as well.
-local function TellDropped(name, kind, back)
+--- once the skill has its icon again, which is said as well.
+local function TellDropped(name, kind, back, earned)
     local learned = ns.db.learned[name]
     if not learned or (learned.told == true) ~= back then
         return
     end
+    local casts, hits = Spells:Record(name, kind)
+    casts, hits = floor(casts + 0.5), floor(hits + 0.5)
     if back then
         learned.told = nil
+        if earned then
+            ns.Print(format("%s does leave a status effect behind: %d of its last %d casts did. Its icon is back.",
+                name, hits, casts))
+        end
         return
     end
     learned.told = true
-    local casts, hits = Spells:Record(name, kind)
-    casts, hits = floor(casts + 0.5), floor(hits + 0.5)
-    ns.Print(format("%s left no status effect behind after %d of %d casts, so it gets no icon from now on. "
-        .. "If it does leave one, /se track %s brings the icon back.", name, casts - hits, casts, name))
+    ns.Print(format("%s left no status effect behind after %d of %d casts, so it gets no icon for now. It gets "
+        .. "the icon back by itself once its casts are seen to leave one, or at once with /se track %s.",
+        name, casts - hits, casts, name))
 end
 
 local function Refresh(now)
@@ -1230,9 +1310,7 @@ local function Refresh(now)
             end
             if tracked then
                 local name = info.name
-                if source ~= "you" then
-                    TellDropped(name, kind, true)
-                end
+                TellDropped(name, kind, true, source ~= "you")
                 state = states[name]
                 if state == nil then
                     if kind == "buff" then
@@ -1277,19 +1355,25 @@ end
 -- Casts
 --------------------------------------------------------------------------------
 
-local FORCED_HITS = 3
+local FORCED_CASTS = 2
 
---- A spell tracked on your say-so is taken to land whatever is seen, because
---- the addon may have no way to see what it leaves or where. That ends once
---- there is no doubt left: an effect with the spell's own name has been read,
---- or its casts have been followed by a new effect three times and at least
---- every other time. From then on it is judged like any other spell.
+--- A spell tracked on your say-so is judged like any other to begin with: by
+--- what the unit reports after the cast. Only when that has shown nothing
+--- more often than not is the spell taken to land whatever is seen, because
+--- the addon then has no way to see what it leaves or where, and you said it
+--- leaves something. A buff is taken to land from the start: it cannot miss,
+--- and your own effects change too often for a report to say much.
+---
+--- A spell whose effect has been read by its own name is never in doubt.
 local function Forced(name, kind)
     if Spells:IsExact(name, kind) then
         return false
     end
+    if kind == "buff" then
+        return true
+    end
     local casts, hits = Spells:Record(name, kind)
-    return hits < FORCED_HITS or hits * 2 < casts
+    return casts >= FORCED_CASTS and hits * 2 < casts
 end
 
 --- The spell behind a cast event, if it is one we follow.
@@ -1379,11 +1463,15 @@ local function Landed(unit, castID, spellID, mustBeSent)
     snapshot.hidden = ns.AurasSecret()
     Tracker:Succeeded(snapshot, {
         name = info.name,
+        info = info,
         tracked = tracked,
         area = area,
         duration = duration,
         forced = source == "you" and Forced(info.name, kind),
         wait = Spells:Wait(info),
+        -- A spell with no icon is listened for all the same. Only a debuff:
+        -- reports say too little about your own effects to learn a buff from.
+        learning = not tracked and kind == "debuff",
     }, now)
     -- A change reported just before the cast was announced is the cast's doing.
     PassOnChanges(now)

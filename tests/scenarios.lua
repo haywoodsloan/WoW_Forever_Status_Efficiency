@@ -228,7 +228,8 @@ local OPTIONAL_READS = {
     IsPassiveSpell = true, FindSpellOverrideByID = true, StatusEfficiencyDB = true,
     SpellIsSelfBuff = true,
     -- Whole parts of the API that some of the pretend clients leave out.
-    issecretvalue = true, C_Secrets = true, C_UnitAuras = true, Settings = true,
+    issecretvalue = true, issecrettable = true, canaccesstable = true, C_Secrets = true, C_UnitAuras = true,
+    Settings = true,
     InterfaceOptions_AddCategory = true, GetSpellTexture = true, SOUNDKIT = true, PlaySound = true,
     IsUsableAction = true, IsActionInRange = true, C_Texture = true,
     -- Fonts, which the settings panel looks for before it borrows one.
@@ -382,48 +383,58 @@ test("ids: a miss never turns the icon red", function()
     Clean(w)
 end)
 
-test("ids, no reports: a miss goes back to green after a moment", function()
-    -- A client that never says when a unit's effects change: the cast is
-    -- assumed to land, and the count corrects it.
+test("ids, no reports: a miss never turns the icon red", function()
+    -- A client that never says when a unit's effects change, but lets your
+    -- effects be counted: nothing is assumed, and the count says what landed.
     local w, ns, boar = Simple({ combatAuras = "ids", auraEvents = false })
     w:cast(REND)
-    w:advance(3)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the count went up")
+    w:advance(2.7)
     w:removeAura(boar, "Rend")
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "clean again")
 
     w:cast(REND, { miss = true })
     w:advance(0.1)
-    eq(w:icon("ActionButton1"), "cross", "assumed to land at first")
+    eq(w:icon("ActionButton1"), "check", "nothing is assumed")
     w:advance(2.3)
-    eq(w:icon("ActionButton1"), "check", "once nothing showed up")
+    eq(w:icon("ActionButton1"), "check", "and nothing showed up")
     eq(ns.db.learned.Rend.casts, 2, "casts counted")
     eq(ns.db.learned.Rend.hits, 1, "hits counted")
     Clean(w)
 end)
 
-test("ids: the first cast of a fight is given the benefit of the doubt", function()
+test("ids: a first cast that nothing is seen of leaves the icon green, and is not held against the spell", function()
     -- Until a debuff of yours has been seen this fight, "nothing there" is not
-    -- proof of a miss: the client could simply be hiding it.
+    -- proof of a miss: the client could simply be hiding it. And until the
+    -- enemy has been heard from, its silence is no proof either. So nothing
+    -- is shown, and nothing is learned.
     local w, ns = Simple({ combatAuras = "ids" })
     w:cast(REND, { miss = true })
     w:advance(3)
-    eq(w:icon("ActionButton1"), "cross", "kept as an assumption")
+    eq(w:icon("ActionButton1"), "check", "nothing is assumed")
     eq(ns.db.learned.Rend, nil, "and not counted as evidence")
-    w:advance(19)
-    eq(w:icon("ActionButton1"), "check", "until its timer ends")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "one that lands shows")
     Clean(w)
 end)
 
 test("an empty answer in combat is never mistaken for a clean enemy", function()
     -- A client that answers the count with an empty list instead of refusing,
-    -- with and without reports of a unit's effects changing.
+    -- with and without reports of a unit's effects changing. Without them the
+    -- addon waits three casts for a report before it goes back to assuming.
     for _, events in ipairs({ true, false }) do
         local w, ns = Simple({ combatAuras = "empty", auraEvents = events })
-        for _ = 1, 6 do
+        for i = 1, 6 do
             w:cast(REND)
             w:advance(1)
-            eq(w:icon("ActionButton1"), "cross", "after each cast")
+            if events or i > 3 then
+                eq(w:icon("ActionButton1"), "cross", "after cast " .. i)
+            else
+                eq(w:icon("ActionButton1"), "check", "nothing heard and nothing assumed, cast " .. i)
+            end
             w:advance(21)
         end
         local learned = ns.db.learned.Rend
@@ -488,7 +499,7 @@ test("ids: a slow projectile is still credited", function()
     w:advance(0.3)
     w:cast(FROSTBOLT, { travel = 1.5 })
     w:advance(0.2)
-    eq(w:icon("ActionButton1"), "cross", "in flight")
+    eq(w:icon("ActionButton1"), "check", "in flight: nothing is on the boar yet, and nothing is assumed")
     w:advance(3)
     eq(w:icon("ActionButton1"), "cross", "landed")
     eq(ns.db.learned.Frostbolt.hits, 1)
@@ -600,16 +611,18 @@ test("a debuff the client still shows by name in combat is read exactly", functi
     Clean(w)
 end)
 
-test("a debuff shown by name in combat, no reports: a miss is caught by name", function()
+test("a debuff shown by name in combat, no reports: a cast is judged by name", function()
     local w = Simple({ combatAuras = "none", byName = { Rend = true }, auraEvents = false })
     w:cast(REND)
-    w:advance(22)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "read by name")
+    w:advance(21.7)
     eq(w:icon("ActionButton1"), "check", "the first one ran out")
     w:cast(REND, { miss = true })
     w:advance(0.1)
-    eq(w:icon("ActionButton1"), "cross", "assumed at first")
+    eq(w:icon("ActionButton1"), "check", "nothing is assumed")
     w:advance(2.4)
-    eq(w:icon("ActionButton1"), "check", "the miss is caught by name")
+    eq(w:icon("ActionButton1"), "check", "and no Rend turned up")
     Clean(w)
 end)
 
@@ -654,38 +667,42 @@ test("reports: a miss, a dodge or a resist leaves the icon green", function()
     Clean(w)
 end)
 
-test("reports: until the client has been seen to report in combat, a cast is assumed to land", function()
+test("reports: nothing is assumed, from the very first cast", function()
+    -- Nothing is known about this client yet. A cast still counts for nothing
+    -- until the enemy reports a change.
     local w, ns = Simple()
     local wolf = w:addMob("Wolf")
     w:showPlate(wolf)
     w:advance(0.3)
-    eq(ns.Trusted("target"), false, "nothing to go on yet")
+    w:drain()
+    eq(ns.Trusted("target"), true, "reports are what a cast is judged by from the start")
 
     w:cast(REND, { miss = true })
     w:advance(0.15)
-    eq(w:icon("ActionButton1"), "cross", "so it is assumed to land, as it always was")
-    eq(ns.Trusted("target"), false)
+    eq(w:icon("ActionButton1"), "check", "the very first cast missed, and the icon stays green")
 
     w:cast(HEROIC) -- nothing changes on the boar
     w:advance(0.5)
     w:removeAura(w.player, "nothing") -- and nothing on you
-    eq(w:icon("ActionButton1"), "cross", "still assumed")
-
-    w:advance(21)
-    eq(w:icon("ActionButton1"), "check", "until its timer ends")
-    eq(ns.db.learned.Rend, nil, "and nothing is learned from it")
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check", "still green")
+    eq(ns.db.learned.Rend, nil, "silence from an enemy that has never been heard from is not held against the spell")
+    eq(ns.db.proof and ns.db.proof.target, nil, "and nothing has been proven yet")
 
     w:cast(REND)
     w:advance(0.15)
-    eq(w:icon("ActionButton1"), "cross")
-    eq(ns.Trusted("target"), true, "the boar's effects were reported changing in combat")
-    eq(ns.Trusted("plate"), true, "through its nameplate too")
+    eq(w:icon("ActionButton1"), "cross", "one that lands shows at once")
+    eq(ns.signals.target.heard > 0, true, "the boar's effects were reported changing in combat")
+    eq(ns.signals.plate.heard > 0, true, "through its nameplate too")
     eq(ns.db.proof.target, BUILD, "which is remembered for the next session")
     w:advance(22)
 
     w:cast(REND, { miss = true })
-    w:advance(0.15)
-    eq(w:icon("ActionButton1"), "check", "from then on nothing is assumed")
+    w:advance(4)
+    eq(w:icon("ActionButton1"), "check", "a later miss")
+    eq(ns.db.learned.Rend.casts, 2, "and now that the boar has been heard from, its silence counts against the cast")
+    eq(ns.db.learned.Rend.hits, 1)
+    eq(w:drain(), "", "none of which needed a word in chat")
     Clean(w)
 end)
 
@@ -695,13 +712,14 @@ test("reports: what is heard about you says nothing about what is reported for a
     w:advance(0.15)
     w:applyBuff("Blessing", 60, false) -- someone buffs you in the fight
     w:advance(3)
-    eq(ns.Trusted("player"), true)
-    eq(ns.Trusted("target"), false)
-    eq(w:icon("ActionButton1"), "cross", "the cast on the boar is still only assumed")
+    eq(ns.signals.player.heard > 0, true, "you have been heard from")
+    eq(ns.signals.target.heard, 0, "the boar has not")
+    eq(w:icon("ActionButton1"), "check", "nothing was reported for the boar, so nothing is shown")
+    eq(ns.db.learned.Rend, nil, "and its silence is not held against the spell yet")
     Clean(w)
 end)
 
-test("reports, area: the very first cast is assumed to land on everyone, then corrected by who reported", function()
+test("reports, area: the very first cast is judged by who reported", function()
     local w, ns, mobs = Pack()
     for i = 1, 3 do
         mobs[i].engaged = true
@@ -710,10 +728,10 @@ test("reports, area: the very first cast is assumed to land on everyone, then co
     w:advance(0.5)
     w:cast(CLAP, { hits = { mobs[1], mobs[2] } })
     w:advance(0.05)
-    eq(w:icon("ActionButton1"), "cross", "nothing has ever been reported, so everyone is assumed hit")
+    eq(w:icon("ActionButton1"), "partial", "two of them reported a change, and nobody is assumed hit")
     w:advance(2.5)
-    eq(w:icon("ActionButton1"), "partial", "two nameplates reported a change, so the third one's silence is believed")
-    eq(ns.Trusted("plate"), true)
+    eq(w:icon("ActionButton1"), "partial", "the third one's silence is believed")
+    eq(ns.signals.plate.heard > 0, true)
     Clean(w)
 end)
 
@@ -730,24 +748,641 @@ test("reports: switching target on a client whose nameplates do not report", fun
     w:target(boar)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross", "taken to have landed")
-    eq(ns.Trusted("plate"), false)
+    eq(ns.signals.plate.heard, 0, "nameplates have never been heard from")
     Clean(w)
 end)
 
-test("reports: proof from an earlier session is dropped when the client stops reporting", function()
+test("reports: a client that stops reporting is found out, and casts are assumed to land again", function()
+    -- An earlier session heard this build report, so it is given six casts
+    -- before the addon stops waiting. Each of them stays green meanwhile.
     local w, ns = Simple({ auraEvents = "calm", saved = Proven() })
-    for i = 1, 3 do
+    for i = 1, 6 do
         w:cast(REND)
         w:advance(0.5)
         eq(w:icon("ActionButton1"), "check", "cast " .. i .. " landed, but no report came")
+        eq(ns.Trusted("target"), true, "still waited for before cast " .. (i + 1))
         w:advance(3)
     end
-    eq(ns.db.proof.target, nil, "three casts in a row with no report at all: the proof is dropped")
+    eq(ns.db.proof.target, nil, "six casts in a row with no report at all: the proof is dropped")
+    eq(ns.db.doubt.target, BUILD, "and this build is on record as not reporting")
     eq(ns.Trusted("target"), false)
+    local said = w:drain()
+    check(said:find("the game has said nothing about your target changing after several casts in a row", 1, true),
+        "it says so in chat: " .. said)
     w:cast(REND)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "cross", "and casts are assumed to land again")
-    check(ns.db.report.notes[1]:find("taken to land there again", 1, true), "the report says so: " .. ns.db.report.notes[1])
+    check(ns.db.report.notes[1]:find("taken to land there until a change is reported", 1, true),
+        "the report says so: " .. ns.db.report.notes[1])
+    w:advance(25)
+    for _ = 1, 4 do
+        w:cast(REND, { miss = true })
+        w:advance(25)
+    end
+    eq(w:drain(), "", "it is said once")
+    Clean(w)
+end)
+
+test("reports: a client nothing is known about is given three casts to report", function()
+    local w, ns = Simple({ auraEvents = false })
+    for i = 1, 3 do
+        w:cast(REND)
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "check", "cast " .. i .. ": nothing heard, nothing assumed")
+        w:advance(3)
+    end
+    eq(ns.db.doubt.target, BUILD)
+    w:cast(REND, { miss = true })
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "cross", "assumed, with nothing to say otherwise")
+    w:advance(18.5)
+    eq(w:icon("ActionButton1"), "check", "until the timer ends")
+    eq(ns.db.learned.Rend, nil, "nothing is learned from any of it")
+    Clean(w)
+
+    -- The next session does not wait again: this build is known not to report.
+    local saved = w.env.StatusEfficiencyDB
+    local w2 = World({ auraEvents = false })
+    w2:addButton("ActionButton1", 1, REND)
+    local ns2 = w2:load(saved)
+    local boar = w2:addMob("Boar")
+    w2:target(boar)
+    w2:advance(0.3)
+    eq(ns2.Trusted("target"), false)
+    w2:drain()
+    w2:cast(REND)
+    w2:advance(4)
+    eq(w2:icon("ActionButton1"), "cross", "assumed from the first cast")
+    eq(w2:drain(), "", "and not said again")
+    w2:slash("debug")
+    local debug = w2:drain()
+    check(debug:find("your target: 0 (silent after several casts, so a cast there is taken to land)", 1, true),
+        "debug says which reports are not counted on: " .. debug)
+    check(not debug:find("about you: 0 (", 1, true), "and only those: " .. debug)
+    Clean(w2)
+end)
+
+test("reports: a client that was written off is relied on again the moment it reports", function()
+    local saved = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, ns = Simple({ saved = saved })
+    eq(ns.Trusted("target"), false, "an earlier session heard nothing from this build")
+    w:cast(REND)
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(ns.Trusted("target"), true, "it reported the change")
+    eq(ns.db.doubt.target, nil, "so the doubt is gone")
+    eq(ns.db.proof.target, BUILD)
+    w:advance(22)
+    w:cast(REND, { miss = true })
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "check", "and a miss is a miss again")
+    Clean(w)
+end)
+
+test("reports: what an earlier build did says nothing about this one", function()
+    -- Neither its proof nor its silence carries over: nothing is assumed, and
+    -- the new build is given its own casts to report.
+    for _, field in ipairs({ "proof", "doubt" }) do
+        local old = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD }
+        local w, ns = Simple({ clientBuild = "70999", saved = { [field] = old } })
+        eq(ns.Trusted("target"), true, "judged by reports, after an old build's " .. field)
+        w:cast(REND, { miss = true })
+        w:advance(0.15)
+        eq(w:icon("ActionButton1"), "check", "a miss is a miss")
+        w:advance(4)
+        w:cast(REND)
+        w:advance(0.15)
+        eq(w:icon("ActionButton1"), "cross", "and a hit is a hit")
+        eq(ns.db.proof.target, "1.60.1.70999")
+        Clean(w)
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- A change on a unit just as one of your own effects there was due to run out
+--------------------------------------------------------------------------------
+
+--- What the addon saves once it has cast Rend a few times and heard its ending
+--- reported on time each time, on top of what Proven() gives.
+local function Timed(spell)
+    local saved = Proven()
+    saved.learned = { [spell or "Rend"] = { casts = 4, hits = 4, due = 4, late = 0 } }
+    return saved
+end
+
+test("reports: a change that comes just as one of your own effects was due to run out is not taken for a hit", function()
+    -- Nothing is saved about how Rend's endings are reported: this holds from
+    -- the first fight on.
+    local w, ns = Bar({ saved = Proven() }, REND, MORTAL)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(20.5)
+    w:cast(MORTAL, { miss = true }) -- still waiting to be judged when the Rend runs out
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the Rend is over")
+    eq(w:icon("ActionButton2"), "check", "and the change on the boar was that, not the Mortal Strike landing")
+    w:advance(3)
+    eq(w:icon("ActionButton2"), "check")
+    eq(ns.db.learned["Mortal Strike"].casts, 1)
+    eq(ns.db.learned["Mortal Strike"].hits, 0, "the miss is counted as one")
+    eq(ns.db.report.reports.ended, 2, "put down to the ending, once for each name the boar goes by")
+    eq(ns.db.learned.Rend.due, nil, "with a cast waiting it proves nothing about endings, so it is not counted")
+
+    -- An ending with nothing else going on is counted, to keep an eye on
+    -- whether this client reports them when they are due.
+    w:cast(REND)
+    w:advance(22)
+    eq(ns.db.learned.Rend.due, 1, "reported when it was due")
+    eq(ns.db.learned.Rend.late, 0)
+    Clean(w)
+end)
+
+test("reports: a spell whose endings mostly go unreported is no longer judged by them", function()
+    -- What is saved about how often Rend was reported ending when it was due,
+    -- and whether a change at that moment is still put down to it. Where it is
+    -- not, the limit that is left shows: the report goes to the cast waiting.
+    local cases = {
+        { late = 1, relied = true }, -- one that went unreported is not held against it
+        { late = 2, relied = false },
+        { due = 2, late = 3, relied = false },
+        { due = 3, late = 2, relied = false },
+        { due = 4, late = 2, relied = true }, -- two in three were on time
+    }
+    for _, case in ipairs(cases) do
+        local saved = Proven()
+        saved.learned = { Rend = { casts = 5, hits = 5, due = case.due, late = case.late } }
+        local w = Bar({ saved = saved }, REND, MORTAL)
+        local boar = w:addMob("Boar")
+        w:showPlate(boar)
+        w:target(boar)
+        w:advance(0.3)
+        w:cast(REND)
+        w:advance(20.5)
+        w:cast(MORTAL, { miss = true })
+        w:advance(1)
+        eq(w:icon("ActionButton2"), case.relied and "check" or "cross",
+            (case.due or 0) .. " endings heard on time, " .. case.late .. " not")
+        Clean(w)
+    end
+end)
+
+test("reports: an ending reported a moment early is still known for what it is", function()
+    local w, ns, boar = Simple({ saved = Timed() })
+    w:addButton("ActionButton2", 2, MORTAL)
+    w:advance(2.5)
+    w:cast(REND)
+    w:advance(20.5)
+    w:cast(MORTAL, { miss = true })
+    w:advance(0.45)
+    w:removeAura(boar, "Rend") -- a twentieth of a second before the books expect it
+    w:advance(1)
+    eq(w:icon("ActionButton2"), "check", "not the Mortal Strike landing")
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("reports: one ending answers for one change, even in the same frame", function()
+    -- A Hunter's Mark in flight lands in the very frame the Rend runs out.
+    local w, ns = Bar({ saved = Timed() }, REND, MARK)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(20)
+    w:cast(MARK, { miss = true }) -- on its way: the scenario lands it by hand
+    w:advance(0.95)
+    w:removeAura(boar, "Rend")
+    w:applyAura(boar, "Hunter's Mark", 120)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "the second change in that frame is the Mark")
+    eq(w:icon("ActionButton1"), "check", "and the first was the Rend ending")
+    w:advance(4)
+    eq(ns.db.learned["Hunter's Mark"].hits, 1)
+    Clean(w)
+end)
+
+test("reports: a renewed effect running out is known for what it is, and proves nothing either way", function()
+    local w, ns = Bar({ saved = Timed() }, REND, MORTAL)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(10)
+    w:cast(REND) -- renewed: 21 seconds from here
+    w:advance(20.5)
+    eq(w:icon("ActionButton1"), "cross", "still on, 31 seconds after the first cast")
+    w:cast(MORTAL, { miss = true }) -- still waiting to be judged when the Rend runs out
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the Rend is over")
+    eq(w:icon("ActionButton2"), "check", "and the change on the boar was that, not the Mortal Strike landing")
+    w:advance(3)
+
+    -- Once more with nothing else going on.
+    w:cast(REND)
+    w:advance(10)
+    w:cast(REND)
+    w:advance(22)
+    eq(w:icon("ActionButton1"), "check")
+    eq(ns.db.learned.Rend.due, 4, "reported when it was due, and still not counted as proof of anything")
+
+    -- The game may give a renewed effect extra time. Then its ending comes
+    -- later than its length says, which is not held against the spell.
+    w:cast(REND)
+    w:advance(10)
+    w:cast(REND, { miss = true })
+    w:applyAura(boar, "Rend", 26) -- renewed, and given five seconds on top
+    w:advance(30)
+    eq(w:icon("ActionButton1"), "check")
+    eq(ns.db.learned.Rend.due, 4, "neither ending was counted as one heard on time")
+    eq(ns.db.learned.Rend.late, 0, "nor as one that went unreported")
+    Clean(w)
+end)
+
+test("reports: a recast right after the old effect ran out still lands", function()
+    local w, ns = Simple({ saved = Timed() })
+    w:cast(REND)
+    w:advance(21.05)
+    eq(w:icon("ActionButton1"), "check", "it has just run out")
+    w:cast(REND) -- within the moment in which the ending is expected to be reported
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "each ending answers for one change, and this one is the new Rend")
+    w:advance(20)
+    eq(w:icon("ActionButton1"), "cross", "20 seconds into the new one")
+    eq(ns.db.learned.Rend.hits, 6)
+    Clean(w)
+end)
+
+test("reports: renewing an effect a moment before it was due to end is not mistaken for its ending", function()
+    -- The renewal is reported within the moment the ending was expected in:
+    -- once with the cast announced before the change, and once after it in
+    -- the same frame.
+    for _, early in ipairs({ false, 0 }) do
+        local w, ns = Simple({ saved = Proven() })
+        w:cast(REND)
+        w:advance(20.95)
+        w:cast(REND, { early = early or nil })
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "cross", "still there")
+        w:advance(19)
+        eq(w:icon("ActionButton1"), "cross", "for another 21 seconds from the renewal")
+        w:advance(3)
+        eq(w:icon("ActionButton1"), "check", "and then it ran out")
+        eq(ns.db.learned.Rend.hits, 2, "both casts landed")
+        eq(ns.db.learned.Rend.due, nil, "and neither end was counted as one heard on time")
+        eq(ns.db.learned.Rend.late, nil, "or as one that went unreported")
+        Clean(w)
+    end
+end)
+
+test("reports: a renewal reported a frame before its cast, in the old effect's last moment, passes for its ending", function()
+    -- The price of never taking an ending for a hit. Where the game reports a
+    -- landing, it does so in the frame of the cast, so a change a frame
+    -- earlier that fits the old effect running out is put down to that.
+    local w, ns = Simple({ saved = Proven() })
+    w:cast(REND)
+    w:advance(20.95)
+    w:cast(REND, { early = 0.05 })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "taken for the old Rend ending, though it was renewed")
+    eq(ns.db.learned.Rend.due, nil, "with a cast on its way it proves nothing about endings, so it is not counted")
+    w:advance(1)
+    w:cast(REND)
+    w:advance(0.15)
+    eq(w:icon("ActionButton1"), "cross", "the next cast puts it right")
+    Clean(w)
+end)
+
+test("reports: a recast that misses while the old effect's ending is on its way is not taken for a renewal", function()
+    -- Sent a moment before the old Rend runs out, announced a moment after,
+    -- and dodged. The ending is reported in between, a little early.
+    local w, ns, boar = Simple({ saved = Proven() })
+    w:cast(REND)
+    w:advance(20.9)
+    w.effects[#w.effects + 1] = { at = w.clock + 0.05, run = function()
+        w:removeAura(boar, "Rend")
+    end }
+    w:cast(REND, { castTime = 0.1, miss = true })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "the old Rend ran out, and nothing took its place")
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(ns.db.learned.Rend.hits, 1, "the miss is counted as one")
+    Clean(w)
+end)
+
+test("reports: a recast that misses just before the old effect runs out is not taken for a hit", function()
+    local w, ns = Simple({ saved = Timed() })
+    w:cast(REND)
+    w:advance(20.5)
+    w:cast(REND, { miss = true })
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the old Rend ran out, and the change the boar reported then was that")
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(ns.db.learned.Rend.casts, 6)
+    eq(ns.db.learned.Rend.hits, 5, "the miss is counted as one")
+    Clean(w)
+end)
+
+test("reports: a cast that lands in the very frame another effect of yours ends is still seen", function()
+    -- The game may send one report for both changes. A change in the frame a
+    -- cast is announced goes to the cast, whichever of the two comes first.
+    for _, early in ipairs({ false, 0 }) do
+        local w, ns = Bar({ saved = Timed() }, REND, MORTAL)
+        local boar = w:addMob("Boar")
+        w:showPlate(boar)
+        w:target(boar)
+        w:advance(0.3)
+        w:cast(REND)
+        w:advance(20.95)
+        -- The Rend goes without a report of its own: it is part of the next one.
+        for i = #boar.auras, 1, -1 do
+            if boar.auras[i].name == "Rend" then
+                table.remove(boar.auras, i)
+            end
+        end
+        w:cast(MORTAL, { early = early or nil })
+        w:advance(0.3)
+        eq(w:icon("ActionButton2"), "cross", "the Mortal Strike landed, and shows")
+        eq(w:icon("ActionButton1"), "check", "and the Rend is over")
+        w:advance(4)
+        eq(ns.db.learned["Mortal Strike"].hits, 1)
+        eq(ns.db.learned.Rend.due, 4, "whether the Rend's ending was reported is left open: not counted as heard")
+        eq(ns.db.learned.Rend.late, 0, "and not as missed")
+        Clean(w)
+    end
+end)
+
+test("reports: silence after a spell without an icon says nothing about the client", function()
+    local w, ns = Simple()
+    for _ = 1, 5 do
+        w:cast(HEROIC)
+        w:advance(4)
+    end
+    eq(ns.Trusted("target"), true, "Heroic Strike was never expected to change anything on the boar")
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "so nothing is assumed about a Rend yet")
+    Clean(w)
+end)
+
+test("reports, buffs: a buff you told the addon to track is taken to land from its first cast", function()
+    -- A buff cannot miss, and this client says nothing about your own effects
+    -- in a fight: waiting for a report would only keep the icon green.
+    local w, ns = Bar({ auraTokens = { target = true, plate = true } }, COMMAND, HAWK, REND)
+    w:slash("buff commanding shout")
+    Fight(w)
+    w:cast(COMMAND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "taken to land, as you asked")
+    w:advance(3.5)
+    eq(w:icon("ActionButton1"), "cross", "and silence does not take that away")
+    eq(ns.Trusted("player"), true, "nor is it held against the client")
+
+    w:cast(HAWK) -- it has no icon: nothing has shown that it leaves a buff
+    w:advance(4)
+    eq(ns.db.report.learning["Aspect of the Hawk"], nil,
+        "and a buff is not learned from reports: your own effects change too often for that")
+    Clean(w)
+end)
+
+test("reports: a change at the moment a buff of yours was due to run out is not taken for a cast landing", function()
+    local saved = Timed("Shield Block")
+    saved.learned["Shield Block"].buff = true
+    saved.learned["Shield Block"].duration = 10
+    local w, ns = Bar({ saved = saved }, BLOCK, WARD, REND)
+    Fight(w)
+    w:cast(BLOCK)
+    w:advance(9.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:cast(WARD, { miss = true }) -- leaves nothing on you
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the Shield Block ran out")
+    eq(w:icon("ActionButton2"), "check", "and that is the change you reported, not a Stone Ward")
+    Clean(w)
+end)
+
+test("reports: an effect that does not end when its length says is soon no longer counted on to", function()
+    -- The tooltip says 30 seconds and the effect lasts 20.
+    local w = World()
+    w:addSpell(901, {
+        name = "Shatter Armor", harmful = true,
+        description = "Shatters the target's armor for 30 sec.",
+        effect = { duration = 20 },
+    })
+    w:addButton("ActionButton1", 1, 901)
+    w:addButton("ActionButton2", 2, MORTAL)
+    local ns = w:load(Proven())
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    for _ = 1, 2 do
+        w:cast(901)
+        w:advance(32)
+    end
+    local learned = ns.db.learned["Shatter Armor"]
+    eq(learned.due, 0, "no change was reported when the books said it should end")
+    eq(learned.late, 2)
+    w:cast(901)
+    w:advance(29.5)
+    w:cast(MORTAL, { miss = true })
+    w:advance(0.45)
+    w:applyAura(boar, "Sunder Armor", 30, false) -- someone else's, just when the books say the armor effect ends
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "which is no longer put down to that ending: the limit that is left")
+    Clean(w)
+end)
+
+test("reports: an ending is only held against a unit that was there to report it", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    w:cast(REND)
+    w:advance(5)
+    w:kill(boar)
+    w:advance(20)
+    eq(ns.db.learned.Rend.due, nil, "the boar died with the Rend on it")
+    eq(ns.db.learned.Rend.late, nil, "and its silence when the Rend was due says nothing about the client")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Spells without an icon are listened for all the same
+--------------------------------------------------------------------------------
+
+test("reports: a spell that lost its icon earns it back by landing", function()
+    local w, ns = Bar({ saved = Proven() }, MORTAL)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(MORTAL)
+    w:advance(11)
+    w:drain()
+    for _ = 1, 5 do
+        w:cast(MORTAL, { miss = true })
+        w:advance(3.5)
+    end
+    eq(w:icon("ActionButton1"), nil, "one cast in six left something: not a status spell, as far as anyone can tell")
+    local said = w:drain()
+    check(said:find("Mortal Strike left no status effect behind after 5 of 6 casts", 1, true), said)
+    check(said:find("gets the icon back by itself", 1, true), "and it says that this is not for good: " .. said)
+
+    for landed = 1, 2 do
+        w:cast(MORTAL)
+        w:advance(11)
+        eq(w:icon("ActionButton1"), nil, "not back yet after " .. landed .. " more that landed")
+    end
+    eq(ns.db.learned["Mortal Strike"].hits, 3)
+    eq(ns.db.learned["Mortal Strike"].casts, 8)
+    eq(w:drain(), "", "nothing is said meanwhile")
+
+    w:cast(MORTAL)
+    w:advance(0.8)
+    eq(w:icon("ActionButton1"), "cross", "4 of 9: the icon is back, and knows about the cast that earned it")
+    said = w:drain()
+    check(said:find("Mortal Strike does leave a status effect behind: 4 of its last 9 casts did. Its icon is back.", 1, true),
+        said)
+    eq(ns.db.learned["Mortal Strike"].told, nil, "so the next time it is dropped will be told as well")
+    w:advance(9.5)
+    eq(w:icon("ActionButton1"), "check", "and it runs out like any other")
+    for _ = 1, 2 do
+        w:cast(MORTAL, { miss = true })
+        w:advance(3.5)
+    end
+    eq(w:icon("ActionButton1"), "check", "4 of 11: back to being a status spell, it is not dropped again over two misses")
+    eq(w:drain(), "")
+    Clean(w)
+end)
+
+test("reports: a spell near the line does not keep losing and regaining its icon", function()
+    local w, ns = Bar({ saved = Proven() }, BLOODTHIRST, MARK)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(MARK)
+    w:advance(1)
+    for _ = 1, 6 do
+        w:cast(BLOODTHIRST)
+        w:advance(3.5)
+    end
+    eq(w:icon("ActionButton1"), nil, "dropped after six silent casts")
+    w:drain()
+    -- Now and then something else changes on the boar just as it is used.
+    for _ = 1, 2 do
+        w:cast(BLOODTHIRST)
+        w:advance(0.1)
+        w:auraChanged(boar)
+        w:advance(3.5)
+        w:cast(BLOODTHIRST)
+        w:advance(3.5)
+    end
+    eq(ns.db.learned.Bloodthirst.hits, 2)
+    eq(ns.db.learned.Bloodthirst.casts, 10)
+    eq(w:icon("ActionButton1"), nil, "2 of 10 is more than it was dropped at, and still not enough to come back")
+    eq(w:drain(), "", "so there is nothing new to say")
+    local books = ns.Tracker:Describe(ns.Now())
+    eq(#books, 1, "nothing is entered in the books for a spell without an icon")
+    eq(books[1].name, "Hunter's Mark")
+    Clean(w)
+end)
+
+test("reports: a spell nobody took for a status spell earns an icon by what the enemy reports", function()
+    local w = World()
+    w:addSpell(902, {
+        -- Castable on enemies, but its tooltip mentions no duration.
+        name = "Gouge Armor", harmful = true,
+        description = "Tears at the target's armor until it gives way.",
+        effect = { duration = 12 },
+    })
+    w:addButton("ActionButton1", 1, 902)
+    w:addButton("ActionButton2", 2, HEROIC)
+    local ns = w:load(Proven())
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    for cast = 1, 5 do
+        eq(w:icon("ActionButton1"), nil, "no icon before cast " .. cast)
+        w:cast(902)
+        w:advance(1)
+        w:cast(HEROIC)
+        w:advance(12)
+    end
+    w:cast(902)
+    w:advance(0.8)
+    eq(w:icon("ActionButton1"), "cross", "six casts were each followed by a change on the boar: it has an icon now")
+    eq(w:icon("ActionButton2"), nil, "Heroic Strike changed nothing on the boar, and has none")
+    eq(ns.db.learned["Heroic Strike"].hits, 0)
+    eq(ns.db.learned["Heroic Strike"].casts, 5)
+    local learning = ns.db.report.learning
+    eq(learning["Gouge Armor"].casts, 6, "the report counts the casts of a spell without an icon")
+    eq(learning["Gouge Armor"].changed, 6)
+    eq(learning["Heroic Strike"].changed, 0)
+    w:advance(12)
+    eq(w:icon("ActionButton1"), "check", "and its effect runs out on the 12 seconds nothing better is known than")
+    Clean(w)
+end)
+
+test("reports: a change reported a frame before its cast goes to that cast, not to a spell that only listens", function()
+    local w, ns = Simple({ saved = Proven() })
+    w:cast(HEROIC) -- no icon, listened for
+    w:advance(0.1)
+    w:cast(REND, { early = 0.05 }) -- the boar's change is reported before the Rend is announced
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the change is the Rend's")
+    w:advance(4)
+    eq(ns.db.learned.Rend.hits, 1)
+    eq(ns.db.learned["Heroic Strike"].hits, 0, "and the Heroic Strike gave it back")
+    eq(ns.db.learned["Heroic Strike"].casts, 1)
+    Clean(w)
+end)
+
+test("reports: whatever comes with a report, it is only described and a cast is judged all the same", function()
+    local shapes = {
+        sealed = "hidden, sealed table: full secret, added secret, updated secret, removed secret",
+        secret = "hidden, secret",
+        none = "hidden, nothing",
+        forbidden = "hidden, a table addons may not touch",
+        open = "hidden, table: full boolean, added list [id number, mine boolean, harmful boolean, spell secret], "
+            .. "updated list [number], removed nil",
+        full = "hidden, table: full boolean, added nil, updated nil, removed nil",
+    }
+    for payload, text in pairs(shapes) do
+        local w, ns = Simple({ auraPayload = payload })
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross", payload .. ": the report is what the cast is judged by")
+        w:advance(22)
+        w:cast(REND, { miss = true })
+        w:advance(4)
+        eq(w:icon("ActionButton1"), "check", payload .. ": and a miss stays green")
+        local seen = {}
+        for shape, count in pairs(ns.db.report.payload) do
+            seen[#seen + 1] = shape .. " x" .. count
+        end
+        check(ns.db.report.payload[text], payload .. ": the saved report says what came: " .. table.concat(seen, "; "))
+        eq(ns.db.report.reports.target.readable, payload == "secret" and 0 or ns.db.report.reports.target.hidden,
+            payload .. ": and whether it was one secret value")
+        Clean(w)
+    end
+end)
+
+test("reports: only the first reports of a session are described", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    w:enterCombat()
+    for _ = 1, 80 do
+        w:auraChanged(boar)
+        w:advance(0.05)
+    end
+    local payload = ns.db.report.payload
+    eq(payload["hidden, sealed table: full secret, added secret, updated secret, removed secret"], 60)
+    eq(payload["hidden, unread"], 100, "the rest are counted and left alone")
     Clean(w)
 end)
 
@@ -995,8 +1630,8 @@ end)
 
 test("reports, area: a client that reports on your target but not on nameplates", function()
     -- The target is judged by its reports. The enemies only a nameplate shows
-    -- are assumed hit, as they were before, because nothing was ever heard
-    -- through a nameplate.
+    -- are waited for at first. After three casts with nothing ever heard
+    -- through a nameplate they are assumed hit, as on any unit nobody reports on.
     local w, ns, mobs = Pack({ auraTokens = { player = true, target = true } })
     for i = 1, 3 do
         mobs[i].engaged = true
@@ -1004,8 +1639,19 @@ test("reports, area: a client that reports on your target but not on nameplates"
     w:enterCombat()
     w:cast(REND)
     w:advance(0.5)
-    eq(ns.Trusted("target"), true)
-    eq(ns.Trusted("plate"), false)
+    eq(ns.signals.target.heard > 0, true)
+    eq(ns.signals.plate.heard, 0)
+    for i = 1, 3 do
+        eq(ns.Trusted("plate"), true, "still waited for before cast " .. i)
+        w:cast(CLAP, { hits = { mobs[2], mobs[3] } })
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check", "nobody reported anything, and nobody is assumed hit: cast " .. i)
+        w:advance(3)
+    end
+    eq(ns.Trusted("plate"), false, "three casts with nothing heard through a nameplate")
+    eq(ns.Trusted("target"), true, "the target is still judged by what it reports")
+    check(w:drain():find("the game has said nothing about the enemies around your target changing", 1, true),
+        "it says so in chat")
     w:cast(CLAP, { hits = { mobs[2], mobs[3] } })
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "partial", "the target reported nothing, the other two are assumed")
@@ -1036,45 +1682,86 @@ test("reports, buffs: in combat your buff shows once your own effects change", f
     Clean(w)
 end)
 
-test("reports: a spell you told the addon to track is taken to land whatever is reported", function()
-    local w = Simple({ saved = Proven() })
+test("reports: a spell you told the addon to track is taken to land once reports have shown nothing of it", function()
+    local w, ns = Simple({ saved = Proven() })
     w:slash("track heroic strike")
+    w:cast(REND) -- the boar is heard from
     w:advance(0.5)
+    for i = 1, 2 do
+        w:cast(HEROIC)
+        w:advance(0.3)
+        eq(w:icon("ActionButton2"), "check", "judged by what the boar reports, which is nothing: cast " .. i)
+        w:advance(3.5)
+    end
+    eq(ns.db.learned["Heroic Strike"].casts, 2)
+    eq(ns.db.learned["Heroic Strike"].hits, 0)
     w:cast(HEROIC)
     w:advance(0.3)
-    eq(w:icon("ActionButton2"), "cross", "it leaves nothing behind, but you asked for it to be tracked")
+    eq(w:icon("ActionButton2"), "cross", "reports cannot see what it leaves, and you asked for it to be tracked")
     w:advance(3.5)
     eq(w:icon("ActionButton2"), "cross", "and silence does not take that away")
+    check(ns.db.report.casts[#ns.db.report.casts]:find("taken to land on your say-so", 1, true),
+        "the report says how it was judged: " .. ns.db.report.casts[#ns.db.report.casts])
     Clean(w)
 end)
 
-test("reports: a debuff you told the addon to track is judged by reports once they have borne it out", function()
+test("reports: a debuff you told the addon to track is judged by reports from its first cast", function()
     local w, ns = Simple({ saved = Proven() })
     w:slash("track rend")
     w:cast(REND, { miss = true })
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "cross", "taken to land at first, because you asked for it to be tracked")
-    w:advance(22)
-    eq(w:icon("ActionButton1"), "check", "for as long as it would have lasted")
+    eq(w:icon("ActionButton1"), "check", "a miss is a miss, although you asked for the spell to be tracked")
+    w:advance(3.5)
+    eq(w:icon("ActionButton1"), "check")
 
     for _ = 1, 3 do
         w:cast(REND)
         w:advance(0.3)
-        eq(w:icon("ActionButton1"), "cross")
+        eq(w:icon("ActionButton1"), "cross", "and a hit is a hit")
         w:advance(22)
     end
     eq(ns.db.learned.Rend.hits, 3, "three casts were each followed by a change on the boar")
 
     w:cast(REND, { miss = true })
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "check", "so there is no doubt left about it: a miss is a miss")
+    eq(w:icon("ActionButton1"), "check", "a later miss")
     w:advance(3.5)
     eq(w:icon("ActionButton1"), "check")
-    w:cast(REND)
-    w:advance(0.3)
-    eq(w:icon("ActionButton1"), "cross", "and a hit is a hit")
-    check(ns.db.report.casts[1]:find("taken to land on your say-so", 1, true), "the report says how the first one was judged: "
+    check(ns.db.report.casts[1]:find("waited for a report", 1, true), "the report says how the first one was judged: "
         .. ns.db.report.casts[1])
+    Clean(w)
+end)
+
+test("reports: a debuff you told the addon to track gets through a bad start", function()
+    -- Two misses in a row, and reports look as if they cannot see the spell:
+    -- it is taken to land for a while. The casts are listened for all the
+    -- same, and two that are seen to land put it back to being judged.
+    local w, ns = Simple({ saved = Proven() })
+    w:slash("track rend")
+    w:cast(HEROIC)
+    w:advance(0.5)
+    w:auraChanged(w.mobs[1]) -- the boar is heard from
+    w:advance(3)
+    for _ = 1, 2 do
+        w:cast(REND, { miss = true })
+        w:advance(4)
+        eq(w:icon("ActionButton1"), "check")
+    end
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "taken to land now, as you asked")
+    w:advance(22)
+    for _ = 1, 2 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    eq(ns.db.learned.Rend.hits, 2)
+    eq(ns.db.learned.Rend.casts, 5)
+    w:cast(REND)
+    w:advance(22)
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "three of six landed where the boar could be heard: a miss is a miss again")
     Clean(w)
 end)
 
@@ -1108,6 +1795,12 @@ end)
 test("reports: a tracked spell that leaves nothing does not take the credit from a cast waiting for it", function()
     local w, ns = Simple({ saved = Proven() })
     w:slash("track heroic strike")
+    w:cast(REND)
+    w:advance(22)
+    for _ = 1, 2 do
+        w:cast(HEROIC) -- reports show nothing of it, so from here on it is taken to land
+        w:advance(4)
+    end
     w:cast(REND, { travel = 0.2 })
     w:advance(0.1)
     w:cast(HEROIC) -- goes off before the boar has shown the Rend
@@ -1115,8 +1808,24 @@ test("reports: a tracked spell that leaves nothing does not take the credit from
     eq(w:icon("ActionButton1"), "cross", "the change on the boar is the Rend's")
     w:advance(3)
     eq(w:icon("ActionButton1"), "cross")
-    eq(ns.db.learned.Rend.hits, 1)
+    eq(ns.db.learned.Rend.hits, 2)
     eq(ns.db.learned["Heroic Strike"].hits, 0, "and is not put down to the spell that is taken to land anyway")
+    Clean(w)
+end)
+
+test("reports: a spell with no icon does not take the credit from a cast waiting for it either", function()
+    -- Heroic Strike has no icon, but is listened for in case it leaves
+    -- something after all. That must not cost the Rend its landing.
+    local w, ns = Simple({ saved = Proven() })
+    w:cast(REND, { travel = 0.2 })
+    w:advance(0.1)
+    w:cast(HEROIC)
+    w:advance(0.4)
+    eq(w:icon("ActionButton1"), "cross", "the change on the boar is the Rend's")
+    w:advance(3)
+    eq(ns.db.learned.Rend.hits, 1)
+    eq(ns.db.learned["Heroic Strike"].hits, 0)
+    eq(ns.db.learned["Heroic Strike"].casts, 1, "nothing was left over for it")
     Clean(w)
 end)
 
@@ -1136,14 +1845,30 @@ test("reports: a spell set to always show is judged like any other when its effe
     Clean(w)
 end)
 
-test("reports, area: on a client that reports nothing, enemies pulled in by the spell are assumed hit", function()
-    local w, ns, mobs = Pack({ auraEvents = false })
+test("reports, area: on a client known to report nothing, enemies pulled in by the spell are assumed hit", function()
+    local quiet = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, ns, mobs = Pack({ auraEvents = false, saved = quiet })
     w:cast(CLAP, { hits = mobs }) -- none of them was in the fight when it was sent
     w:advance(0.05)
     eq(w:icon("ActionButton1"), "check", "nothing to go on yet")
     w:advance(2.5)
     eq(w:icon("ActionButton1"), "cross", "all three are in the fight now and nothing says otherwise")
     eq(ns.Trusted("plate"), false)
+    Clean(w)
+end)
+
+test("reports, area: a client nothing is known about is given three casts, then everyone in the fight is assumed hit", function()
+    local w, ns, mobs = Pack({ auraEvents = false })
+    for i = 1, 3 do
+        w:cast(CLAP, { hits = mobs })
+        w:advance(3.5)
+        eq(w:icon("ActionButton1"), "check", "nothing heard, nobody assumed hit: cast " .. i)
+    end
+    local said = w:drain()
+    check(said:find("about the enemies around your target or your target changing", 1, true), "one line for both: " .. said)
+    w:cast(CLAP, { hits = mobs })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "all three are in the fight and nothing says otherwise")
     Clean(w)
 end)
 
@@ -1196,18 +1921,6 @@ test("reports: a run of misses does not cost a real status spell its icon", func
     Clean(w)
 end)
 
-test("no reports: a client that never says when effects change runs on timers as before", function()
-    local w, ns = Simple({ auraEvents = false })
-    w:cast(REND, { miss = true })
-    w:advance(3)
-    eq(w:icon("ActionButton1"), "cross", "assumed, with nothing to say otherwise")
-    w:advance(18.5)
-    eq(w:icon("ActionButton1"), "check", "until the timer ends")
-    eq(ns.db.learned.Rend, nil)
-    eq(ns.Trusted("target"), false)
-    Clean(w)
-end)
-
 test("reports: what the client sent is saved for troubleshooting, and kept over a reload", function()
     local w, ns = Simple()
     w:cast(REND)
@@ -1219,9 +1932,11 @@ test("reports: what the client sent is saved for troubleshooting, and kept over 
     eq(report.client, BUILD)
     check(report.reports.target.hidden >= 1, "changes reported for the target while details were hidden")
     check(report.reports.plate.hidden >= 1, "and for its nameplate")
-    eq(report.reports.target.readable, 0, "with nothing an addon could read")
+    eq(report.reports.target.readable, report.reports.target.hidden, "each with a table, not one secret value")
+    eq(report.payload["hidden, sealed table: full secret, added secret, updated secret, removed secret"], 2,
+        "what came with them is described: a table whose every field is sealed")
     eq(#report.casts, 2, "one line for each cast")
-    check(report.casts[1]:find("Rend (debuff, hidden, reports not proven yet): changed, 0.00s after the cast", 1, true),
+    check(report.casts[1]:find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast", 1, true),
         report.casts[1])
     check(report.casts[2]:find("Rend (debuff, hidden, waited for a report): silent", 1, true), report.casts[2])
     eq(report.verdicts.changed, 1)
@@ -1235,8 +1950,10 @@ test("reports: what the client sent is saved for troubleshooting, and kept over 
 
     w:slash("debug")
     local debug = w:drain()
-    check(debug:find("your target: 1, your soft target: 0 (not relied on yet), nameplates: 1", 1, true),
+    check(debug:find("your target: 1, your soft target: 0, nameplates: 1", 1, true),
         "debug counts the reports: " .. debug)
+    check(debug:find("put down to an effect of yours running out just then: 0.", 1, true),
+        "and those that were only an effect ending: " .. debug)
     check(debug:find("1 left something, 1 left nothing", 1, true), "and the casts judged by them: " .. debug)
 
     -- The next session starts a report of its own and keeps the old one.
@@ -1259,15 +1976,6 @@ test("reports: what the client sent is saved for troubleshooting, and kept over 
     eq(second.earlier[1].casts[1], report.casts[1])
     eq(second.earlier[1].earlier, nil, "without nesting")
     Clean(w2)
-end)
-
-test("reports: a client build that changed is not trusted on the old build's word", function()
-    local w, ns = Simple({ clientBuild = "70999", saved = Proven() })
-    eq(ns.Trusted("target"), false)
-    w:cast(REND, { miss = true })
-    w:advance(0.15)
-    eq(w:icon("ActionButton1"), "cross", "assumed until this build has been seen to report")
-    Clean(w)
 end)
 
 --------------------------------------------------------------------------------
@@ -1343,7 +2051,7 @@ test("area, blind: everyone in the fight is assumed hit", function()
     Clean(w)
 end)
 
-test("area: an opening cast is assumed to land, then corrected", function()
+test("area: an opening cast is judged by who shows it", function()
     local w, _, mobs = Pack({ combatAuras = "ids" })
     for i = 1, 3 do
         mobs[i].engaged = true
@@ -1352,9 +2060,9 @@ test("area: an opening cast is assumed to land, then corrected", function()
     w:advance(0.5)
     w:cast(CLAP, { hits = { mobs[1], mobs[2] } })
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "cross", "nothing to compare with yet, so everyone is assumed hit")
+    eq(w:icon("ActionButton1"), "partial", "two of them changed, and nobody is assumed hit")
     w:advance(2.5)
-    eq(w:icon("ActionButton1"), "partial", "the count on the third kobold says otherwise")
+    eq(w:icon("ActionButton1"), "partial", "the third kobold never showed it")
     Clean(w)
 end)
 
@@ -1668,15 +2376,16 @@ test("buffs, ids: in combat a buff is followed by its instance id", function()
     Clean(w)
 end)
 
-test("buffs, ids: with no buff of yours seen yet this fight, the first cast runs on its timer", function()
+test("buffs, ids: with no buff of yours seen yet this fight, a cast that leaves nothing is not held against the spell", function()
     local w, ns = Bar({ combatAuras = "ids" }, BLOCK, REND)
     Fight(w)
     w:cast(BLOCK, { miss = true })
     w:advance(3)
-    eq(w:icon("ActionButton1"), "cross", "kept as an assumption: no buffs could be the client hiding them")
-    eq(ns.db.learned["Shield Block"], nil, "and not counted as evidence")
-    w:advance(7.5)
-    eq(w:icon("ActionButton1"), "check", "until its timer ends")
+    eq(w:icon("ActionButton1"), "check", "nothing changed on you, so nothing is shown")
+    eq(ns.db.learned["Shield Block"], nil, "and not counted as evidence: no buffs could be the client hiding them")
+    w:cast(BLOCK)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "one that does leave its buff shows")
     Clean(w)
 end)
 
@@ -1855,7 +2564,7 @@ test("buffs: one buff the client keeps secret even out of combat does not hide t
         w:advance(3)
     end
     eq(ns.db.learned["Mending Touch"], nil, "no evidence recorded")
-    eq(w:icon("ActionButton2"), "cross", "kept as an assumption")
+    eq(w:icon("ActionButton2"), "check", "and nothing is assumed either: your effects did not change")
     Clean(w)
 end)
 
@@ -2074,8 +2783,18 @@ test("a success with no sent event is judged by what the enemy shows afterwards"
     Clean(w)
 end)
 
-test("a success with no sent event and no reports is assumed, not judged", function()
+test("a success with no sent event and no reports is not judged", function()
     local w, ns = Simple({ combatAuras = "ids", auraEvents = false })
+    w:cast(REND, { noSent = true })
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check", "nothing to go on, and nothing is assumed while reports may still come")
+    eq(ns.db.learned.Rend, nil, "no before-picture, so no evidence")
+    Clean(w)
+end)
+
+test("a success with no sent event on a client known not to report is assumed, not judged", function()
+    local quiet = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, ns = Simple({ combatAuras = "ids", auraEvents = false, saved = quiet })
     w:cast(REND, { noSent = true })
     w:advance(3)
     eq(w:icon("ActionButton1"), "cross")
@@ -2189,13 +2908,20 @@ test("/se track, ignore and auto", function()
     w:slash("auto Rend")
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "check", "automatic again")
+    w:cast(REND) -- the fight is on, and the boar has shown an effect of yours
+    w:advance(22)
 
     w:slash("track heroic")
     w:advance(0.5)
     eq(w:icon("ActionButton2"), "check", "forced on, matched by the start of its name")
+    for _ = 1, 2 do
+        w:cast(HEROIC)
+        w:advance(5)
+        eq(w:icon("ActionButton2"), "check", "judged like any other spell at first: it left nothing")
+    end
     w:cast(HEROIC)
     w:advance(5)
-    eq(w:icon("ActionButton2"), "cross", "forced spells are trusted even with nothing to see")
+    eq(w:icon("ActionButton2"), "cross", "after that a forced spell is trusted even with nothing to see")
     w:advance(8)
     eq(w:icon("ActionButton2"), "check", "until the default timer ends")
 
@@ -3752,6 +4478,7 @@ panel("sample icons show on the real buttons while the Appearance tab is open", 
     local boar = w:addMob("Boar")
     w:showPlate(boar)
     w:target(boar)
+    w:advance(0.1) -- a report in the very frame a target is picked is about the picking
     w:cast(REND)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "cross", "in a fight the real icons take over")

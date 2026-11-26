@@ -623,9 +623,10 @@ function commands.debug()
     for i = 1, #ns.TOKEN_KINDS do
         local kind = ns.TOKEN_KINDS[i]
         heard[i] = format("%s: %d%s", REPORT_LABELS[kind], journal.reports[kind].hidden,
-            ns.Trusted(kind) and "" or " (not relied on yet)")
+            ns.Trusted(kind) and "" or " (silent after several casts, so a cast there is taken to land)")
     end
     print("  Changes the game reported while details were hidden, about " .. table.concat(heard, ", ") .. ".")
+    print(format("  Of those, put down to an effect of yours running out just then: %d.", journal.reports.ended or 0))
     local verdicts = journal.verdicts
     local landed = (verdicts.changed or 0) + (verdicts.seen or 0)
     local empty = (verdicts.silent or 0) + (verdicts["nothing new"] or 0)

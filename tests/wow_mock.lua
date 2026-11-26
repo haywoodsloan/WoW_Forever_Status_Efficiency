@@ -23,6 +23,14 @@
 --                  never.
 --   auraTokens     set of the kinds of unit token UNIT_AURA is sent for
 --                  ("player", "target", "softenemy", "plate"). Default: all.
+--   auraPayload    what UNIT_AURA carries as its details while they are
+--                  hidden: "sealed" (default, and what the 12.1.5
+--                  documentation says) a table whose every field reads as a
+--                  secret value, "secret" one secret value, "none" nothing,
+--                  "forbidden" a table that may not be indexed at all, "open"
+--                  a table an addon can read, with a secret field or two
+--                  inside, "full" a readable table that only says everything
+--                  may have changed.
 --   handover       "same": UNIT_AURA is also sent for a token in the frame it
 --                  is handed to another unit; "late": a frame after that.
 --   noSelfBuffAPI  true: C_Spell.IsSelfBuff does not exist.
@@ -129,6 +137,8 @@ function Mock.new(options)
     ----------------------------------------------------------------------------
 
     local secretValues = setmetatable({}, { __mode = "k" })
+    local sealedTables = setmetatable({}, { __mode = "k" })
+    local forbiddenTables = setmetatable({}, { __mode = "k" })
 
     local function Forbidden(what)
         return function()
@@ -159,6 +169,34 @@ function Mock.new(options)
     end
 
     world.Secret = Secret
+
+    --- A table flagged so that reading any field of it gives a secret value.
+    local function Sealed(fields)
+        local tbl = setmetatable({}, {
+            __index = function(_, key)
+                return Secret(fields[key])
+            end,
+            __newindex = function()
+                error("attempt to write to a secret table", 2)
+            end,
+        })
+        sealedTables[tbl] = true
+        return tbl
+    end
+
+    --- A table an addon may not look into at all.
+    local function Locked()
+        local tbl = setmetatable({}, {
+            __index = function()
+                error("attempt to index a forbidden table", 2)
+            end,
+            __newindex = function()
+                error("attempt to index a forbidden table", 2)
+            end,
+        })
+        forbiddenTables[tbl] = true
+        return tbl
+    end
 
     local function AurasHidden()
         return options.secrets and world.combat
@@ -197,6 +235,14 @@ function Mock.new(options)
     if options.secrets then
         function env.issecretvalue(value)
             return secretValues[value] ~= nil
+        end
+
+        function env.issecrettable(value)
+            return sealedTables[value] == true
+        end
+
+        function env.canaccesstable(value)
+            return forbiddenTables[value] == nil
         end
     end
 
@@ -1771,7 +1817,29 @@ function Mock.new(options)
         end
         local hidden = AurasHidden()
         local unit = hidden and Secret(token) or token
-        local details = hidden and Secret({}) or { isFullUpdate = false }
+        local details = { isFullUpdate = false }
+        if hidden then
+            local payload = options.auraPayload or "sealed"
+            if payload == "secret" then
+                details = Secret({})
+            elseif payload == "none" then
+                details = nil
+            elseif payload == "forbidden" then
+                details = Locked()
+            elseif payload == "open" then
+                details = {
+                    isFullUpdate = false,
+                    addedAuras = {
+                        { auraInstanceID = 1, isFromPlayerOrPlayerPet = true, isHarmful = true, spellId = Secret(1) },
+                    },
+                    updatedAuraInstanceIDs = { 5 },
+                }
+            elseif payload == "full" then
+                details = { isFullUpdate = true }
+            else
+                details = Sealed({ isFullUpdate = false, addedAuras = {} })
+            end
+        end
         world.auraEventsSent = (world.auraEventsSent or 0) + 1
         for i = 1, #world.frames do
             local frame = world.frames[i]

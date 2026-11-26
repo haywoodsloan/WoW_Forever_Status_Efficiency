@@ -15,7 +15,8 @@
 --   3. Its tooltip mentions a duration and the client says where it can land: on
 --      enemies (a debuff), on friends or only on yourself (a buff). A few well
 --      known area debuffs count too. Casting it must not have kept failing to
---      leave anything behind.
+--      leave anything behind; if it has, it gets its icon back once its casts
+--      are seen to leave something after all.
 --   4. Casting it has repeatedly been followed by a new effect of yours.
 
 local _, ns = ...
@@ -38,6 +39,9 @@ local LOAD_RETRY = 1.5
 -- misses, is dodged or meets an immune enemy now and then, so this asks for more
 -- than a short run of bad luck: of the first six casts, at most one may land.
 local DEMOTE_CASTS, DEMOTE_RATIO = 6, 0.2
+-- One that lost its icon has to do clearly better than that to get it back, so
+-- that a spell near the line does not keep losing and regaining it.
+local RESTORE_RATIO = 0.4
 local PROMOTE_CASTS, PROMOTE_RATIO = 6, 0.8 -- an unlikely one that keeps leaving something
 local EVIDENCE_CAP = 40 -- halve the counts past this so old results fade
 
@@ -241,6 +245,9 @@ local SEEN_FIELD = { debuff = "exact", buff = "buff" }
 local CASTS_FIELD = { debuff = "casts", buff = "buffCasts" }
 local HITS_FIELD = { debuff = "hits", buff = "buffHits" }
 
+-- Set while a likely spell is without its icon because its casts left nothing.
+local DROPPED_FIELD = { debuff = "dropped", buff = "buffDropped" }
+
 --- Where the spell's effect lands: "debuff" (on enemies) or "buff" (on you, or
 --- on the friend you have targeted).
 local function KindOf(info, user, learned, seed)
@@ -301,7 +308,9 @@ function Spells:Tracking(info)
             likely = seed or (info.harmful == true and info.tooltipDuration ~= nil)
         end
         if likely then
-            if casts >= DEMOTE_CASTS and hits / casts <= DEMOTE_RATIO then
+            local share = casts > 0 and hits / casts or 1
+            if (casts >= DEMOTE_CASTS and share <= DEMOTE_RATIO)
+                or (learned and learned[DROPPED_FIELD[kind]] and share < RESTORE_RATIO) then
                 source = "demoted"
             else
                 tracked, source = true, (seed and kind == "debuff") and "built-in" or "tooltip"
@@ -406,6 +415,12 @@ function Spells:Evidence(name, hit, kind)
         casts, hits = casts / 2, hits / 2
     end
     learned[castsField], learned[hitsField] = casts, hits
+    local dropped = DROPPED_FIELD[kind] or "dropped"
+    if casts >= DEMOTE_CASTS and hits / casts <= DEMOTE_RATIO then
+        learned[dropped] = true
+    elseif hits / casts >= RESTORE_RATIO then
+        learned[dropped] = nil
+    end
     ns.Log("%s: %s (%d of %d casts left an effect)", name, hit and "new effect seen" or "no new effect",
         floor(hits + 0.5), floor(casts + 0.5))
     ns.MarkDirty()
@@ -486,6 +501,49 @@ function Spells:Landed(name, delay)
     learned.lag = floor(lag * 100 + 0.5) / 100
     local timed = type(learned.timed) == "number" and learned.timed or 0
     learned.timed = min(LAG_TIMED, timed + 1)
+end
+
+--------------------------------------------------------------------------------
+-- Whether an effect is reported ending when its length says it should
+--
+-- A change on a unit just as one of your effects there was due to run out is
+-- most likely that effect ending, and not a cast landing. That is taken to be
+-- so from the start, because the other way round a cast that missed would show
+-- as one that landed. It only holds for a spell whose length is right and on a
+-- client that reports endings promptly, so it is kept an eye on: each time
+-- such an effect comes due, either a change is reported then or it is not, and
+-- a spell whose endings mostly go unreported is no longer judged this way.
+--------------------------------------------------------------------------------
+
+local ENDS_MISSED = 2 -- endings that have to go unreported before any doubt
+local ENDS_CAP = 20 -- halve the counts past this so old results fade
+
+--- Records whether an effect of this spell that came due was reported ending
+--- just then.
+function Spells:Ended(name, onTime)
+    local learned = Learned(name)
+    local due = (type(learned.due) == "number" and learned.due or 0) + (onTime and 1 or 0)
+    local late = (type(learned.late) == "number" and learned.late or 0) + (onTime and 0 or 1)
+    if due + late > ENDS_CAP then
+        due, late = due / 2, late / 2
+    end
+    learned.due, learned.late = due, late
+    ns.Log("%s: %s (%d of %d endings were reported on time)", name,
+        onTime and "its ending was reported when it was due" or "nothing was reported when it was due to end",
+        floor(due + 0.5), floor(due + late + 0.5))
+end
+
+--- True when a change at the moment this spell's effect was due to run out
+--- can be put down to that. It can, unless its endings have gone unreported
+--- at least twice and more than one time in three.
+function Spells:EndsOnTime(name)
+    local learned = ns.db.learned[name]
+    local late = learned and learned.late
+    if type(late) ~= "number" or late < ENDS_MISSED then
+        return true
+    end
+    local due = type(learned.due) == "number" and learned.due or 0
+    return due >= 2 * late
 end
 
 --- The cast record for a spell judged as one kind, for display: casts, hits

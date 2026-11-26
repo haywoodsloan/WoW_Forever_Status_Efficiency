@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.3.3"
+ns.VERSION = "0.3.4"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -515,19 +515,101 @@ end
 --------------------------------------------------------------------------------
 -- Change signals
 --
--- UNIT_AURA still fires in combat, but with a payload an addon must not read.
--- So one frame per unit token listens for it and passes on nothing but the fact
--- that the unit behind that token just had an effect added, renewed or removed.
--- Registering each frame for a single unit is what tells us whose effects
--- changed without looking at the event's arguments.
+-- UNIT_AURA still fires in combat, but what it carries is sealed: the game's
+-- own documentation marks the event as producing secret values while auras are
+-- restricted. So one frame per unit token listens for it and passes on nothing
+-- but the fact that the unit behind that token just had an effect added,
+-- renewed or removed. Registering each frame for a single unit is what tells
+-- us whose effects changed without looking at the event's arguments.
+--
+-- What exactly a client hands over is worth knowing all the same, because a
+-- client that left the details readable would let a cast be told from every
+-- other change. So the first reports of a session are also described, in
+-- words, for the saved report. Nothing is ever read out of a secret value for
+-- that: each field is only asked what kind of thing it is.
 --------------------------------------------------------------------------------
 
-local watchers = {} -- unit token -> the frame listening for it
+local issecrettable = issecrettable -- nil on clients without secret tables
+local canaccesstable = canaccesstable
 
---- Calls onChange(token, readable) whenever the effects on the unit behind
---- `token` change. `readable` says whether the client sent details an addon may
---- look at, which it does not do in combat. Returns false when the client will
---- not allow the watch.
+local watchers = {} -- unit token -> the frame listening for it
+local shapesLeft = 60 -- reports still to be described this session
+
+--- What a value is, in a word, without looking into a secret one.
+local function Kind(value)
+    if IsSecret(value) then
+        return "secret"
+    end
+    if value == nil then
+        return "nil"
+    end
+    return type(value)
+end
+
+--- Reads tbl[key] and says what kind of thing came back. A secret value is
+--- never handed on, only named.
+local function Peek(tbl, key)
+    local ok, value = pcall(Index, tbl, key)
+    if not ok then
+        return nil, "refused"
+    end
+    local kind = Kind(value)
+    if kind == "secret" then
+        return nil, kind
+    end
+    return value, kind
+end
+
+local AURA_FIELDS = {
+    { "auraInstanceID", "id" }, { "isFromPlayerOrPlayerPet", "mine" }, { "isHarmful", "harmful" },
+    { "spellId", "spell" },
+}
+
+--- Describes the first entry of a list in the details: a number for a list of
+--- instance ids, the readable fields for a list of effects.
+local function FirstOf(list, effects)
+    local first, kind = Peek(list, 1)
+    if kind ~= "table" or not effects then
+        return "[" .. kind .. "]"
+    end
+    local parts = {}
+    for i = 1, #AURA_FIELDS do
+        local _, what = Peek(first, AURA_FIELDS[i][1])
+        parts[i] = AURA_FIELDS[i][2] .. " " .. what
+    end
+    return "[" .. table.concat(parts, ", ") .. "]"
+end
+
+local DETAIL_FIELDS = {
+    { "isFullUpdate", "full" }, { "addedAuras", "added" }, { "updatedAuraInstanceIDs", "updated" },
+    { "removedAuraInstanceIDs", "removed" },
+}
+
+--- Describes what the client handed over as the details of a change.
+local function Shape(details)
+    local kind = Kind(details)
+    if kind ~= "table" then
+        return kind == "nil" and "nothing" or kind
+    end
+    if Flag(canaccesstable, details) == false then
+        return "a table addons may not touch"
+    end
+    local parts = {}
+    for i = 1, #DETAIL_FIELDS do
+        local value, what = Peek(details, DETAIL_FIELDS[i][1])
+        if what == "table" then
+            what = "list " .. FirstOf(value, i == 2)
+        end
+        parts[i] = DETAIL_FIELDS[i][2] .. " " .. what
+    end
+    return (Flag(issecrettable, details) and "sealed table: " or "table: ") .. table.concat(parts, ", ")
+end
+
+--- Calls onChange(token, shape) whenever the effects on the unit behind
+--- `token` change. `shape` describes the details the client sent along:
+--- "secret" when they are one secret value, a fuller description for the first
+--- reports of a session, and "unread" after that. Returns false when the
+--- client will not allow the watch.
 function ns.WatchAuras(token, onChange)
     if watchers[token] then
         return true
@@ -541,7 +623,15 @@ function ns.WatchAuras(token, onChange)
         return false
     end
     frame:SetScript("OnEvent", function(_, _, _, details)
-        onChange(token, not IsSecret(details))
+        local shape = "unread"
+        if IsSecret(details) then
+            shape = "secret"
+        elseif shapesLeft > 0 then
+            shapesLeft = shapesLeft - 1
+            local described, text = pcall(Shape, details)
+            shape = described and text or "could not be described"
+        end
+        onChange(token, shape)
     end)
     watchers[token] = frame
     return true
