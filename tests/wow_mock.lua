@@ -14,10 +14,14 @@
 --                  "ids" (default) plain instance ids, "count" a list of secret
 --                  ids, "none" a Lua error, "empty" an empty list whatever the
 --                  enemy really carries.
+--   combatBuffs    the same choice for counting the player's buffs, when the
+--                  client treats them differently. Defaults to combatAuras.
+--   noSelfBuffAPI  true: C_Spell.IsSelfBuff does not exist.
 --   combatIdentity true (default): NPC GUIDs stay readable in combat.
 --   secretFlags    true: UnitExists, UnitCanAttack and friends answer with
 --                  secret booleans in combat.
---   byName         set of debuff names the client still shows by name in combat.
+--   byName         set of aura names the client still shows by name in combat.
+--   alwaysSecret   set of aura names whose details are secret at all times.
 --   noCSecrets     true: C_Secrets does not exist.
 --   noAuraAPI      true: C_UnitAuras does not exist.
 --   macroStyle     "index" (default) GetActionInfo gives the macro index,
@@ -216,6 +220,16 @@ function Mock.new(options)
         return Answer(mob ~= nil and not mob.hostile, unit)
     end
 
+    function env.UnitCanAssist(_, unit)
+        local mob = Resolve(unit)
+        return Answer(mob ~= nil and not mob.hostile, unit)
+    end
+
+    function env.UnitIsUnit(unit, other)
+        local mob = Resolve(unit)
+        return Answer(mob ~= nil and mob == Resolve(other), unit)
+    end
+
     function env.UnitReaction(unit)
         local mob = Resolve(unit)
         if not mob then
@@ -257,9 +271,10 @@ function Mock.new(options)
         local list = {}
         local mine = filter and filter:find("PLAYER", 1, true)
         local harmful = filter and filter:find("HARMFUL", 1, true)
+        local helpful = filter and filter:find("HELPFUL", 1, true)
         for i = 1, #mob.auras do
             local aura = mob.auras[i]
-            if (not mine or aura.fromPlayer) and (not harmful or aura.harmful) then
+            if (not mine or aura.fromPlayer) and (not harmful or aura.harmful) and (not helpful or not aura.harmful) then
                 list[#list + 1] = aura
             end
         end
@@ -267,6 +282,18 @@ function Mock.new(options)
     end
 
     local function Public(aura)
+        if options.alwaysSecret and options.alwaysSecret[aura.name] then
+            return {
+                name = Secret(aura.name),
+                spellId = Secret(aura.spellId),
+                duration = Secret(aura.duration),
+                expirationTime = Secret(aura.expirationTime),
+                auraInstanceID = aura.auraInstanceID,
+                isHarmful = aura.harmful,
+                isHelpful = not aura.harmful,
+                isFromPlayerOrPlayerPet = aura.fromPlayer,
+            }
+        end
         return {
             name = aura.name,
             spellId = aura.spellId,
@@ -274,6 +301,7 @@ function Mock.new(options)
             expirationTime = aura.expirationTime,
             auraInstanceID = aura.auraInstanceID,
             isHarmful = aura.harmful,
+            isHelpful = not aura.harmful,
             isFromPlayerOrPlayerPet = aura.fromPlayer,
         }
     end
@@ -286,16 +314,20 @@ function Mock.new(options)
             if not mob then
                 return nil
             end
-            if AurasHidden() and options.combatAuras == "none" then
+            local mode = options.combatAuras
+            if options.combatBuffs and filter and filter:find("HELPFUL", 1, true) then
+                mode = options.combatBuffs
+            end
+            if AurasHidden() and mode == "none" then
                 error("C_UnitAuras.GetUnitAuraInstanceIDs requires unit aura access", 2)
             end
             world.sampleCalls = (world.sampleCalls or 0) + 1
-            if AurasHidden() and options.combatAuras == "empty" then
+            if AurasHidden() and mode == "empty" then
                 return {} -- no error, no secrets, and no information either
             end
             local ids = {}
             for _, aura in ipairs(Matching(mob, filter)) do
-                if AurasHidden() and options.combatAuras == "count" then
+                if AurasHidden() and mode == "count" then
                     ids[#ids + 1] = Secret(aura.auraInstanceID)
                 else
                     ids[#ids + 1] = aura.auraInstanceID
@@ -338,6 +370,9 @@ function Mock.new(options)
             end
             if AurasHidden() and not options.byName[name] then
                 return nil -- hidden auras simply are not found
+            end
+            if options.alwaysSecret and options.alwaysSecret[name] then
+                return nil
             end
             for _, aura in ipairs(Matching(mob, filter)) do
                 if aura.name == name then
@@ -427,6 +462,10 @@ function Mock.new(options)
             local data = FindSpell(spell)
             return data ~= nil and data.passive == true
         end,
+        IsSelfBuff = not options.noSelfBuffAPI and function(spell)
+            local data = FindSpell(spell)
+            return data ~= nil and data.selfOnly == true
+        end or nil,
         RequestLoadSpellData = function(spell)
             local data = FindSpell(spell)
             if data then
@@ -476,7 +515,7 @@ function Mock.new(options)
     local KNOWN_EVENTS = {
         ADDON_LOADED = true, PLAYER_LOGIN = true, PLAYER_ENTERING_WORLD = true,
         PLAYER_TARGET_CHANGED = true, PLAYER_SOFT_ENEMY_CHANGED = true,
-        PLAYER_REGEN_DISABLED = true, PLAYER_REGEN_ENABLED = true,
+        PLAYER_REGEN_DISABLED = true, PLAYER_REGEN_ENABLED = true, PLAYER_DEAD = true,
         NAME_PLATE_UNIT_ADDED = true, NAME_PLATE_UNIT_REMOVED = true,
         ACTIONBAR_SLOT_CHANGED = true, ACTIONBAR_PAGE_CHANGED = true,
         UPDATE_BONUS_ACTIONBAR = true, UPDATE_SHAPESHIFT_FORM = true, UPDATE_MACROS = true,
@@ -801,6 +840,7 @@ function Mock.new(options)
         for _, mob in pairs(self.mobs) do
             Expire(mob, self.clock)
         end
+        Expire(self.player, self.clock)
         for i = 1, #self.frames do
             local frame = self.frames[i]
             local handler = frame.scripts.OnUpdate
@@ -912,10 +952,13 @@ function Mock.new(options)
         end
     end
 
-    function world:applyAura(mob, name, duration, fromPlayer, spellId)
+    --- Puts a debuff on a unit, or a buff when `helpful` is true. The unit is a
+    --- mob, or world.player.
+    function world:applyAura(mob, name, duration, fromPlayer, spellId, helpful)
+        local harmful = not helpful
         -- Recasting refreshes the same instance unless asked otherwise.
         for _, aura in ipairs(mob.auras) do
-            if aura.name == name and aura.fromPlayer == (fromPlayer ~= false) then
+            if aura.name == name and aura.fromPlayer == (fromPlayer ~= false) and aura.harmful == harmful then
                 if self.options.refreshReplaces then
                     aura.auraInstanceID = self.nextAura
                     self.nextAura = self.nextAura + 1
@@ -928,11 +971,16 @@ function Mock.new(options)
         local aura = {
             name = name, spellId = spellId or 0, duration = duration,
             expirationTime = duration > 0 and self.clock + duration or 0,
-            auraInstanceID = self.nextAura, harmful = true, fromPlayer = fromPlayer ~= false,
+            auraInstanceID = self.nextAura, harmful = harmful, fromPlayer = fromPlayer ~= false,
         }
         self.nextAura = self.nextAura + 1
         mob.auras[#mob.auras + 1] = aura
         return aura
+    end
+
+    --- Puts a buff on a unit: world.player unless one is given.
+    function world:applyBuff(name, duration, fromPlayer, mob)
+        return self:applyAura(mob or self.player, name, duration, fromPlayer, nil, true)
     end
 
     function world:removeAura(mob, name)
@@ -949,12 +997,25 @@ function Mock.new(options)
         mob.auras = {}
     end
 
+    --- The player dies, losing every aura, and comes back to life.
+    function world:die()
+        self.player.auras = {}
+        self:fire("PLAYER_DEAD")
+        self:leaveCombat()
+    end
+
     --- The player casts a spell.
     --- opts: miss = true (nothing lands), travel = seconds before the effect
     --- lands, castTime = seconds between sent and success, noSent = true,
     --- fail = true (the cast is sent and then fails), hits = list of mobs an
     --- area spell reaches (default: every engaged mob plus the target),
     --- quiet = true (does not start combat).
+    ---
+    --- A spell's effect = { duration, name, area, extra, fromPlayer, buff,
+    --- replaces, toggle }. With buff = true it lands on the player, or on a
+    --- friendly target when the spell is helpful and not selfOnly, and removes
+    --- the buff named by `replaces` (two stances cannot be up together). With
+    --- toggle = true, casting it while its effect is up takes the effect away.
     function world:cast(spellID, opts)
         opts = opts or {}
         local data = assert(self.spells[spellID], "unknown spell " .. tostring(spellID))
@@ -980,7 +1041,11 @@ function Mock.new(options)
                 return
             end
             local victims
-            if effect.area then
+            if effect.buff then
+                local friend = target and not target.hostile and not target.dead
+                    and data.helpful and not data.selfOnly
+                victims = { opts.on or (friend and target) or self.player }
+            elseif effect.area then
                 victims = opts.hits
                 if not victims then
                     victims = {}
@@ -995,9 +1060,21 @@ function Mock.new(options)
             end
             for _, mob in ipairs(victims) do
                 if mob and not mob.dead then
-                    self:applyAura(mob, effect.name or data.name, effect.duration, effect.fromPlayer)
+                    if effect.replaces then
+                        self:removeAura(mob, effect.replaces)
+                    end
+                    local name = effect.name or data.name
+                    local up = false
+                    for _, aura in ipairs(mob.auras) do
+                        up = up or aura.name == name
+                    end
+                    if effect.toggle and up then
+                        self:removeAura(mob, name)
+                    else
+                        self:applyAura(mob, name, effect.duration, effect.fromPlayer, nil, effect.buff)
+                    end
                     if effect.extra then
-                        self:applyAura(mob, effect.extra, effect.duration)
+                        self:applyAura(mob, effect.extra, effect.duration, nil, nil, effect.buff)
                     end
                 end
             end

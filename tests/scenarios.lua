@@ -27,6 +27,7 @@ end
 
 local REND, HEROIC, SHOUT, BLOODTHIRST, STOMP, MARK, MORTAL, FROSTBOLT, CORRUPTION, WITHER, CLAP =
     100, 101, 102, 104, 105, 106, 107, 108, 109, 110, 6343
+local BLOCK, HAWK, MONKEY, COMMAND, FORT, MEND, WARD, RAMPAGE, PROWL = 111, 112, 113, 114, 115, 116, 117, 118, 119
 
 local function World(options)
     local w = Mock.new(options)
@@ -81,6 +82,54 @@ local function World(options)
         description = "Blasts nearby enemies, slowing their attacks by 10% for 30 sec.",
         effect = { area = true, duration = 30 },
     })
+
+    -- Spells that leave a buff on you.
+    w:addSpell(BLOCK, {
+        name = "Shield Block", selfOnly = true,
+        description = "Increases your chance to block by 75% for 10 sec.",
+        effect = { buff = true, duration = 10 },
+    })
+    w:addSpell(HAWK, {
+        name = "Aspect of the Hawk", selfOnly = true,
+        description = "Take on the aspect of a hawk, increasing ranged attack power by 120. Only one Aspect at a time.",
+        effect = { buff = true, duration = 0, replaces = "Aspect of the Monkey" },
+    })
+    w:addSpell(MONKEY, {
+        name = "Aspect of the Monkey", selfOnly = true,
+        description = "Take on the aspect of a monkey, increasing your chance to dodge by 8%. Only one Aspect at a time.",
+        effect = { buff = true, duration = 0, replaces = "Aspect of the Hawk" },
+    })
+    w:addSpell(COMMAND, {
+        -- No target, and the client does not call it helpful or a self buff.
+        name = "Commanding Shout", harmful = false, helpful = false,
+        description = "Increases the maximum health of all party members within 20 yards by 1080. Lasts 2 min.",
+        effect = { buff = true, duration = 120 },
+    })
+    w:addSpell(FORT, {
+        name = "Fortitude", helpful = true,
+        description = "Increases the target's Stamina by 54 for 30 min.",
+        effect = { buff = true, duration = 1800 },
+    })
+    w:addSpell(MEND, {
+        name = "Mending Touch", helpful = true,
+        description = "Heals a friendly target for 300. The target cannot be mended again for 20 sec.",
+    })
+    w:addSpell(WARD, {
+        name = "Stone Ward", selfOnly = true,
+        description = "Absorbs 500 damage. Lasts 30 sec.",
+        effect = { buff = true, name = "Stoneskin", duration = 30 },
+    })
+    w:addSpell(PROWL, {
+        name = "Prowl", selfOnly = true,
+        description = "Allows you to stalk around unseen. Cast it again to stop.",
+        effect = { buff = true, duration = 0, toggle = true },
+    })
+    w:addSpell(RAMPAGE, {
+        -- An attack whose status effect lands on you, not on what it hits.
+        name = "Rampage", harmful = true,
+        description = "Strikes the target and enrages you, increasing your attack power by 100 for 12 sec.",
+        effect = { buff = true, duration = 12 },
+    })
     return w
 end
 
@@ -99,25 +148,76 @@ local function Simple(options)
     return w, ns, boar
 end
 
---- Fails the scenario if the addon threw anywhere, loudly or quietly.
+--- A world with the given spells on the first buttons and nobody around.
+local function Bar(options, ...)
+    local w = World(options)
+    for i = 1, select("#", ...) do
+        w:addButton("ActionButton" .. i, i, (select(i, ...)))
+    end
+    local ns = w:load()
+    return w, ns
+end
+
+--- Targets a new boar and opens the fight on it with Rend.
+local function Fight(w)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    return boar
+end
+
+-- Globals the addon may create, and game functions it may look for and not find.
+local ALLOWED_WRITES = { StatusEfficiencyDB = true, SLASH_STATUSEFFICIENCY1 = true, SLASH_STATUSEFFICIENCY2 = true }
+local OPTIONAL_READS = {
+    GetSpellInfo = true, GetSpellDescription = true, IsHarmfulSpell = true, IsHelpfulSpell = true,
+    IsPassiveSpell = true, FindSpellOverrideByID = true, StatusEfficiencyDB = true,
+    SpellIsSelfBuff = true,
+    -- Whole parts of the API that some of the pretend clients leave out.
+    issecretvalue = true, C_Secrets = true, C_UnitAuras = true, Settings = true,
+    InterfaceOptions_AddCategory = true,
+}
+
+--- Fails the scenario if the addon wrote a global of its own, or read one that
+--- does not exist. Reading a missing global is fine for optional game functions
+--- and for buttons of bar addons that are not installed; anything else is a typo.
+local function Tidy(w)
+    for name in pairs(w.globalWrites) do
+        check(ALLOWED_WRITES[name], "unexpected global written: " .. name)
+    end
+    for name in pairs(w.globalMisses) do
+        local button = name:find("^ActionButton%d+$") or name:find("^MultiBar%w+Button%d+$")
+            or name:find("^BT4Button%d+$") or name:find("^DominosActionButton%d+$")
+            or name:find("^ElvUI_Bar%d+Button%d+$")
+        check(OPTIONAL_READS[name] or button, "unexpected global read: " .. name)
+    end
+end
+
+--- Fails the scenario if the addon threw anywhere, loudly or quietly, let a
+--- secret value out, or touched a global it should not.
 local function Clean(w)
     eq(#w.leaks, 0, "secret values that got past Compat.lua (" .. tostring(w.leaks[1]) .. ")")
     eq(#w.errors, 0, "errors reaching the client (" .. tostring(w.errors[1]) .. ")")
     eq(w.ns.lastError, nil, "errors the addon caught")
     check(not w:drain():find("hit a problem", 1, true), "the addon reported a problem in chat")
+    Tidy(w)
 end
 
 --------------------------------------------------------------------------------
 -- Out of combat
 --------------------------------------------------------------------------------
 
-test("icons appear only on status spells, and only with an enemy targeted", function()
+test("debuff icons appear only on status spells, and only with an enemy targeted", function()
     local w = World()
     w:addButton("ActionButton1", 1, REND)
     w:addButton("ActionButton2", 2, HEROIC)
     w:addButton("ActionButton3", 3, SHOUT)
     w:load()
     eq(w:icon("ActionButton1"), nil, "Rend with no target")
+    eq(w:icon("ActionButton2"), nil, "Heroic Strike with no target")
+    eq(w:icon("ActionButton3"), "check", "Battle Shout is a buff you do not have, target or no target")
 
     local boar = w:addMob("Boar")
     w:showPlate(boar)
@@ -125,7 +225,7 @@ test("icons appear only on status spells, and only with an enemy targeted", func
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "Rend on a clean enemy")
     eq(w:icon("ActionButton2"), nil, "Heroic Strike applies nothing")
-    eq(w:icon("ActionButton3"), nil, "Battle Shout is a buff")
+    eq(w:icon("ActionButton3"), "check", "Battle Shout does not depend on the enemy")
 
     local friend = w:addMob("Guard", { hostile = false })
     w:target(friend)
@@ -614,6 +714,498 @@ test("blind casts teach nothing, so nothing is unlearned by mistake", function()
 end)
 
 --------------------------------------------------------------------------------
+-- Buffs on you
+--------------------------------------------------------------------------------
+
+test("buffs: a spell that only affects you shows whether you have its buff", function()
+    local w, ns = Bar(nil, BLOCK)
+    eq(w:icon("ActionButton1"), "check", "no buff yet, and no target needed")
+    w:cast(BLOCK)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the buff is up")
+    eq(ns.db.learned["Shield Block"].buff, true, "learned that the buff carries the spell's name")
+    eq(ns.db.learned["Shield Block"].duration, 10, "learned duration")
+    w:advance(9)
+    eq(w:icon("ActionButton1"), "cross", "9 seconds in")
+    w:advance(1.2)
+    eq(w:icon("ActionButton1"), "check", "after it ran out")
+
+    w:cast(BLOCK)
+    w:advance(3)
+    w:removeAura(w.player, "Shield Block")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "after it was removed early")
+    Clean(w)
+end)
+
+test("buffs: a buff you already had when the addon loaded is seen straight away", function()
+    local w = World()
+    w:applyBuff("Shield Block", 10)
+    w:addButton("ActionButton1", 1, BLOCK)
+    w:load()
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("buffs: the enemy you have targeted makes no difference", function()
+    local w = Bar(nil, BLOCK, REND)
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton2"), "check")
+    w:cast(BLOCK)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "your buff")
+    eq(w:icon("ActionButton2"), "check", "the boar's debuff is another matter")
+    w:target(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "still yours with nothing targeted")
+    eq(w:icon("ActionButton2"), nil)
+    Clean(w)
+end)
+
+test("buffs: one with no timer is learned on sight and followed until it is replaced", function()
+    local w, ns = Bar(nil, HAWK, MONKEY)
+    eq(w:icon("ActionButton1"), nil, "nothing says it leaves a buff yet")
+    w:cast(HAWK)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "seen on you, so it is a buff")
+    eq(w:icon("ActionButton2"), nil, "the other aspect is still unknown")
+    eq(ns.db.learned["Aspect of the Hawk"].duration, 3600, "no timer")
+    w:advance(600, 0.25)
+    eq(w:icon("ActionButton1"), "cross", "ten minutes later")
+    w:cast(MONKEY)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "replaced")
+    eq(w:icon("ActionButton2"), "cross")
+    Clean(w)
+end)
+
+test("buffs: a spell that switches its own buff off is followed both ways", function()
+    local w = Bar(nil, PROWL)
+    w:cast(PROWL)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "on")
+    w:cast(PROWL)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "off again, without waiting to see whether the cast lands")
+    w:cast(PROWL)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "and on")
+    Clean(w)
+end)
+
+test("buffs: a spell the client says nothing about is recognised once its buff is seen on you", function()
+    local w, ns = Bar(nil, COMMAND)
+    eq(w:icon("ActionButton1"), nil, "no target, and nothing says where its effect lands")
+    w:cast(COMMAND)
+    w:advance(0.6)
+    eq(w:icon("ActionButton1"), "cross", "its buff turned up on you, and was looked for right after the cast")
+    eq(ns.db.learned["Commanding Shout"].buff, true)
+    w:advance(118, 0.25)
+    eq(w:icon("ActionButton1"), "cross", "still up shortly before the two minutes are over")
+    w:advance(2, 0.25)
+    eq(w:icon("ActionButton1"), "check", "and gone once they are")
+    w:cast(COMMAND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "from then on it is known")
+    Clean(w)
+end)
+
+test("buffs: a buff that turns up late, or was already there, is still learned from", function()
+    local w, ns = Bar(nil, COMMAND, HAWK)
+    w:cast(COMMAND, { travel = 1 })
+    w:advance(0.6)
+    eq(w:icon("ActionButton1"), nil, "nothing on you yet")
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "cross", "found on a later look")
+
+    -- Cast before the addon was watching: no cast to go by at all.
+    w:applyBuff("Aspect of the Hawk", 0)
+    w:advance(2.5)
+    eq(w:icon("ActionButton2"), "cross", "seen on you without a cast")
+    eq(ns.db.learned["Aspect of the Hawk"].buff, true)
+    Clean(w)
+end)
+
+test("buffs: an attack that leaves its effect on you is judged on you once that has been seen", function()
+    local w, ns = Bar({ combatAuras = "none" }, RAMPAGE)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "taken for a debuff at first: it is cast on enemies")
+    w:cast(RAMPAGE)
+    w:advance(2)
+    w:kill(boar)
+    w:leaveCombat()
+    w:advance(0.5)
+    eq(ns.db.learned.Rampage.buff, true, "its buff was read off you once the fight was over")
+    eq(w:icon("ActionButton1"), "cross", "so it is judged on you, with no enemy left to judge")
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "check", "and goes green when the buff ends")
+
+    local wolf = w:addMob("Wolf")
+    w:target(wolf)
+    w:advance(0.3)
+    w:cast(RAMPAGE)
+    w:advance(1)
+    w:target(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "in the next fight it is followed as a buff from the cast on")
+    Clean(w)
+end)
+
+test("buffs: only a buff you put there yourself counts", function()
+    local w = Bar(nil, FORT)
+    w:applyBuff("Fortitude", 1800, false) -- from a passing priest
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "theirs, not yours")
+    w:cast(FORT)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("buffs: a spell you can cast on others is judged on the friend you have targeted", function()
+    local w = Bar(nil, FORT, BLOCK)
+    local guard = w:addMob("Guard", { hostile = false })
+    w:cast(FORT)
+    w:cast(BLOCK)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "on you")
+    eq(w:icon("ActionButton2"), "cross")
+
+    w:target(guard)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the guard does not have it")
+    eq(w:icon("ActionButton2"), "cross", "a spell that only affects you is still judged on you")
+
+    w:cast(FORT)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "now the guard has it too")
+    eq(#guard.auras, 1, "it landed on the guard")
+
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "with an enemy targeted it would land on you, and you have it")
+    w:removeAura(w.player, "Fortitude")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "yours is gone")
+    w:target(guard)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the guard still has it")
+    w:target(w.player)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "targeting yourself")
+    w:kill(guard)
+    w:target(guard)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "a dead friend cannot take it, so it is judged on you")
+    Clean(w)
+end)
+
+test("buffs, ids: in combat a buff is followed by its instance id", function()
+    local w = Bar({ combatAuras = "ids" }, BLOCK, REND)
+    w:applyBuff("Well Fed", 3600) -- a buff of yours, so the client's counts can be believed
+    Fight(w)
+    w.spells[BLOCK].effect.duration = 14 -- a talent made it longer than the tooltip says
+    w:cast(BLOCK)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "right after the cast")
+    w:advance(12)
+    eq(w:icon("ActionButton1"), "cross", "past its tooltip duration and still there")
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check", "gone")
+
+    w:cast(BLOCK)
+    w:advance(3)
+    w:removeAura(w.player, "Shield Block")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "removed early")
+    Clean(w)
+end)
+
+test("buffs, ids: with no buff of yours seen yet this fight, the first cast runs on its timer", function()
+    local w, ns = Bar({ combatAuras = "ids" }, BLOCK, REND)
+    Fight(w)
+    w:cast(BLOCK, { miss = true })
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "cross", "kept as an assumption: no buffs could be the client hiding them")
+    eq(ns.db.learned["Shield Block"], nil, "and not counted as evidence")
+    w:advance(7.5)
+    eq(w:icon("ActionButton1"), "check", "until its timer ends")
+    Clean(w)
+end)
+
+test("buffs, ids: a buff named differently from its spell is followed, and an empty cast is noticed", function()
+    local w, ns = Bar({ combatAuras = "ids" }, WARD, REND)
+    eq(w:icon("ActionButton1"), "check", "tracked from the start: it only affects you and its tooltip has a duration")
+    Fight(w)
+    w:cast(WARD)
+    w:advance(5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:removeAura(w.player, "Stoneskin") -- the shield was used up
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "used up")
+
+    w:cast(WARD, { miss = true })
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "cross", "assumed at first")
+    w:advance(2.3)
+    eq(w:icon("ActionButton1"), "check", "nothing turned up")
+
+    w:cast(WARD)
+    w:advance(25)
+    eq(w:icon("ActionButton1"), "cross", "25 seconds in")
+    w:advance(6)
+    eq(w:icon("ActionButton1"), "check", "expired")
+    eq(ns.db.learned["Stone Ward"].buffCasts, 2, "casts that could be judged")
+    eq(ns.db.learned["Stone Ward"].buffHits, 1)
+    Clean(w)
+end)
+
+test("buffs, count: a new buff, an early loss and an empty cast are told from the count", function()
+    local w, ns = Bar({ combatAuras = "count" }, WARD, REND)
+    Fight(w)
+    w:cast(WARD)
+    w:advance(5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:removeAura(w.player, "Stoneskin")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "one buff fewer than the books say")
+
+    w:cast(WARD)
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(ns.db.learned["Stone Ward"].buffHits, 1, "the count went up, so the cast landed")
+    w:advance(28)
+    eq(w:icon("ActionButton1"), "check", "its timer ran out")
+
+    w:cast(WARD, { miss = true })
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "check", "the count did not move")
+    eq(ns.db.learned["Stone Ward"].buffCasts, 2)
+    Clean(w)
+end)
+
+test("buffs: dying clears what you were assumed to have", function()
+    local w = Bar({ combatAuras = "none" }, FORT, REND)
+    Fight(w)
+    w:cast(FORT)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "cross", "assumed for half an hour")
+    w:die()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "gone with you")
+    Clean(w)
+end)
+
+test("buffs, blind: in combat the spell's own duration is used", function()
+    local w = Bar({ combatAuras = "none" }, BLOCK, REND)
+    Fight(w)
+    w:cast(BLOCK)
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "cross", "right after the cast")
+    w:advance(9)
+    eq(w:icon("ActionButton1"), "cross", "9 seconds in")
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "after the timer ran out")
+    Clean(w)
+end)
+
+test("buffs, blind: one you had before the fight keeps its real end time", function()
+    local w = Bar({ combatAuras = "none" }, FORT, REND)
+    w:cast(FORT)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    Fight(w)
+    w:advance(30)
+    eq(w:icon("ActionButton1"), "cross", "still there half a minute into the fight")
+    Clean(w)
+end)
+
+test("buffs: one the client still shows by name in combat is read exactly", function()
+    local w, ns = Bar({ combatAuras = "none", byName = { ["Shield Block"] = true } }, BLOCK, REND)
+    Fight(w)
+    w:cast(BLOCK)
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(ns.db.learned["Shield Block"].buff, true)
+    w:removeAura(w.player, "Shield Block")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "seen dropping off by name")
+
+    w:cast(BLOCK, { miss = true })
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "cross", "assumed at first")
+    w:advance(2.4)
+    eq(w:icon("ActionButton1"), "check", "the empty cast is caught by name")
+    Clean(w)
+end)
+
+test("buffs: a client that hides your buffs but not enemy debuffs is handled one kind at a time", function()
+    local w = Bar({ combatAuras = "ids", combatBuffs = "empty" }, BLOCK, REND)
+    w:applyBuff("Well Fed", 3600)
+    local boar = Fight(w)
+    w:cast(BLOCK)
+    w:advance(5)
+    eq(w:icon("ActionButton1"), "cross", "the empty answer about you is not believed")
+    eq(w:icon("ActionButton2"), "cross")
+    w:removeAura(boar, "Rend")
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "while the enemy's debuffs are still followed by id")
+    w:advance(5.5)
+    eq(w:icon("ActionButton1"), "check", "your buff ran on its timer")
+    Clean(w)
+end)
+
+test("buffs: a helpful spell whose tooltip misleads loses its icon", function()
+    local w, ns = Bar(nil, MEND)
+    w:applyBuff("Well Fed", 3600) -- a buff of yours that no spell on the bars explains
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "trusted at first: it has a duration in its tooltip")
+    for _ = 1, 3 do
+        w:cast(MEND)
+        w:advance(3)
+    end
+    eq(w:icon("ActionButton1"), "check", "three empty casts are not enough")
+    w:cast(MEND)
+    w:advance(3)
+    eq(ns.db.learned["Mending Touch"].buffCasts, 4)
+    eq(ns.db.learned["Mending Touch"].buffHits, 0)
+    eq(w:icon("ActionButton1"), nil, "dropped after four")
+    Clean(w)
+end)
+
+test("buffs: what an earlier version learned about a spell as a debuff does not count against its buff", function()
+    -- Before buffs were followed, every cast of a buff spell with an enemy
+    -- targeted went down as "left no debuff".
+    local w = World()
+    w:addButton("ActionButton1", 1, WARD)
+    w:load({ learned = { ["Stone Ward"] = { casts = 12, hits = 0 } } })
+    eq(w:icon("ActionButton1"), "check", "still gets its icon")
+    w:cast(WARD)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("buffs: one buff the client keeps secret even out of combat does not hide the others", function()
+    local w, ns = Bar({ alwaysSecret = { ["Sealed Blessing"] = true } }, BLOCK, MEND)
+    w:applyBuff("Sealed Blessing", 3600)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(BLOCK)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "read by name all the same")
+    eq(ns.db.learned["Shield Block"].buff, true)
+    w:removeAura(w.player, "Shield Block")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+
+    -- With part of the list unreadable, a cast that adds nothing is not held
+    -- against the spell: the secret buff could be its doing.
+    for _ = 1, 5 do
+        w:cast(MEND)
+        w:advance(3)
+    end
+    eq(ns.db.learned["Mending Touch"], nil, "no evidence recorded")
+    eq(w:icon("ActionButton2"), "cross", "kept as an assumption")
+    Clean(w)
+end)
+
+test("buffs: secret answers and hidden identity in combat do not break anything", function()
+    local w = Bar({ combatAuras = "count", secretFlags = true, combatIdentity = false }, FORT, BLOCK, REND)
+    local guard = w:addMob("Guard", { hostile = false })
+    w:showPlate(guard)
+    w:applyBuff("Well Fed", 3600)
+    local boar = Fight(w)
+    w:cast(BLOCK)
+    w:advance(1)
+    eq(w:icon("ActionButton2"), "cross")
+    w:target(guard)
+    w:advance(0.5)
+    w:cast(FORT)
+    w:advance(1)
+    w:target(w.player)
+    w:advance(0.5)
+    w:target(boar)
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "cross", "still followed after all that")
+    w:kill(boar)
+    w:leaveCombat()
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "cross", "and read outright once the fight is over")
+    w:advance(9)
+    eq(w:icon("ActionButton2"), "check")
+    Clean(w)
+end)
+
+test("buffs: a client that cannot say which spells only affect you still learns them", function()
+    local w, ns = Bar({ noSelfBuffAPI = true }, BLOCK)
+    eq(w:icon("ActionButton1"), nil, "nothing to go on yet")
+    w:cast(BLOCK)
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "cross", "seen on you")
+    eq(ns.db.learned["Shield Block"].buff, true)
+    Clean(w)
+end)
+
+test("/se buff and /se debuff say where a spell's effect lands", function()
+    local w, ns = Bar(nil, COMMAND)
+    eq(w:icon("ActionButton1"), nil)
+    w:drain()
+    w:slash("track commanding")
+    check(w:drain():find("as a debuff on every enemy in the fight", 1, true), "/se track says how it will be judged")
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), nil, "a debuff with no enemy around")
+
+    w:slash("buff commanding")
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "judged on you from now on")
+    eq(ns.db.spells["Commanding Shout"].kind, "buff")
+    w:cast(COMMAND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:slash("list")
+    local list = w:drain()
+    check(list:find("Commanding Shout|r: a buff on you, lasting 2 min. Tracked because you turned it on", 1, true),
+        "the list says so: " .. list)
+
+    w:slash("debuff commanding shout")
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), nil, "a debuff again, and no enemy around")
+    eq(ns.db.spells["Commanding Shout"].kind, "debuff")
+
+    w:slash("aoe commanding")
+    w:slash("buff commanding")
+    w:drain()
+    w:slash("single commanding")
+    check(w:drain():find("is tracked as a buff on you, so that changes nothing", 1, true),
+        "/se single on a buff says it changes nothing")
+
+    w:slash("auto commanding")
+    w:advance(2.5)
+    eq(ns.db.spells["Commanding Shout"], nil)
+    eq(w:icon("ActionButton1"), "cross", "automatic again, and its buff is still on you to be seen")
+    Clean(w)
+end)
+
+test("a saved choice of kind that makes no sense is ignored", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, BLOCK)
+    w:load({ spells = { ["Shield Block"] = { kind = "sideways" } } })
+    eq(w:icon("ActionButton1"), "check", "still a buff on you")
+    w:cast(BLOCK)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
 -- What the client hides
 --------------------------------------------------------------------------------
 
@@ -955,7 +1547,10 @@ test("/se help, list and debug print something sensible", function()
     w:slash("list")
     local list = w:drain()
     check(list:find("Rend", 1, true), "list shows Rend")
-    check(list:find("2 other spells", 1, true), "list counts the rest: " .. list)
+    check(list:find("a debuff on your target, lasting 21s", 1, true), "list says where Rend is looked for: " .. list)
+    check(list:find("Battle Shout|r: a buff on you", 1, true), "list shows Battle Shout as a buff: " .. list)
+    check(list:find("lasting 2 min", 1, true), "list gives long durations in minutes: " .. list)
+    check(list:find("1 other spell does", 1, true), "list counts the rest: " .. list)
     w:cast(REND)
     w:advance(1)
     w:slash("debug")
@@ -963,6 +1558,8 @@ test("/se help, list and debug print something sensible", function()
     check(debug:find("interface 16001", 1, true), "debug shows the interface number: " .. debug)
     check(debug:find("the count only", 1, true), "debug shows what counting gives: " .. debug)
     check(debug:find("Rend, ", 1, true), "debug lists the tracked effect: " .. debug)
+    check(debug:find("You right now: your buffs countable", 1, true), "debug says what it can read about you: " .. debug)
+    check(debug:find("Your buffs, out of combat (", 1, true), "debug says what it could read about you earlier: " .. debug)
     check(debug:find("Options window: yes", 1, true), "debug says the settings panel was added: " .. debug)
     eq(#w.errors, 0)
     eq(w.ns.lastError, nil)
@@ -1117,7 +1714,7 @@ test("settings: picking an icon changes what the buttons show", function()
     w:click(view.swatches.all.skull)
     w:cast(REND)
     w:advance(0.5)
-    eq(Art(w, "ActionButton1"), SKULL, "the skull now means every enemy has it")
+    eq(Art(w, "ActionButton1"), SKULL, "the skull now means it is already applied")
     Clean(w)
 end)
 
@@ -1230,7 +1827,7 @@ test("/se icon, /se icons and /se corner do the same from the chat box", functio
     w:slash("icons")
     local listing = w:drain()
     check(listing:find("skull", 1, true) and listing:find("greendot", 1, true), "the names are listed: " .. listing)
-    check(listing:find("Every enemy has it: skull", 1, true), "with what each indication uses now: " .. listing)
+    check(listing:find("Already applied: skull", 1, true), "with what each indication uses now: " .. listing)
 
     w:slash("corner bottom right")
     eq(ns.db.corner, "BOTTOMRIGHT")
@@ -1386,50 +1983,77 @@ test("an internal failure is caught, reported a few times, then the addon stops 
     eq(w.ns.halted, true)
 end)
 
-test("idle costs nothing", function()
+test("idle costs next to nothing", function()
+    -- With no buff spell on the bars your buffs are only read now and then, to
+    -- see whether a spell that is on them leaves one.
     local w = World()
     w:addButton("ActionButton1", 1, REND)
     w:load()
     w.sampleCalls = 0
     w:advance(30)
-    eq(w.sampleCalls, 0, "aura queries with no enemy around")
+    check(w.sampleCalls >= 10 and w.sampleCalls <= 16, "aura queries in 30s with no enemy around: " .. w.sampleCalls)
     local boar = w:addMob("Boar")
     w:showPlate(boar)
     w:target(boar)
+    w.sampleCalls = 0
     w:advance(10)
     check(w.sampleCalls <= 60, "aura queries with one target for 10s: " .. w.sampleCalls)
+    Clean(w)
+
+    -- Nothing on the bars, nothing asked.
+    w = World()
+    w:load()
+    w.sampleCalls = 0
+    w:advance(30)
+    eq(w.sampleCalls, 0, "aura queries with empty bars")
+    Clean(w)
+
+    -- A spell known to leave a buff has your buffs looked at every pass.
+    w = Bar(nil, BLOCK)
+    w.sampleCalls = 0
+    w:advance(10)
+    check(w.sampleCalls >= 40 and w.sampleCalls <= 60, "looks at you in 10s for a buff spell: " .. w.sampleCalls)
     Clean(w)
 end)
 
 test("the addon keeps its hands off the global namespace", function()
-    local w, _, boar = Simple({ combatAuras = "count" })
+    -- Every scenario that ends in Clean checks this. This one walks through as
+    -- much of the addon as it can first.
+    local w = World({ combatAuras = "count", secretFlags = true })
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, FORT)
+    w:addButton("ActionButton3", 3, COMMAND)
+    w:addButton("ActionButton4", 4, CLAP)
+    w:load()
+    local guard = w:addMob("Guard", { hostile = false })
+    w:target(guard)
+    w:cast(FORT)
+    w:advance(1)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
     w:cast(REND)
+    w:cast(COMMAND)
+    w:cast(CLAP)
     w:advance(3)
-    w:slash("debug")
-    w:slash("list")
-    w:slash("options")
+    w:target(w.player)
+    w:advance(0.3)
+    w:target(boar)
+    for _, command in ipairs({ "debug", "list", "log", "log", "buff commanding", "debuff commanding", "track fort",
+        "aoe rend", "single rend", "duration rend 20", "duration rend auto", "ignore thunder", "auto thunder",
+        "icons", "icon red skull", "corner top", "size 20", "options" }) do
+        w:slash(command)
+    end
     w:click(w.env.StatusEfficiencyOptions.view.swatches.none.plus)
     w:openSettings()
-    w:kill(boar)
-    w:leaveCombat()
     w:advance(1)
-
-    local allowedWrites = { StatusEfficiencyDB = true, SLASH_STATUSEFFICIENCY1 = true, SLASH_STATUSEFFICIENCY2 = true }
-    for name in pairs(w.globalWrites) do
-        check(allowedWrites[name], "unexpected global written: " .. name)
-    end
-    -- Reading a global that does not exist is fine for optional game functions
-    -- and for buttons of bar addons that are not installed; anything else is a typo.
-    local optional = {
-        GetSpellInfo = true, GetSpellDescription = true, IsHarmfulSpell = true, IsHelpfulSpell = true,
-        IsPassiveSpell = true, FindSpellOverrideByID = true, StatusEfficiencyDB = true,
-    }
-    for name in pairs(w.globalMisses) do
-        local button = name:find("^ActionButton%d+$") or name:find("^MultiBar%w+Button%d+$")
-            or name:find("^BT4Button%d+$") or name:find("^DominosActionButton%d+$")
-            or name:find("^ElvUI_Bar%d+Button%d+$")
-        check(optional[name] or button, "unexpected global read: " .. name)
-    end
+    w:die()
+    w:kill(boar)
+    w:advance(3)
+    w:slash("debug")
+    w:slash("reset")
+    w:advance(1)
     Clean(w)
 end)
 

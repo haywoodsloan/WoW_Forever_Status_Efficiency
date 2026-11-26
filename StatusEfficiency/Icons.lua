@@ -15,20 +15,20 @@ local RAID = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_"
 Icons.STATES = {
     {
         key = "none",
-        title = "No enemy has it",
-        detail = "Casting puts the effect on every enemy the spell would hit.",
+        title = "Not applied yet",
+        detail = "No enemy it would hit has the effect, or you do not have the buff.",
         default = "check",
     },
     {
         key = "some",
-        title = "Some enemies have it",
-        detail = "Casting puts the effect on some enemies. Others already have it.",
+        title = "Partly applied",
+        detail = "Some of the enemies it would hit have the effect and some do not.",
         default = "partial",
     },
     {
         key = "all",
-        title = "Every enemy has it",
-        detail = "Casting again would change nothing.",
+        title = "Already applied",
+        detail = "Every enemy has the effect, or you have the buff. Casting again does nothing.",
         default = "cross",
     },
 }

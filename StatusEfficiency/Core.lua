@@ -1,10 +1,17 @@
--- Status Efficiency: finds the action buttons, follows your casts and the enemies
--- around you, and draws the icon on each button.
+-- Status Efficiency: finds the action buttons, follows your casts and the units
+-- they land on, and draws the icon on each button.
 --
+-- A spell that puts a debuff on enemies:
 --   green check          none of the enemies the spell would hit has its effect
 --   yellow half circle   some of them have it
 --   red X                all of them have it, so casting again changes nothing
---   no icon              no enemy to judge, or the spell applies no status effect
+--   no icon              no enemy to judge
+--
+-- A spell that puts a buff on you, or on the friend you have targeted:
+--   green check          the buff is not there
+--   red X                the buff is there, so casting again changes nothing
+--
+-- A spell that applies no status effect gets no icon.
 
 local ADDON_NAME, ns = ...
 
@@ -51,8 +58,8 @@ local function Defaults()
         log = false,
         icons = {}, -- the icon chosen for each indication; empty means the default
         custom = {}, -- your own texture for an indication set to "custom"
-        spells = {}, -- your choices by spell name: { track, aoe, duration }
-        learned = {}, -- what play has shown by spell name: { casts, hits, exact, duration }
+        spells = {}, -- your choices by spell name: { track, kind, aoe, duration }
+        learned = {}, -- what play has shown by spell name: { exact, casts, hits, buff, buffCasts, buffHits, duration }
     }
 end
 
@@ -329,7 +336,7 @@ function ns.BarSpells()
 end
 
 --------------------------------------------------------------------------------
--- Enemies
+-- Who a spell is judged on
 --------------------------------------------------------------------------------
 
 local function Attackable(unit)
@@ -349,81 +356,133 @@ end
 
 ns.PrimaryEnemy = PrimaryEnemy
 
--- What the client allowed the last time we looked, for /se debug.
-local probe = { open = {}, hidden = {} }
+--- Your target, when it is someone a helpful spell would go to instead of you.
+local function FriendTarget()
+    if ns.Exists("target") and not Attackable("target") and ns.CanAssist("target") and not ns.IsDead("target") then
+        return "target"
+    end
+    return nil
+end
+
+--- True for a buff spell that can be put on someone other than you.
+local function CastOnFriends(info)
+    return info.helpful == true and info.selfOnly ~= true
+end
+
+--- The unit a buff spell would land on right now: the friend you have targeted
+--- when the spell can be cast on others, otherwise you.
+local function BuffUnit(info)
+    return CastOnFriends(info) and FriendTarget() or "player"
+end
+
+--- The name a unit's books are kept under. A unit's buffs are kept apart from
+--- its debuffs, so that no unit is ever judged on the wrong kind of effect.
+local function KeyOf(unit, kind)
+    local key = ns.UnitKey(unit)
+    if kind == "buff" then
+        return key .. "+buffs"
+    end
+    return key
+end
+
+ns.KeyOf = KeyOf
+
+-- What the client allowed the last time we looked, for /se debug: at an enemy's
+-- debuffs, and under `buffs` at your own buffs.
+local probe = { open = {}, hidden = {}, buffs = { open = {}, hidden = {} } }
 ns.probe = probe
 
 local combatEpoch = 0 -- goes up every time combat starts or ends
 
--- Counting debuffs can be refused outright in combat. Stop asking for a while
+-- Counting effects can be refused outright in combat. Stop asking for a while
 -- after a run of refusals rather than failing the same call every pass.
-local sampleFailures, sampleBlockedUntil = 0, 0
-
--- While aura details are hidden, an answer of "no debuffs" could be the truth or
--- could be the client hiding them. It is only believed once the same fight has
--- shown at least one debuff of ours through the same call.
-local trustedEpoch = -1
+--
+-- While aura details are hidden, an answer of "none" could be the truth or could
+-- be the client hiding them. It is only believed once the same fight has shown
+-- at least one effect of ours through the same call: `trusted` is that fight.
+--
+-- Debuffs on enemies and buffs on you are kept apart, because the client may
+-- well allow one and not the other.
+local sampling = {
+    debuff = { failures = 0, blockedUntil = 0, trusted = -1 },
+    buff = { failures = 0, blockedUntil = 0, trusted = -1 },
+}
 local lastAnswer = "none" -- what the last count looked like: "ids", "count" or "none"
 
---- Counts your debuffs on an enemy: { n, ids } or nil when that cannot be relied on.
-local function Sample(unit, now, calm)
+--- Counts your effects of one kind on a unit: { n, ids } or nil when that
+--- cannot be relied on.
+local function Sample(unit, now, calm, kind)
     lastAnswer = "none"
-    if now < sampleBlockedUntil then
+    local state = sampling[kind]
+    if now < state.blockedUntil then
         return nil
     end
-    local sample = ns.SamplePlayerDebuffs(unit)
+    local sample = ns.SampleAuras(unit, kind)
     if not sample then
-        sampleFailures = sampleFailures + 1
-        if sampleFailures >= 6 then
-            sampleFailures = 0
-            sampleBlockedUntil = now + 5
+        state.failures = state.failures + 1
+        if state.failures >= 6 then
+            state.failures = 0
+            state.blockedUntil = now + 5
         end
         return nil
     end
-    sampleFailures = 0
+    state.failures = 0
     lastAnswer = sample.ids and "ids" or "count"
     if not calm then
         if sample.n > 0 then
-            trustedEpoch = combatEpoch
-        elseif trustedEpoch ~= combatEpoch then
+            state.trusted = combatEpoch
+        elseif state.trusted ~= combatEpoch then
             return nil
         end
     end
     return sample
 end
 
-local seen = {} -- unit key -> sample, or false when unreadable, for enemies looked at this pass
+local SELF_RESCAN = 2 -- seconds between looks at your buffs when it is only to learn from them
+local LEARN_DELAY = 0.3 -- seconds after a cast before looking for a buff it may have left on you
+
+local seen = {} -- unit key -> sample, or false when unreadable, for units looked at this pass
+local direct = {} -- unit key -> true for units whose effects were also listed by name this pass
 local engagedKeys = {} -- unit key -> true for enemies in the fight
 local fight = {} -- the enemies an area spell is judged against: { unit, key }
 local inFight = {}
 local fightSize = 0
 local states = {} -- spell name -> its state this pass
-local sweepWanted = false
-local nameReadable = {} -- spell name -> the fight in which its debuff was read by name
+local sweepWanted = false -- an area spell needs the nameplates walked
+local buffsWanted = true -- a buff spell needs your buffs looked at every pass
+local friendWanted = true -- and one of them can be cast on the friend you have targeted
+local learnWanted = true -- a spell on the bars is not known to leave a buff on you, and might
+local lastSelfLook = -100
+local nameReadable = { debuff = {}, buff = {} } -- spell name -> the fight in which its effect was read by name
 local primaryUnit, primaryKey
+local friendUnit, friendKey
+local playerKey
 
-local function Look(unit, now, calm, isPrimary)
-    local key = ns.UnitKey(unit)
+--- Looks at a unit once per pass: counts your effects of one kind on it and,
+--- while the client shows them, reads them by name. `note` is the part of the
+--- probe to fill in, if this look is one /se debug reports on.
+local function Look(unit, now, calm, kind, note)
+    local key = KeyOf(unit, kind)
     if seen[key] ~= nil then
         return key
     end
-    local sample = Sample(unit, now, calm)
+    local sample = Sample(unit, now, calm, kind)
     local answer = lastAnswer
     seen[key] = sample or false
-    local direct = false
+    local listed = false
     if calm then
-        local found = ns.ReadPlayerDebuffs(unit)
+        local found, complete = ns.ReadAuras(unit, kind)
         if found then
-            direct = true
-            Tracker:Sync(key, found, barNames, now)
+            listed = true
+            direct[key] = complete or nil
+            Tracker:Sync(key, found, barNames, now, kind)
         end
     end
-    if isPrimary then
-        local note = calm and probe.open or probe.hidden
+    if note then
         note.time = now
         note.sample = answer
-        note.trusted = calm or trustedEpoch == combatEpoch
-        note.direct = direct
+        note.trusted = calm or sampling[kind].trusted == combatEpoch
+        note.direct = listed
         note.identity = ns.IdentityReadable(unit)
     end
     return key
@@ -443,17 +502,22 @@ local function AddToFight(unit, key)
     enemy.unit, enemy.key = unit, key
 end
 
---- Does this enemy have the spell's effect? While details are hidden, a debuff
+--- Does this unit have the spell's effect? While details are hidden, an effect
 --- the client still shows by name is read directly and overrides the books.
-local function HasEffect(unit, key, name, now, calm)
+local function HasEffect(unit, key, name, now, calm, kind)
     if not calm then
-        local aura = ns.ReadPlayerDebuffByName(unit, name)
+        local readable = nameReadable[kind]
+        local aura = ns.ReadAuraByName(unit, name, kind)
         if aura then
             Tracker:Observe(key, name, aura, now)
-            Spells:LearnExact(name, aura.duration)
-            nameReadable[name] = combatEpoch
-            probe.hidden.byName = true
-        elseif aura == false and nameReadable[name] == combatEpoch then
+            Spells:LearnExact(name, aura.duration, kind)
+            readable[name] = combatEpoch
+            if kind == "buff" then
+                probe.buffs.hidden.byName = true
+            else
+                probe.hidden.byName = true
+            end
+        elseif aura == false and readable[name] == combatEpoch then
             Tracker:Absent(key, name)
         end
     end
@@ -467,7 +531,7 @@ local function AreaState(name, now, calm)
     local have = 0
     for i = 1, fightSize do
         local enemy = fight[i]
-        if HasEffect(enemy.unit, enemy.key, name, now, calm) then
+        if HasEffect(enemy.unit, enemy.key, name, now, calm, "debuff") then
             have = have + 1
         end
     end
@@ -479,8 +543,22 @@ local function AreaState(name, now, calm)
     return "some"
 end
 
+--- A buff is either there or not: judged on the friend you have targeted when
+--- the spell can be cast on others, otherwise on you.
+local function BuffState(info, now, calm)
+    local unit, key = "player", playerKey
+    if friendKey and CastOnFriends(info) then
+        unit, key = friendUnit, friendKey
+    end
+    if seen[key] == nil then
+        Look(unit, now, calm, "buff") -- the first pass after a buff spell turned up on the bars
+    end
+    return HasEffect(unit, key, info.name, now, calm, "buff") and "all" or "none"
+end
+
 local function Refresh(now)
     ns.Wipe(seen)
+    ns.Wipe(direct)
     ns.Wipe(engagedKeys)
     ns.Wipe(inFight)
     ns.Wipe(states)
@@ -491,7 +569,7 @@ local function Refresh(now)
     primaryUnit = PrimaryEnemy()
     primaryKey = nil
     if primaryUnit then
-        primaryKey = Look(primaryUnit, now, calm, true)
+        primaryKey = Look(primaryUnit, now, calm, "debuff", calm and probe.open or probe.hidden)
         AddToFight(primaryUnit, primaryKey)
         if ns.IsEngaged(primaryUnit) then
             engagedKeys[primaryKey] = true
@@ -499,11 +577,11 @@ local function Refresh(now)
     end
 
     -- Nameplates are only walked when an area spell or a cast in flight needs them.
-    if sweepWanted or Tracker:HasPending() then
+    if sweepWanted or Tracker:HasPending("debuff") then
         for i = 1, #plateTokens do
             local token = plateTokens[i]
             if Attackable(token) then
-                local key = Look(token, now, calm, false)
+                local key = Look(token, now, calm, "debuff")
                 if ns.IsEngaged(token) then
                     engagedKeys[key] = true
                     AddToFight(token, key)
@@ -512,36 +590,61 @@ local function Refresh(now)
         end
     end
 
-    Tracker:Update(now, seen, engagedKeys)
+    -- Your own buffs are looked at every pass while a buff spell needs them. Out
+    -- of combat they are also read now and then for the sake of the other spells
+    -- on the bars, which is how a spell is found to leave a buff on you.
+    playerKey = KeyOf("player", "buff")
+    friendUnit = FriendTarget()
+    friendKey = friendUnit and KeyOf(friendUnit, "buff") or nil
+    local buffCast = Tracker:HasPending("buff")
+    if buffsWanted or buffCast or (learnWanted and calm and now >= lastSelfLook + SELF_RESCAN) then
+        lastSelfLook = now
+        Look("player", now, calm, "buff", calm and probe.buffs.open or probe.buffs.hidden)
+    end
+    if friendKey and (friendWanted or buffCast) then
+        Look(friendUnit, now, calm, "buff")
+    end
 
-    local wantSweep = false
+    Tracker:Update(now, seen, engagedKeys, direct)
+
+    local wantSweep, wantBuffs, wantFriend, wantLearn = false, false, false, false
     for i = 1, #entries do
         local entry = entries[i]
         local info = entry.info
         local state
         if info and not entry.broken and Visible(entry.frame) then
-            local tracked, area = Spells:Tracking(info)
+            local tracked, area, _, _, kind = Spells:Tracking(info)
             if tracked then
                 local name = info.name
                 state = states[name]
                 if state == nil then
-                    if area then
+                    if kind == "buff" then
+                        state = BuffState(info, now, calm)
+                    elseif area then
                         state = AreaState(name, now, calm)
                     elseif primaryKey then
-                        state = HasEffect(primaryUnit, primaryKey, name, now, calm) and "all" or "none"
+                        state = HasEffect(primaryUnit, primaryKey, name, now, calm, kind) and "all" or "none"
                     else
                         state = false
                     end
                     states[name] = state
                 end
-                if area then
+                if kind == "buff" then
+                    wantBuffs = true
+                    if CastOnFriends(info) then
+                        wantFriend = true
+                    end
+                elseif area then
                     wantSweep = true
                 end
+            end
+            if not (tracked and kind == "buff") and Spells:Watched(info) then
+                wantLearn = true
             end
         end
         SetState(entry, state or nil)
     end
-    sweepWanted = wantSweep
+    sweepWanted, buffsWanted, friendWanted, learnWanted = wantSweep, wantBuffs, wantFriend, wantLearn
 end
 
 --------------------------------------------------------------------------------
@@ -561,16 +664,26 @@ local function CastInfo(spellID, now)
     return info
 end
 
---- Records who is around, and what they carry, as a cast begins.
-local function Snapshot(info, area, now, late)
-    local snapshot = { name = info.name, time = now, late = late or nil, units = {} }
+--- Records who a cast could land on, and what they carry, as it begins.
+local function Snapshot(info, area, now, late, kind)
+    local snapshot = { name = info.name, kind = kind, time = now, late = late or nil, units = {} }
     local calm = not ns.AurasSecret()
+    if kind == "buff" then
+        local unit = BuffUnit(info)
+        local key = KeyOf(unit, kind)
+        snapshot.primary = key
+        snapshot.units[key] = {
+            pre = not late and Sample(unit, now, calm, kind) or nil,
+            engaged = true,
+        }
+        return snapshot
+    end
     local unit = PrimaryEnemy()
     if unit then
         local key = ns.UnitKey(unit)
         snapshot.primary = key
         snapshot.units[key] = {
-            pre = not late and Sample(unit, now, calm) or nil,
+            pre = not late and Sample(unit, now, calm, kind) or nil,
             engaged = ns.IsEngaged(unit),
         }
     end
@@ -581,7 +694,7 @@ local function Snapshot(info, area, now, late)
                 local key = ns.UnitKey(token)
                 if not snapshot.units[key] then
                     snapshot.units[key] = {
-                        pre = not late and Sample(token, now, calm) or nil,
+                        pre = not late and Sample(token, now, calm, kind) or nil,
                         engaged = ns.IsEngaged(token),
                     }
                 end
@@ -600,8 +713,8 @@ local function OnSent(unit, _, castID, spellID)
     if not info then
         return
     end
-    local _, area = Spells:Tracking(info)
-    Tracker:Sent(ns.PlainString(castID), Snapshot(info, area, now, false))
+    local _, area, _, _, kind = Spells:Tracking(info)
+    Tracker:Sent(ns.PlainString(castID), Snapshot(info, area, now, false, kind))
 end
 
 local function Landed(unit, castID, spellID, mustBeSent)
@@ -613,14 +726,14 @@ local function Landed(unit, castID, spellID, mustBeSent)
     if not info then
         return
     end
-    local tracked, area, duration, source = Spells:Tracking(info)
+    local tracked, area, duration, source, kind = Spells:Tracking(info)
     local snapshot = Tracker:Claim(ns.PlainString(castID), info.name, now)
     if not snapshot then
         if mustBeSent then
             return
         end
         -- We never saw it being sent, so there is no "before" to compare with.
-        snapshot = Snapshot(info, area, now, true)
+        snapshot = Snapshot(info, area, now, true, kind)
     end
     Tracker:Succeeded(snapshot, {
         name = info.name,
@@ -629,6 +742,11 @@ local function Landed(unit, castID, spellID, mustBeSent)
         duration = duration,
         forced = source == "you",
     }, now)
+    if not (tracked and kind == "buff") then
+        -- Out of combat, look at your buffs a moment from now: that is how a
+        -- spell is found to leave one on you.
+        lastSelfLook = now + LEARN_DELAY - SELF_RESCAN
+    end
     stateDirty = true
 end
 
@@ -731,7 +849,10 @@ local handlers = {}
 
 local function NewFight()
     combatEpoch = combatEpoch + 1
-    sampleFailures, sampleBlockedUntil = 0, 0
+    for _, state in pairs(sampling) do
+        state.failures, state.blockedUntil = 0, 0
+    end
+    lastSelfLook = -100
     stateDirty = true
 end
 
@@ -759,6 +880,11 @@ end
 
 function handlers.PLAYER_TARGET_CHANGED()
     ns.TokenChanged("target")
+    stateDirty = true
+end
+
+function handlers.PLAYER_DEAD()
+    Tracker:ForgetUnit(KeyOf("player", "buff")) -- your buffs died with you
     stateDirty = true
 end
 

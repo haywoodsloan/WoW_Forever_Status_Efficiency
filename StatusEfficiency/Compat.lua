@@ -12,7 +12,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.1.1"
+ns.VERSION = "0.2.0"
 
 local pcall, type, pairs = pcall, type, pairs
 
@@ -144,6 +144,27 @@ end
 -- Units
 --------------------------------------------------------------------------------
 
+local function ReadableGUID(unit)
+    local guid = Call(UnitGUID, unit)
+    if type(guid) == "string" and guid ~= "" then
+        return guid
+    end
+    return nil
+end
+
+--- True when the unit is your own character, whatever token it goes by.
+local function IsSelf(unit)
+    if unit == "player" then
+        return true
+    end
+    local same = Flag(UnitIsUnit, unit, "player")
+    if same ~= nil then
+        return same
+    end
+    local guid = ReadableGUID(unit)
+    return guid ~= nil and guid == ReadableGUID("player")
+end
+
 function ns.Exists(unit)
     local exists = Flag(UnitExists, unit)
     if exists ~= nil then
@@ -178,11 +199,24 @@ function ns.IsEnemy(unit)
     end
     -- Nothing readable. Party members always answer, so an unreadable unit is an
     -- NPC, and while we are fighting it is most likely the thing we are fighting.
+    -- Unless it is you: targeting yourself does not make you an enemy.
+    if IsSelf(unit) then
+        return false
+    end
     return ns.InCombat()
 end
 
 function ns.IsDead(unit)
     return Flag(UnitIsDeadOrGhost, unit) == true
+end
+
+--- True when a helpful spell of ours could land on the unit.
+function ns.CanAssist(unit)
+    local answer = Flag(UnitCanAssist, "player", unit)
+    if answer ~= nil then
+        return answer
+    end
+    return Flag(UnitIsFriend, "player", unit) == true or IsSelf(unit)
 end
 
 --- True when the unit is in a fight (ideally with us), so an area spell cast now
@@ -202,7 +236,7 @@ end
 --------------------------------------------------------------------------------
 -- Unit keys
 --
--- Tracked debuffs are stored per enemy. The GUID is the natural key, but the
+-- Tracked effects are stored per unit. The GUID is the natural key, but the
 -- client can hide NPC identity. When it does we fall back to the nameplate token
 -- that currently shows the unit, tagged with a counter that changes whenever the
 -- token is handed to a different unit.
@@ -270,14 +304,6 @@ function ns.PlateTokenFor(unit)
     return nil
 end
 
-local function ReadableGUID(unit)
-    local guid = Call(UnitGUID, unit)
-    if type(guid) == "string" and guid ~= "" then
-        return guid
-    end
-    return nil
-end
-
 --- True when the unit's GUID is readable right now.
 function ns.IdentityReadable(unit)
     return ReadableGUID(unit) ~= nil
@@ -287,6 +313,9 @@ end
 --- keeps identifying the unit after the client hides it, for as long as the
 --- token (or the nameplate showing the unit) has not moved to another unit.
 function ns.UnitKey(unit)
+    if unit == "player" then
+        return ReadableGUID(unit) or unit -- you are never hidden, and need no nameplate
+    end
     local guid = ReadableGUID(unit)
     local plate = ns.PlateTokenFor(unit)
     local plateKey = plate and TokenKey(plate)
@@ -310,7 +339,10 @@ end
 -- Auras
 --------------------------------------------------------------------------------
 
-local PLAYER_DEBUFFS = "HARMFUL|PLAYER"
+-- Only effects the player applied are looked at: "debuff" is the player's
+-- debuffs on an enemy, "buff" the player's buffs on themselves or on a friend.
+local FILTERS = { debuff = "HARMFUL|PLAYER", buff = "HELPFUL|PLAYER" }
+local MAX_AURAS = 60 -- how far a unit's auras are walked when they are listed
 
 local function ReadIDList(list)
     local count = #list
@@ -338,11 +370,11 @@ local function ReadAuraList(list)
     return count, ids
 end
 
-local function SampleWith(fn, reader, unit)
+local function SampleWith(fn, reader, unit, filter)
     if type(fn) ~= "function" then
         return nil
     end
-    local ok, list = pcall(fn, unit, PLAYER_DEBUFFS)
+    local ok, list = pcall(fn, unit, filter)
     if not ok or IsSecret(list) or type(list) ~= "table" then
         return nil
     end
@@ -353,32 +385,37 @@ local function SampleWith(fn, reader, unit)
     return { n = count, ids = ids }
 end
 
---- Counts the player's own debuffs on a unit without looking at what they are,
---- which the client may still allow while the details are hidden.
+--- Counts the player's own effects of one kind ("debuff" or "buff") on a unit
+--- without looking at what they are, which the client may still allow while the
+--- details are hidden.
 --- Returns { n = count, ids = set of aura instance ids or nil } or nil.
-function ns.SamplePlayerDebuffs(unit)
+function ns.SampleAuras(unit, kind)
     local auras = C_UnitAuras
-    if not auras then
+    local filter = FILTERS[kind]
+    if not auras or not filter then
         return nil
     end
-    return SampleWith(auras.GetUnitAuraInstanceIDs, ReadIDList, unit)
-        or SampleWith(auras.GetUnitAuras, ReadAuraList, unit)
+    return SampleWith(auras.GetUnitAuraInstanceIDs, ReadIDList, unit, filter)
+        or SampleWith(auras.GetUnitAuras, ReadAuraList, unit, filter)
 end
 
 local function ReadAura(aura)
     return aura.name, aura.duration, aura.expirationTime, aura.auraInstanceID
 end
 
---- Lists the player's own debuffs on a unit by name: name -> { duration, expires, id }.
---- Returns nil when the client will not show them, which is most of combat.
-function ns.ReadPlayerDebuffs(unit)
+--- Lists the player's own effects of one kind on a unit by name:
+--- name -> { duration, expires, id }. Returns nil when the client will not show
+--- them, which is most of combat. The second return is false when the list
+--- came back but some of its entries would not give their name.
+function ns.ReadAuras(unit, kind)
     local byIndex = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex
-    if type(byIndex) ~= "function" then
+    local filter = FILTERS[kind]
+    if type(byIndex) ~= "function" or not filter then
         return nil
     end
-    local found = {}
-    for i = 1, 40 do
-        local ok, aura = pcall(byIndex, unit, i, PLAYER_DEBUFFS)
+    local found, complete = {}, true
+    for i = 1, MAX_AURAS do
+        local ok, aura = pcall(byIndex, unit, i, filter)
         if not ok or IsSecret(aura) then
             return nil
         end
@@ -389,27 +426,29 @@ function ns.ReadPlayerDebuffs(unit)
             return nil
         end
         local ok2, name, duration, expires, id = pcall(ReadAura, aura)
-        if not ok2 or IsSecret(name) or type(name) ~= "string" then
-            return nil
+        if ok2 and not IsSecret(name) and type(name) == "string" then
+            found[name] = {
+                duration = PlainNumber(duration),
+                expires = PlainNumber(expires),
+                id = PlainNumber(id),
+            }
+        else
+            complete = false -- an effect the client keeps secret even now
         end
-        found[name] = {
-            duration = PlainNumber(duration),
-            expires = PlainNumber(expires),
-            id = PlainNumber(id),
-        }
     end
-    return found
+    return found, complete
 end
 
---- Looks for one of the player's debuffs on a unit by name. Returns its details
+--- Looks for one of the player's effects on a unit by name. Returns its details
 --- when it is there and readable, false when the client answered with nothing
 --- (absent, or hidden from addons), and nil when it would not answer at all.
-function ns.ReadPlayerDebuffByName(unit, name)
+function ns.ReadAuraByName(unit, name, kind)
     local byName = C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName
-    if type(byName) ~= "function" then
+    local filter = FILTERS[kind]
+    if type(byName) ~= "function" or not filter then
         return nil
     end
-    local ok, aura = pcall(byName, unit, name, PLAYER_DEBUFFS)
+    local ok, aura = pcall(byName, unit, name, filter)
     if not ok or IsSecret(aura) then
         return nil
     end
@@ -478,6 +517,16 @@ function ns.SpellIsHelpful(spellID, name)
     local answer = Flag(C_Spell and C_Spell.IsSpellHelpful, spellID)
     if answer == nil then
         answer = Flag(IsHelpfulSpell, name)
+    end
+    return answer
+end
+
+--- True if the spell only ever affects the caster, false if it can affect
+--- anyone else, nil if the client cannot say.
+function ns.SpellIsSelfOnly(spellID)
+    local answer = Flag(C_Spell and C_Spell.IsSelfBuff, spellID)
+    if answer == nil then
+        answer = Flag(SpellIsSelfBuff, spellID) -- its name before 12.0
     end
     return answer
 end

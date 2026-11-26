@@ -2,16 +2,18 @@
 
 A World of Warcraft addon for **WoW Forever**. It puts a small icon on each action
 button that tells you whether casting that spell again would do anything for its
-status effect.
+status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 
-| Icon | Meaning |
-| --- | --- |
-| Green check | None of the enemies the spell would hit has its effect. Casting puts it on all of them. |
-| Yellow half circle | Some of them have it and some do not. |
-| Red X | All of them already have it. Casting again changes nothing. |
-| No icon | There is no enemy to judge, or the spell applies no status effect. |
+| Icon | A spell that leaves a debuff on enemies | A spell that leaves a buff on you |
+| --- | --- | --- |
+| Green check | None of the enemies it would hit has the debuff. Casting puts it on all of them. | You do not have the buff. |
+| Yellow half circle | Some of them have it and some do not. | Not used. |
+| Red X | All of them already have it. Casting again changes nothing. | You already have it. Casting again changes nothing. |
+| No icon | There is no enemy to judge. | Never, because there is always you. |
 
-Version 0.1.1 is an early draft. It loads and draws its icons in the real
+A spell that applies no status effect gets no icon at all.
+
+Version 0.2.0 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and how much the client reveals in combat is not
 confirmed yet. Expect a few rough edges and please report what `/se debug`
@@ -37,17 +39,26 @@ prints.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.1.1 loaded."
+When it loads you get one line in chat: "Status Efficiency: v0.2.0 loaded."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
 
 ## Using it
 
-Target an enemy. Every spell on your bars that leaves a status effect gets a
-green check. Cast one and its button turns to a red X until the effect ends.
-Spells that hit every enemy around you go yellow when only some of the enemies
-in the fight have the effect.
+Target an enemy. Every spell on your bars that leaves a debuff gets a green
+check. Cast one and its button turns to a red X until the effect ends. Spells
+that hit every enemy around you go yellow when only some of the enemies in the
+fight have the effect.
+
+Spells that put a buff on you work the same way and need no target: a green
+check while you do not have the buff, a red X while you do. A buff you can also
+put on other people (a heal over time, a stamina buff) is judged on the friend
+you have targeted, and on you when your target is an enemy or nobody.
+
+A buff spell the game does not label as one gets its icon the first time the
+addon sees its buff on you out of combat. `/se buff <spell>` does the same by
+hand.
 
 ### Settings
 
@@ -60,10 +71,10 @@ account.
 - **Icon size.** The minus and plus buttons make the icon a step smaller or
   larger. **Auto** sizes it from the button it sits on, at about a third of the
   button's width, which is 16 on a standard button.
-- **Icon for each indication.** Each of the three indications (no enemy has it,
-  some enemies have it, every enemy has it) can use any of 21 icons: the three
-  defaults, coloured dots, a plus, an exclamation mark, a stop sign, a ring, the
-  ready check marks and the eight raid markers.
+- **Icon for each indication.** Each of the three indications (not applied yet,
+  partly applied, already applied) can use any of 21 icons: the three defaults,
+  coloured dots, a plus, an exclamation mark, a stop sign, a ring, the ready
+  check marks and the eight raid markers. Buffs and debuffs share them.
 - **Your own texture.** Type a file ID such as `136243`, or a path such as
   `Interface\Icons\Spell_Nature_Slow`, into the box beside an indication and
   press Enter. Empty the box and press Enter to go back.
@@ -81,11 +92,13 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se options` | Opens or closes the settings window. |
 | `/se on`, `/se off` | Turns the icons on or off. |
 | `/se list` | Shows the spells on your bars and how each one is treated, and why. |
-| `/se track <spell>` | Always give this spell an icon. |
+| `/se track <spell>` | Always give this spell an icon. The reply says whether it is treated as a debuff or a buff. |
+| `/se buff <spell>` | Always give this spell an icon, as a buff on you. |
+| `/se debuff <spell>` | Always give this spell an icon, as a debuff on enemies. |
 | `/se ignore <spell>` | Never give this spell an icon. |
 | `/se auto <spell>` | Let the addon decide again, and forget what it learned about the spell. |
-| `/se aoe <spell>` | Judge the spell against every enemy in the fight. |
-| `/se single <spell>` | Judge the spell against your target only. |
+| `/se aoe <spell>` | Judge a debuff against every enemy in the fight. |
+| `/se single <spell>` | Judge a debuff against your target only. |
 | `/se duration <spell> <seconds>` | Say how long the effect lasts. `auto` goes back to the addon's own figure. |
 | `/se corner <where>` | Moves the icon: `tl`, `top`, `tr`, `left`, `center`, `right`, `bl`, `bottom`, `br`. |
 | `/se size <pixels>` | Icon size from 8 to 128. `auto` sizes it from the button again. |
@@ -99,71 +112,103 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 
 ### Which spells get an icon
 
-WoW Forever has its own class design, so the addon carries no table of debuff
-spells. A spell on your bars is treated as a status effect when, strongest first:
+WoW Forever has its own class design, so the addon carries no table of spells.
+A spell on your bars is treated as a status effect when, strongest first:
 
-1. you said so with `/se track` (or said the opposite with `/se ignore`);
-2. the addon has read a debuff of yours with the spell's own name off an enemy;
-3. the spell can be cast on enemies and its tooltip mentions a duration, or it
-   is one of a few well known area debuffs (Thunder Clap, Frost Nova and the
-   like), and casting it has not kept leaving nothing behind;
-4. casting it has repeatedly been followed by a new debuff of yours.
+1. you said so with `/se track`, `/se buff` or `/se debuff` (or said the
+   opposite with `/se ignore`);
+2. the addon has read an effect of yours with the spell's own name: a debuff
+   off an enemy, or a buff off you;
+3. its tooltip mentions a duration and the game says where it can land: on
+   enemies (a debuff), or on friends or only on yourself (a buff). A few well
+   known area debuffs (Thunder Clap, Frost Nova and the like) count too.
+   Casting it must not have kept leaving nothing behind;
+4. casting it has repeatedly been followed by a new effect of yours.
 
-Passive spells and spells that can only be cast on friends never get an icon.
-`/se list` shows the verdict for every spell on your bars.
+Whether a spell is a debuff or a buff follows from the same facts. Seeing wins:
+a spell whose buff has been read off you is a buff, even an attack that leaves
+its effect on you rather than on its target. Otherwise a spell you can cast on
+enemies is a debuff, and one you cast on friends or only on yourself is a buff.
+`/se buff` and `/se debuff` overrule all of it.
 
-### Which enemies count
+Passive spells never get an icon. `/se list` shows the verdict for every spell
+on your bars.
 
-- A spell aimed at one enemy is judged against your target (or the enemy the
+### Who is looked at
+
+- A debuff aimed at one enemy is judged against your target (or the enemy the
   game's soft targeting has picked).
-- A spell that hits everything around you is judged against the enemies that
+- A debuff that hits everything around you is judged against the enemies that
   are in the fight and have a nameplate showing, plus your target.
 - No such enemy: the icon is hidden.
+- A buff is judged on you. One that can be cast on other people is judged on
+  your target instead while that target is a living friend.
 
-### How it knows what an enemy has
+### How it knows what is there
 
-The game hides enemies' debuffs from addons during combat, and addons get no
-combat log. So the addon uses whatever the client still allows, best first:
+The game hides auras from addons during combat, your own buffs as much as an
+enemy's debuffs, and addons get no combat log. So the addon uses whatever the
+client still allows, best first:
 
-1. **Reading the debuffs outright.** Out of combat this works and is exact. The
-   addon also learns from it which spells leave which debuffs and for how long.
-2. **Asking for one debuff by name**, for debuffs the client leaves visible in
+1. **Reading the effects outright.** Out of combat this works and is exact. The
+   addon also learns from it which spells leave which effects and for how long.
+2. **Asking for one effect by name**, for effects the client leaves visible in
    combat.
-3. **Counting your debuffs on the enemy** without looking at what they are. A
-   cast that adds one landed, a cast that adds none missed, and a debuff that
+3. **Counting your effects on the unit** without looking at what they are. A
+   cast that adds one landed, a cast that adds none missed, and an effect that
    disappears early is noticed. This is only believed after the same fight has
-   shown at least one debuff this way, so an empty answer from a client that is
+   shown at least one effect this way, so an empty answer from a client that is
    simply hiding everything is never mistaken for "nothing there".
 4. **Your own casts and a timer.** When none of the above works, a cast is
-   assumed to land on the enemy it was aimed at and to last as long as its
+   assumed to land on the unit it was aimed at and to last as long as its
    tooltip says.
 
-`/se debug` shows which of these the client allowed the last time the addon
-looked, out of combat and in it.
+Debuffs on enemies and buffs on you are handled separately, so a client that
+allows one and not the other is still used as far as it goes. `/se debug` shows
+which of these the client allowed the last time the addon looked, for each of
+the two, out of combat and in it.
 
 ## Known limitations
 
 - **In combat the icons are most likely running on timers.** If the client
   refuses even the counting, the addon cannot see a miss, a dodge, an immune
-  enemy or a debuff that is removed early. It shows a red X for the length of
-  the effect after every cast that goes off.
-- **Only your own debuffs count.** The same effect put there by another player
-  is not seen.
-- **Spell detection is a guess from the tooltip.** A spell that can be cast on
-  enemies and mentions any duration gets an icon, which includes some that leave
-  no debuff (an interrupt that locks a spell school "for 3 sec", for example).
-  Use `/se ignore <spell>`. Area spells that have no target cannot be recognised
-  this way unless they are on the small built-in list, so add them with
-  `/se track <spell>`.
+  enemy, or a debuff or buff that is removed or used up early. It shows a red X
+  for the length of the effect after every cast that goes off. A buff you
+  already had when the fight began keeps its real end time.
+- **Only your own effects count.** The same debuff or buff put there by another
+  player is not seen, so the button stays green.
+- **Spell detection is a guess from the tooltip.** A spell that mentions any
+  duration gets an icon, which includes some that leave nothing behind (an
+  interrupt that locks a spell school "for 3 sec", for example). Once the addon
+  has watched about four casts leave nothing, it drops the icon by itself. It
+  can watch that out of combat, and in combat only on a client that lets it
+  count effects. Otherwise use `/se ignore <spell>`.
+- **Spells with no target** cannot be recognised from the tooltip. An area
+  debuff needs to be on the small built-in list or added with
+  `/se track <spell>`. A buff (a shout for the whole party, an aura, a stance)
+  is recognised once its buff has been seen on you out of combat, or straight
+  away with `/se buff <spell>`.
 - **Durations come from the tooltip.** When a tooltip gives no duration the
-  addon assumes 12 seconds until it has seen the real debuff. Fix one with
+  addon assumes 12 seconds until it has seen the real effect. Fix one with
   `/se duration <spell> <seconds>`.
-- **A debuff named differently from its spell** cannot be looked up by name, so
+- **An effect named differently from its spell** cannot be looked up by name, so
   that spell falls back to counting or timers.
+- **Buffs that switch each other off** (stances, forms and aspects, or a spell
+  that turns its own buff off when cast again) are followed correctly out of
+  combat. In combat, when the client hides your buffs, the addon only knows
+  what you cast, so the buff that was switched off keeps its red X until the
+  fight ends.
+- **Buffs on other people** are only judged on the friend you have targeted.
+  There is no yellow state for buffs: the addon does not look across your
+  party.
+- **A buff that always shows a green check** because it is meant to be used
+  only now and then (a defensive cooldown) can be hidden with
+  `/se ignore <spell>`.
 - **Area spells have no range check.** Every enemy in the fight with a nameplate
   showing is assumed to be in reach. Enemy nameplates need to be turned on for
   area spells to see more than your target.
-- **Casts aimed somewhere else** (a mouseover or focus macro) are booked against
+- **Casts aimed somewhere else** (a mouseover or focus macro, or a buff cast on
+  yourself with a modifier key while a friend is targeted) are booked against
   your current target.
 - **When the client hides who an enemy is**, enemies are told apart by their
   nameplates. With nameplates off, switching away from an enemy and back forgets
@@ -181,7 +226,7 @@ StatusEfficiency/     the addon; this folder is what gets installed
   Compat.lua          every call into the game, guarded against secret values
   Icons.lua           the three indications and the icons on offer
   Spells.lua          which spells leave a status effect, and for how long
-  Tracker.lua         which of your effects are on which enemy
+  Tracker.lua         which of your effects are on whom
   Core.lua            action buttons, enemies, casts, the update loop
   Options.lua         the settings panel
   Commands.lua        the /se command

@@ -80,6 +80,28 @@ local function WithSpell(text, fn)
     ns.MarkBarsDirty()
 end
 
+--- How a spell on the bars is treated right now: tracked, area, duration,
+--- source, kind. A spell that is not on the bars gives nothing.
+local function Treatment(name)
+    local list = ns.BarSpells()
+    for i = 1, #list do
+        if list[i].name == name then
+            return Spells:Tracking(list[i])
+        end
+    end
+    return nil
+end
+
+--- A length of time in words: "21s", "2 min", "an hour or more".
+local function Span(seconds)
+    if seconds >= Spells.MAX_DURATION then
+        return "an hour or more"
+    elseif seconds >= 120 then
+        return floor(seconds / 60 + 0.5) .. " min"
+    end
+    return floor(seconds + 0.5) .. "s"
+end
+
 --------------------------------------------------------------------------------
 -- Commands
 --------------------------------------------------------------------------------
@@ -88,12 +110,14 @@ local commands = {}
 
 local HELP = {
     "icons on your action buttons show whether casting again is worth it.",
-    "  green check = no enemy it would hit has the effect, yellow half circle = some do, red X = all do.",
+    "  A debuff: green check = no enemy it would hit has it, yellow half circle = some do, red X = all do.",
+    "  A buff: green check = you do not have it, red X = you do.",
     "  /se options - the settings window: icon position, icon size and which icon means what",
     "  /se on | off",
     "  /se list - the spells on your bars and how each is treated",
     "  /se track <spell> | ignore <spell> | auto <spell>",
-    "  /se aoe <spell> | single <spell> - judge it against every enemy in the fight, or only your target",
+    "  /se buff <spell> | debuff <spell> - track it as a buff on you, or as a debuff on enemies",
+    "  /se aoe <spell> | single <spell> - judge a debuff against every enemy in the fight, or only your target",
     "  /se duration <spell> <seconds | auto>",
     "  /se corner <tl | top | tr | left | center | right | bl | bottom | br>   /se size <pixels | auto>",
     "  /se icon <green | yellow | red> <icon name | file ID | texture path | default>   /se icons lists the names",
@@ -124,7 +148,40 @@ end
 function commands.track(rest)
     WithSpell(rest, function(name)
         Choice(name).track = true
-        Print(name .. " is now tracked. If it hits every enemy around you, also use /se aoe " .. name)
+        local _, area, _, _, kind = Treatment(name)
+        if not kind then
+            Print(name .. " is now tracked. /se buff " .. name .. " treats it as a buff on you, and /se debuff "
+                .. name .. " as a debuff on enemies.")
+        elseif kind == "buff" then
+            Print(name .. " is now tracked, as a buff on you. /se debuff " .. name
+                .. " treats it as a debuff on enemies instead.")
+        elseif area then
+            Print(name .. " is now tracked, as a debuff on every enemy in the fight. /se buff " .. name
+                .. " treats it as a buff on you instead.")
+        else
+            Print(name .. " is now tracked, as a debuff on your target. /se aoe " .. name
+                .. " judges it against every enemy in the fight, and /se buff " .. name
+                .. " treats it as a buff on you instead.")
+        end
+    end)
+end
+
+function commands.buff(rest)
+    WithSpell(rest, function(name)
+        local choice = Choice(name)
+        choice.track, choice.kind = true, "buff"
+        Tracker:Forget(name)
+        Print(name .. " is now tracked as a buff on you, or on the friend you have targeted if it can be cast on others.")
+    end)
+end
+
+function commands.debuff(rest)
+    WithSpell(rest, function(name)
+        local choice = Choice(name)
+        choice.track, choice.kind = true, "debuff"
+        Tracker:Forget(name)
+        Print(name .. " is now tracked as a debuff on enemies. /se aoe " .. name .. " and /se single " .. name
+            .. " say which enemies.")
     end)
 end
 
@@ -144,17 +201,28 @@ function commands.auto(rest)
     end)
 end
 
+--- Which enemies a debuff is judged against. It is remembered for a buff
+--- too, but only comes into play if the spell is made a debuff.
+local function SetArea(name, area, said)
+    Choice(name).aoe = area
+    local _, _, _, _, kind = Treatment(name)
+    if kind == "buff" then
+        Print(name .. " is tracked as a buff on you, so that changes nothing for now. It would only matter after /se debuff "
+            .. name)
+    else
+        Print(name .. said)
+    end
+end
+
 function commands.aoe(rest)
     WithSpell(rest, function(name)
-        Choice(name).aoe = true
-        Print(name .. " is now judged against every enemy in the fight.")
+        SetArea(name, true, " is now judged against every enemy in the fight.")
     end)
 end
 
 function commands.single(rest)
     WithSpell(rest, function(name)
-        Choice(name).aoe = false
-        Print(name .. " is now judged against your target only.")
+        SetArea(name, false, " is now judged against your target only.")
     end)
 end
 
@@ -297,12 +365,29 @@ function commands.reset()
 end
 
 local REASONS = {
-    you = "you turned it on",
-    ignored = "you turned it off",
-    seen = "its debuff was read off an enemy",
-    ["built-in"] = "a well known area debuff",
-    tooltip = "castable on enemies and its tooltip mentions a duration",
+    debuff = {
+        you = "you turned it on",
+        seen = "its debuff was read off an enemy",
+        ["built-in"] = "it is a well known area debuff",
+        tooltip = "it can be cast on enemies and its tooltip mentions a duration",
+    },
+    buff = {
+        you = "you turned it on",
+        seen = "its buff was read off you",
+        tooltip = "it is cast on yourself or friends and its tooltip mentions a duration",
+    },
 }
+
+--- Where a tracked spell's effect is looked for, in words.
+local function Where(info, area, kind)
+    if kind == "buff" then
+        if info.helpful == true and info.selfOnly ~= true then
+            return "a buff on you, or on the friend you have targeted"
+        end
+        return "a buff on you"
+    end
+    return area and "a debuff on every enemy in the fight" or "a debuff on your target"
+end
 
 function commands.list()
     local list = ns.BarSpells()
@@ -314,25 +399,27 @@ function commands.list()
     local quiet = 0
     for i = 1, #list do
         local info = list[i]
-        local tracked, area, duration, source = Spells:Tracking(info)
-        local casts, hits = Spells:Record(info.name)
+        local tracked, area, duration, source, kind = Spells:Tracking(info)
+        local casts, hits = Spells:Record(info.name, kind)
         casts, hits = floor(casts + 0.5), floor(hits + 0.5)
         if tracked then
-            local why = REASONS[source] or format("a new debuff followed %d of %d casts", hits, casts)
-            print(format("  |cff40d040%s|r: %s, about %ds. Tracked because %s.", info.name,
-                area and "every enemy in the fight" or "your target", floor(duration + 0.5), why))
+            local why = REASONS[kind][source] or format("a new effect of yours followed %d of %d casts", hits, casts)
+            print(format("  |cff40d040%s|r: %s, lasting %s. Tracked because %s.", info.name,
+                Where(info, area, kind), Span(duration), why))
         elseif source == "ignored" then
-            print(format("  |cff999999%s|r: no icon, %s.", info.name, REASONS.ignored))
+            print(format("  |cff999999%s|r: no icon, you turned it off.", info.name))
         elseif source == "demoted" then
-            print(format("  |cff999999%s|r: no icon, no debuff followed %d of %d casts.", info.name, casts - hits, casts))
+            print(format("  |cff999999%s|r: no icon, no new effect of yours followed %d of %d casts.", info.name,
+                casts - hits, casts))
         else
             quiet = quiet + 1
         end
     end
+    local ADD = " /se track <spell> adds one, and /se buff <spell> adds one as a buff on you."
     if quiet == 1 then
-        print("  1 other spell does not look like a status effect. /se track <spell> adds one.")
+        print("  1 other spell does not look like a status effect." .. ADD)
     elseif quiet > 1 then
-        print(format("  %d other spells do not look like status effects. /se track <spell> adds one.", quiet))
+        print(format("  %d other spells do not look like status effects.", quiet) .. ADD)
     end
 end
 
@@ -348,6 +435,32 @@ local SAMPLE_WORDS = {
     count = "the count only",
     none = "no",
 }
+
+--- One line of /se debug about what the client allowed at the last look.
+local function ProbeLine(label, note, now, hidden, identity)
+    if not note.time then
+        return label .. ": not looked at yet."
+    end
+    local text = format("%s (%s): countable: %s, listed outright: %s", label, Ago(now, note.time),
+        SAMPLE_WORDS[note.sample] or "no", YesNo(note.direct))
+    if identity then
+        text = text .. ", identity readable: " .. YesNo(note.identity)
+    end
+    if hidden then
+        text = text .. format(", count backed by a real one: %s, found by name: %s", YesNo(note.trusted),
+            YesNo(note.byName))
+    end
+    return text .. "."
+end
+
+--- What can be read about your effects of one kind on a unit right now.
+local function ReadableNow(unit, kind)
+    local sample = ns.SampleAuras(unit, kind)
+    local listed = ns.ReadAuras(unit, kind)
+    return format("countable: %s%s, listed outright: %s",
+        SAMPLE_WORDS[sample and (sample.ids and "ids" or "count") or "none"],
+        sample and format(" (%d)", sample.n) or "", YesNo(listed ~= nil))
+end
 
 function commands.debug()
     local now = ns.Now()
@@ -375,40 +488,31 @@ function commands.debug()
 
     local unit = ns.PrimaryEnemy()
     if unit then
-        local sample = ns.SamplePlayerDebuffs(unit)
-        local listed = ns.ReadPlayerDebuffs(unit)
-        print(format("  Enemy target: identity readable: %s, your debuffs countable: %s%s, listed outright: %s.",
-            YesNo(ns.IdentityReadable(unit)),
-            SAMPLE_WORDS[sample and (sample.ids and "ids" or "count") or "none"],
-            sample and format(" (%d)", sample.n) or "",
-            YesNo(listed ~= nil)))
+        print(format("  Enemy target right now: your debuffs %s, identity readable: %s.",
+            ReadableNow(unit, "debuff"), YesNo(ns.IdentityReadable(unit))))
     else
         print("  No enemy targeted.")
     end
+    print(format("  You right now: your buffs %s.", ReadableNow("player", "buff")))
 
-    for i = 1, 2 do
-        local which = i == 1 and "open" or "hidden"
-        local note = ns.probe[which]
-        local label = which == "open" and "  Out of combat" or "  With aura details hidden"
-        if note.time then
-            print(format("%s (%s): debuffs countable: %s, listed outright: %s, identity readable: %s%s.",
-                label, Ago(now, note.time), SAMPLE_WORDS[note.sample] or "no", YesNo(note.direct),
-                YesNo(note.identity),
-                which == "hidden" and format(", count backed by a real debuff: %s, found by name: %s",
-                    YesNo(note.trusted), YesNo(note.byName)) or ""))
-        else
-            print(label .. ": no enemy looked at yet.")
-        end
-    end
+    local probe = ns.probe
+    print(ProbeLine("  Enemy debuffs, out of combat", probe.open, now, false, true))
+    print(ProbeLine("  Enemy debuffs, details hidden", probe.hidden, now, true, true))
+    print(ProbeLine("  Your buffs, out of combat", probe.buffs.open, now, false, false))
+    print(ProbeLine("  Your buffs, details hidden", probe.buffs.hidden, now, true, false))
 
     local effects = Tracker:Describe(now)
+    local me = ns.KeyOf("player", "buff")
     print(format("  Effects being tracked: %d.", #effects))
     for i = 1, #effects do
         if i > 8 then
             print(format("    and %d more", #effects - 8))
             break
         end
-        print(format("    %s, %ds left (%s)", effects[i].name, floor(effects[i].left + 0.5), effects[i].how))
+        local key, left = effects[i].key, effects[i].left
+        local where = key == me and " on you" or (key:sub(-6) == "+buffs" and " on a friend" or "")
+        print(format("    %s%s, %s (%s)", effects[i].name, where, left and (Span(left) .. " left") or "no end time",
+            effects[i].how))
     end
 
     local options = ns.Options

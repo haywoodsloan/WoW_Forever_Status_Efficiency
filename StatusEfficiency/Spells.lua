@@ -1,15 +1,22 @@
 -- Status Efficiency: which spells leave a status effect, on whom, and for how long.
 --
--- WoW Forever has its own class design, so there is no table of debuff spells in
--- here. A spell is treated as applying a status effect when one of these holds,
+-- A status effect is one of two kinds: a "debuff" the spell puts on enemies, or
+-- a "buff" it puts on you (or on the friend you have targeted).
+--
+-- WoW Forever has its own class design, so there is no table of spells in here.
+-- A spell is treated as applying a status effect when one of these holds,
 -- strongest first:
 --
---   1. You said so with /se track (or said the opposite with /se ignore).
---   2. The addon has seen a debuff of yours carrying the spell's own name.
---   3. It can be cast on enemies and its tooltip mentions a duration, or it is one
---      of a few well known area debuffs, and casting it has not kept failing to
---      leave a debuff behind.
---   4. Casting it has repeatedly been followed by a new debuff of yours.
+--   1. You said so with /se track, /se buff or /se debuff (or said the opposite
+--      with /se ignore).
+--   2. The addon has seen an effect of yours carrying the spell's own name: a
+--      debuff on an enemy, or a buff on you. That also settles which of the two
+--      the spell leaves, whatever it can be cast on.
+--   3. Its tooltip mentions a duration and the client says where it can land: on
+--      enemies (a debuff), on friends or only on yourself (a buff). A few well
+--      known area debuffs count too. Casting it must not have kept failing to
+--      leave anything behind.
+--   4. Casting it has repeatedly been followed by a new effect of yours.
 
 local _, ns = ...
 
@@ -27,11 +34,12 @@ local LOAD_TRIES = 8 -- spell text can arrive late, so ask a few times
 local LOAD_RETRY = 1.5
 
 -- How cast results change what is tracked.
-local DEMOTE_CASTS, DEMOTE_RATIO = 4, 0.25 -- a likely debuff spell that keeps leaving nothing
+local DEMOTE_CASTS, DEMOTE_RATIO = 4, 0.25 -- a likely status spell that keeps leaving nothing
 local PROMOTE_CASTS, PROMOTE_RATIO = 6, 0.8 -- an unlikely one that keeps leaving something
 local EVIDENCE_CAP = 40 -- halve the counts past this so old results fade
 
 Spells.DEFAULT_DURATION = DEFAULT_DURATION
+Spells.MAX_DURATION = MAX_DURATION
 
 --------------------------------------------------------------------------------
 -- Well known area debuffs
@@ -161,6 +169,9 @@ local function Load(info, now)
         if info.helpful == nil then
             info.helpful = ns.SpellIsHelpful(id, info.name)
         end
+        if info.selfOnly == nil then
+            info.selfOnly = ns.SpellIsSelfOnly(id)
+        end
         info.passive = ns.SpellIsPassive(id)
         local text = ns.SpellDescription(id)
         if text and text ~= "" then
@@ -179,7 +190,8 @@ local function Load(info, now)
     end
 end
 
---- Static facts about a spell: { id, name, harmful, helpful, passive, tooltipDuration }.
+--- Static facts about a spell: { id, name, harmful, helpful, selfOnly, passive,
+--- tooltipDuration }.
 --- Returns nil while the client does not know the spell's name, with a second
 --- value of true if it is still worth asking again.
 function Spells:Get(spellID, now)
@@ -216,41 +228,78 @@ end
 -- Tracking decisions
 --------------------------------------------------------------------------------
 
-local function HelpfulOnly(info)
-    return info.helpful == true and info.harmful ~= true
+-- What was learned by seeing an effect with the spell's own name, per kind.
+local SEEN_FIELD = { debuff = "exact", buff = "buff" }
+
+-- Where cast results are counted, per kind. "No new debuff on the enemy" says
+-- nothing about a buff on you, so the two are never mixed.
+local CASTS_FIELD = { debuff = "casts", buff = "buffCasts" }
+local HITS_FIELD = { debuff = "hits", buff = "buffHits" }
+
+--- Where the spell's effect lands: "debuff" (on enemies) or "buff" (on you, or
+--- on the friend you have targeted).
+local function KindOf(info, user, learned, seed)
+    if user and (user.kind == "buff" or user.kind == "debuff") then
+        return user.kind
+    end
+    if seed then
+        return "debuff"
+    end
+    -- What has been seen says more than what the client says a spell can be
+    -- cast on: an attack can leave its effect on you rather than on its target.
+    if learned and learned.exact then
+        return "debuff"
+    end
+    if learned and learned.buff then
+        return "buff"
+    end
+    if info.harmful == true then
+        return "debuff"
+    end
+    if info.helpful == true or info.selfOnly == true then
+        return "buff"
+    end
+    return "debuff"
 end
 
 --- Decides how a spell is treated.
---- Returns tracked, area, duration, source:
+--- Returns tracked, area, duration, source, kind:
 ---   tracked   whether its status effect is followed and gets an icon
----   area      whether it is judged against every enemy in the fight (true) or
----             only your target (false)
+---   area      whether a debuff is judged against every enemy in the fight
+---             (true) or only your target (false); always false for a buff
 ---   duration  how long the effect is assumed to last when it cannot be watched
 ---   source    why: "you", "ignored", "seen", "built-in", "tooltip", "learned",
----             "demoted", or nil when it simply does not look like a debuff
+---             "demoted", or nil when it simply does not look like a status effect
+---   kind      "debuff" or "buff"
 function Spells:Tracking(info)
     local name = info.name
     local user = ns.db.spells[name]
     local learned = ns.db.learned[name]
     local seed = IsSeed(name)
+    local kind = KindOf(info, user, learned, seed)
 
     local tracked, source = false, nil
     if user and user.track ~= nil then
         tracked = user.track
         source = tracked and "you" or "ignored"
-    elseif info.passive or HelpfulOnly(info) then
+    elseif info.passive then
         tracked = false
-    elseif learned and learned.exact then
+    elseif learned and learned[SEEN_FIELD[kind]] then
         tracked, source = true, "seen"
     else
-        local casts = learned and learned.casts or 0
-        local hits = learned and learned.hits or 0
-        local likely = seed or (info.harmful == true and info.tooltipDuration ~= nil)
+        local casts = learned and learned[CASTS_FIELD[kind]] or 0
+        local hits = learned and learned[HITS_FIELD[kind]] or 0
+        local likely
+        if kind == "buff" then
+            likely = (info.helpful == true or info.selfOnly == true) and info.tooltipDuration ~= nil
+        else
+            likely = seed or (info.harmful == true and info.tooltipDuration ~= nil)
+        end
         if likely then
             if casts >= DEMOTE_CASTS and hits / casts <= DEMOTE_RATIO then
                 source = "demoted"
             else
-                tracked, source = true, seed and "built-in" or "tooltip"
+                tracked, source = true, (seed and kind == "debuff") and "built-in" or "tooltip"
             end
         elseif casts >= PROMOTE_CASTS and hits / casts >= PROMOTE_RATIO then
             tracked, source = true, "learned"
@@ -258,7 +307,9 @@ function Spells:Tracking(info)
     end
 
     local area
-    if user and user.aoe ~= nil then
+    if kind == "buff" then
+        area = false
+    elseif user and user.aoe ~= nil then
         area = user.aoe
     elseif seed then
         area = true
@@ -272,7 +323,7 @@ function Spells:Tracking(info)
         or info.tooltipDuration
         or DEFAULT_DURATION
 
-    return tracked, area, duration, source
+    return tracked, area, duration, source, kind
 end
 
 --- Whether the spell's casts are worth following at all. Spells that are not
@@ -282,14 +333,14 @@ function Spells:Watched(info)
     if user and user.track ~= nil then
         return user.track
     end
-    return not info.passive and not HelpfulOnly(info)
+    return not info.passive
 end
 
---- True when a debuff carrying this exact name has been seen on an enemy, so
---- a direct look at the enemy can confirm or rule out the spell's effect.
-function Spells:IsExact(name)
+--- True when an effect of this kind carrying this exact name has been seen, so
+--- a direct look at the unit can confirm or rule out the spell's effect.
+function Spells:IsExact(name, kind)
     local learned = ns.db.learned[name]
-    return learned ~= nil and learned.exact == true
+    return learned ~= nil and learned[SEEN_FIELD[kind]] == true
 end
 
 --------------------------------------------------------------------------------
@@ -305,27 +356,32 @@ local function Learned(name)
     return learned
 end
 
---- Records the outcome of one cast: did a new debuff of yours follow it?
-function Spells:Evidence(name, hit)
+--- Records the outcome of one cast: did a new effect of yours, of the kind
+--- the cast was judged as, follow it?
+function Spells:Evidence(name, hit, kind)
     local learned = Learned(name)
-    learned.casts = (learned.casts or 0) + 1
-    if hit then
-        learned.hits = (learned.hits or 0) + 1
+    local castsField, hitsField = CASTS_FIELD[kind] or "casts", HITS_FIELD[kind] or "hits"
+    local casts = (learned[castsField] or 0) + 1
+    local hits = (learned[hitsField] or 0) + (hit and 1 or 0)
+    if casts > EVIDENCE_CAP then
+        casts, hits = casts / 2, hits / 2
     end
-    if learned.casts > EVIDENCE_CAP then
-        learned.casts = learned.casts / 2
-        learned.hits = (learned.hits or 0) / 2
-    end
-    ns.Log("%s: %s (%d of %d casts left a debuff)", name, hit and "new debuff seen" or "no new debuff",
-        floor((learned.hits or 0) + 0.5), floor(learned.casts + 0.5))
+    learned[castsField], learned[hitsField] = casts, hits
+    ns.Log("%s: %s (%d of %d casts left an effect)", name, hit and "new effect seen" or "no new effect",
+        floor(hits + 0.5), floor(casts + 0.5))
     ns.MarkDirty()
 end
 
---- Records that a debuff with the spell's own name was read off an enemy.
-function Spells:LearnExact(name, duration)
+--- Records that an effect with the spell's own name was read outright: a debuff
+--- off an enemy, or a buff off you or a friend.
+function Spells:LearnExact(name, duration, kind)
     local learned = Learned(name)
-    local changed = not learned.exact
-    learned.exact = true
+    local field = SEEN_FIELD[kind]
+    local changed = not learned[field]
+    learned[field] = true
+    if kind == "buff" and duration == 0 then
+        duration = MAX_DURATION -- a buff with no timer lasts until something removes it
+    end
     if type(duration) == "number" and duration >= MIN_DURATION and duration <= MAX_DURATION then
         if learned.duration ~= duration then
             learned.duration = duration
@@ -333,17 +389,18 @@ function Spells:LearnExact(name, duration)
         end
     end
     if changed then
-        ns.Log("%s: read directly off an enemy, lasts %s", name,
+        ns.Log("%s: its %s was read directly, lasts %s", name, kind,
             learned.duration and (learned.duration .. "s") or "an unknown time")
         ns.MarkDirty()
     end
 end
 
---- The cast record for a spell, for display: casts, hits (both may be fractional).
-function Spells:Record(name)
+--- The cast record for a spell judged as one kind, for display: casts, hits
+--- (both may be fractional).
+function Spells:Record(name, kind)
     local learned = ns.db.learned[name]
     if not learned then
         return 0, 0
     end
-    return learned.casts or 0, learned.hits or 0
+    return learned[CASTS_FIELD[kind] or "casts"] or 0, learned[HITS_FIELD[kind] or "hits"] or 0
 end

@@ -1,18 +1,22 @@
--- Status Efficiency: which of your status effects are on which enemy.
+-- Status Efficiency: which of your status effects are on which unit.
 --
--- In combat the client will not tell an addon what debuffs an enemy has, and
--- there is no combat log. What an addon can still see is its own player's casts.
--- So this file keeps its own books:
+-- In combat the client will not tell an addon what debuffs an enemy has or what
+-- buffs you have, and there is no combat log. What an addon can still see is
+-- its own player's casts. So this file keeps its own books:
 --
---   * When you cast a tracked spell, its effect is assumed to land on the enemy
+--   * When you cast a tracked spell, its effect is assumed to land on the unit
 --     it was aimed at and to last as long as the spell says.
---   * If the client still lets us count your debuffs on that enemy (or see their
+--   * If the client still lets us count your effects on that unit (or see their
 --     instance ids), a cast that adds nothing is treated as a miss, an effect
 --     that drops off early is removed, and one that outlives its timer is kept.
---   * Whenever debuffs can be read outright, what is read replaces the guess.
+--   * Whenever effects can be read outright, what is read replaces the guess.
 --
--- A "sample" is what Compat.SamplePlayerDebuffs returns: { n = count, ids = set
--- of aura instance ids or nil }. Units are named by the keys Compat.UnitKey makes.
+-- The books do not care whether a unit is an enemy carrying your debuffs or
+-- you carrying your buffs: Core.lua decides which unit a spell is judged on.
+--
+-- A "sample" is what Compat.SampleAuras returns: { n = count, ids = set of aura
+-- instance ids or nil }. Units are named by the keys Core.lua makes, which keep
+-- a unit's buffs and its debuffs in separate books.
 
 local _, ns = ...
 
@@ -22,15 +26,16 @@ ns.Tracker = Tracker
 local pairs, type, next = pairs, type, next
 local sort, remove = table.sort, table.remove
 
-local GRACE = 2.0 -- seconds after a cast in which its debuff is expected to appear
+local GRACE = 2.0 -- seconds after a cast in which its effect is expected to appear
 local SENT_TTL = 15 -- forget a cast that was sent but never finished
-local HOLD = 0.5 -- a debuff we can still see stays alive at least this long between looks
-local FOREVER = 3600 -- stand-in timer for a debuff that has no duration
+local HOLD = 0.5 -- an effect we can still see stays alive at least this long between looks
+local FOREVER = 3600 -- stand-in timer for an effect that has no duration
 
 Tracker.GRACE = GRACE
 
 -- records[unit key][spell name] = {
 --     applied, duration, expires   the timer
+--     endless   read off the unit with no end time: `expires` is a stand-in
 --     id        aura instance id, once one has been matched to this effect
 --     pending   the cast still waiting to be judged, if any
 --     fresh     the cast that created the record, until something confirms it
@@ -80,7 +85,7 @@ local function Drop(key, name)
     end
 end
 
---- How many live records an enemy has, not counting one spell.
+--- How many live records a unit has, not counting one spell.
 local function LiveCount(key, except, now)
     local set = records[key]
     local count = 0
@@ -98,8 +103,8 @@ end
 -- Casts on their way
 --------------------------------------------------------------------------------
 
---- Remembers what the enemies looked like when a cast was sent.
---- snapshot = { name, time, primary = unit key or nil, late = true or nil,
+--- Remembers what the units a cast could land on looked like when it was sent.
+--- snapshot = { name, kind, time, primary = unit key or nil, late = true or nil,
 ---              units = { [unit key] = { pre = sample or nil, engaged = bool } } }
 function Tracker:Sent(castID, snapshot)
     for id, old in pairs(sent) do
@@ -157,6 +162,7 @@ function Tracker:Succeeded(snapshot, spell, now)
     local name = spell.name
     local cast = {
         name = name,
+        kind = snapshot.kind or "debuff",
         tracked = spell.tracked,
         area = spell.area,
         duration = spell.duration,
@@ -194,10 +200,11 @@ function Tracker:Succeeded(snapshot, spell, now)
         if spell.tracked then
             if rec then
                 if unit.engaged then
-                    -- Recast on an enemy that already has it: the timer starts over.
+                    -- Recast on a unit that already has it: the timer starts over.
                     rec.applied = now
                     rec.duration = spell.duration
                     rec.expires = now + spell.duration
+                    rec.endless = nil
                     rec.pending = cast
                 end
             elseif not spell.area or (unit.pre == nil and unit.engaged) then
@@ -215,15 +222,21 @@ function Tracker:Succeeded(snapshot, spell, now)
     ns.Log("%s: cast, waiting to see what it leaves behind", name)
 end
 
-function Tracker:HasPending()
-    return #pending > 0
+--- True while a cast of this kind ("debuff" or "buff") is waiting to be judged.
+function Tracker:HasPending(kind)
+    for i = 1, #pending do
+        if pending[i].kind == kind then
+            return true
+        end
+    end
+    return false
 end
 
 --------------------------------------------------------------------------------
--- Judging a cast by what changed on the enemy
+-- Judging a cast by what changed on the unit
 --------------------------------------------------------------------------------
 
---- Did one of your debuffs appear on the enemy since `pre`? Returns the new
+--- Did one of your effects appear on the unit since `pre`? Returns the new
 --- aura instance id when ids are readable, true when only the count went up,
 --- and false when nothing new is there.
 local function Gained(pre, sample, key)
@@ -264,6 +277,7 @@ local function Confirm(cast, key, unit, gained, sample, now)
     rec.applied = cast.time
     rec.duration = cast.duration
     rec.expires = cast.time + cast.duration
+    rec.endless = nil
     rec.weak = nil
     rec.fresh = nil
     if type(gained) == "number" then
@@ -279,7 +293,7 @@ local function Confirm(cast, key, unit, gained, sample, now)
 
     if gained == true then
         -- Only a count: make sure a second cast in flight does not take credit
-        -- for the same new debuff.
+        -- for the same new effect.
         for i = 1, #pending do
             local other = pending[i]
             local otherUnit = other ~= cast and other.units[key]
@@ -288,7 +302,7 @@ local function Confirm(cast, key, unit, gained, sample, now)
             end
         end
     end
-    ns.Log("%s: confirmed, a new debuff of yours appeared", name)
+    ns.Log("%s: confirmed, a new effect of yours appeared", name)
 end
 
 local function Finish(cast, now, engaged)
@@ -309,9 +323,11 @@ local function Finish(cast, now, engaged)
         if unit.settled then
             -- Already confirmed or read directly.
         elseif unit.observed then
-            -- Its debuffs were readable before and after, and nothing new appeared.
-            if unit.had or unit.observed.n > LiveCount(key, name, now) then
-                -- A refresh, or debuffs we cannot account for: cannot call it a miss.
+            -- Its effects were countable before and after, and nothing new appeared.
+            if unit.had or (not unit.direct and unit.observed.n > LiveCount(key, name, now)) then
+                -- A refresh, or effects we cannot account for: cannot call it a miss.
+                -- (When they were also read by name it can be: an effect of this
+                -- spell's would have been recognised among them.)
                 unclear = true
                 if mine then
                     rec.weak = true
@@ -339,9 +355,9 @@ local function Finish(cast, now, engaged)
     end
 
     if cast.hit then
-        ns.Spells:Evidence(name, true)
+        ns.Spells:Evidence(name, true, cast.kind)
     elseif clean and not unclear then
-        ns.Spells:Evidence(name, false)
+        ns.Spells:Evidence(name, false, cast.kind)
     end
 end
 
@@ -381,7 +397,7 @@ local function Reconcile(key, sample, now)
                 end
             elseif not rec.pending then
                 set[name] = nil
-                ns.Log("%s: the debuff dropped off", name)
+                ns.Log("%s: the effect dropped off", name)
             end
         elseif not rec.pending and not rec.sticky and now < rec.expires then
             loose = loose or {}
@@ -398,7 +414,7 @@ local function Reconcile(key, sample, now)
             sortSet = nil
             for i = 1, excess do
                 set[loose[i]] = nil
-                ns.Log("%s: fewer debuffs on the enemy than expected, dropping it", loose[i])
+                ns.Log("%s: fewer effects on the unit than expected, dropping it", loose[i])
             end
         end
     end
@@ -409,10 +425,11 @@ local function Reconcile(key, sample, now)
 end
 
 --- One pass.
----   seen     unit key -> sample, or false when the enemy is there but its
----            debuffs are not readable; only enemies looked at this pass
+---   seen     unit key -> sample, or false when the unit is there but its
+---            effects are not countable; only units looked at this pass
 ---   engaged  unit key -> true for enemies currently in the fight
-function Tracker:Update(now, seen, engaged)
+---   direct   unit key -> true for units whose effects were also read by name
+function Tracker:Update(now, seen, engaged, direct)
     local i = 1
     while i <= #pending do
         local cast = pending[i]
@@ -426,6 +443,7 @@ function Tracker:Update(now, seen, engaged)
                         Confirm(cast, key, unit, gained, sample, now)
                     elseif finishing then
                         unit.observed = sample
+                        unit.direct = direct ~= nil and direct[key] == true
                     end
                 end
             end
@@ -460,7 +478,7 @@ end
 -- Direct readings
 --------------------------------------------------------------------------------
 
---- A debuff with this spell's name was read off the enemy.
+--- An effect with this spell's name was read off the unit.
 --- aura = { duration, expires, id }, any of which may be nil.
 function Tracker:Observe(key, name, aura, now)
     local set = records[key]
@@ -472,6 +490,7 @@ function Tracker:Observe(key, name, aura, now)
     local expires = aura.expires and aura.expires > 0 and aura.expires or nil
     rec.duration = duration or rec.duration
     rec.expires = expires or (now + FOREVER)
+    rec.endless = expires == nil or nil
     rec.applied = duration and expires and (expires - duration) or rec.applied
     rec.id = aura.id or rec.id
     rec.weak = nil
@@ -486,7 +505,7 @@ function Tracker:Observe(key, name, aura, now)
     end
 end
 
---- The enemy was read and has no debuff with this spell's name.
+--- The unit was read and has no effect with this spell's name.
 function Tracker:Absent(key, name)
     local set = records[key]
     local rec = set and set[name]
@@ -495,20 +514,30 @@ function Tracker:Absent(key, name)
     end
 end
 
---- Everything of yours on the enemy was read. `found` maps debuff name to
---- { duration, expires, id }; `bars` is the set of spell names worth keeping.
-function Tracker:Sync(key, found, bars, now)
+--- Everything of yours of one kind ("debuff" or "buff") on the unit was read.
+--- `found` maps effect name to { duration, expires, id }; `bars` is the set of
+--- spell names worth keeping.
+function Tracker:Sync(key, found, bars, now, kind)
     for name, aura in pairs(found) do
         if bars[name] then
             self:Observe(key, name, aura, now)
-            ns.Spells:LearnExact(name, aura.duration)
+            ns.Spells:LearnExact(name, aura.duration, kind)
         end
     end
     local set = records[key]
     if set then
         for name, rec in pairs(set) do
-            if not found[name] and not rec.pending and ns.Spells:IsExact(name) then
-                set[name] = nil
+            if not found[name] and ns.Spells:IsExact(name, kind) then
+                -- A cast still in flight gets its moment to land. But if the
+                -- effect was already there when it was cast and is gone now,
+                -- the cast is what took it away: a spell that switches itself off.
+                local unit = rec.pending and rec.pending.units[key]
+                if not rec.pending or (unit and unit.had) then
+                    if unit then
+                        unit.settled = true
+                    end
+                    set[name] = nil
+                end
             end
         end
         if next(set) == nil then
@@ -521,7 +550,7 @@ end
 -- Questions
 --------------------------------------------------------------------------------
 
---- Does this enemy have this spell's effect right now, as far as we know?
+--- Does this unit have this spell's effect right now, as far as we know?
 function Tracker:Has(key, name, now)
     return Live(key, name, now) ~= nil
 end
@@ -533,6 +562,14 @@ function Tracker:Forget(name)
         if next(set) == nil then
             records[key] = nil
         end
+    end
+end
+
+--- Drops everything known about one unit (you died, and your buffs with you).
+function Tracker:ForgetUnit(key)
+    records[key] = nil
+    for i = 1, #pending do
+        pending[i].units[key] = nil
     end
 end
 
@@ -549,7 +586,8 @@ function Tracker:Reset()
     lastSent = nil
 end
 
---- Live records, for /se debug: { { key, name, left, how } ... }.
+--- Live records, for /se debug: { { key, name, left, how } ... }. `left` is nil
+--- for an effect with no end time.
 function Tracker:Describe(now)
     local list = {}
     for key, set in pairs(records) do
@@ -559,13 +597,16 @@ function Tracker:Describe(now)
                 if rec.pending then
                     how = "just cast"
                 elseif rec.id then
-                    how = "matched to a debuff"
+                    how = "matched to the real effect"
                 elseif rec.weak then
                     how = "assumed"
                 else
                     how = "confirmed"
                 end
-                list[#list + 1] = { key = key, name = name, left = rec.expires - now, how = how }
+                list[#list + 1] = {
+                    key = key, name = name, how = how,
+                    left = not rec.endless and (rec.expires - now) or nil,
+                }
             end
         end
     end
