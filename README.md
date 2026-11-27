@@ -16,7 +16,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.4.0 is an early draft. It loads and draws its icons in the real
+Version 0.4.1 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -44,7 +44,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: v0.4.0".
+first line of the reply gives the version, "Status Efficiency: v0.4.1".
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -158,13 +158,26 @@ The **Appearance** tab:
 - **Reset appearance** asks first, then puts the position, size and icons back
   to the defaults. It leaves your spell choices alone.
 
-The **Spells** tab has one row for every spell on your action bars:
+The **Spells** tab has one row for every spell on your action bars. Under each
+spell's name is what the addon's choice rests on: hover the name for the full
+sentence.
 
 - **Show an icon**: Auto (the addon decides), Always, or Never.
 - **Judged on**: your target, all enemies in the fight, or you (a buff).
 - **Lasts**: how long the effect lasts. Type a number of seconds to change it,
   or empty the box to let the addon work it out again.
-- **Why**: what the addon's choice rests on. Hover it for the full sentence.
+- **Stacks**: how many times over the effect can be on one unit, with a dash
+  for an effect that goes on once. Until it is on that many times the icon is
+  the yellow half circle. Type a number to change it, `1` for an effect that
+  does not stack, or empty the box to let the addon work it out again. The
+  same as `/se stacks`.
+- **Shared**: ticked when a unit carries the effect only once, whoever casts
+  it, so that another player's copy counts like your own. Untick it for an
+  effect that every caster has one of, like a bleed. The same as `/se anyone`
+  and `/se mine`. A buff that only ever goes on its caster has no tick.
+
+Hover a box or the tick to see where what it shows comes from. Pressing Enter
+in a box you did not change leaves the addon's figure the addon's own.
 
 The panel uses the game's own buttons, tick boxes and slider where they work.
 It looks after the rest by itself:

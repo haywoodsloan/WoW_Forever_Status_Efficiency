@@ -1628,6 +1628,12 @@ function Mock.new(options)
     function EditBox:SetJustifyH(justify)
         self.justifyH = justify
     end
+    function EditBox:SetTextColor(r, g, b, a)
+        if type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then
+            error("SetTextColor: bad colour", 2)
+        end
+        self.textColor = { r, g, b, a }
+    end
     function EditBox:HighlightText(first, last)
         self.highlight = { first, last }
     end

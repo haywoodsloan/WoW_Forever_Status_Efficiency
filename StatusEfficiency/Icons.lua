@@ -14,7 +14,8 @@ local RAID = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_"
 
 --- The three things an icon can say, in the order they are shown. Each is named
 --- for what it tells you to do, so it reads the same for a debuff on enemies and
---- for a buff on you. A buff never shows the middle one.
+--- for a buff on you. The middle one is for an effect that is there, but not on
+--- every enemy the spell would hit, or not yet as many times over as it stacks.
 Icons.STATES = {
     {
         key = "none",
@@ -25,7 +26,7 @@ Icons.STATES = {
     {
         key = "some",
         title = "Partly worth casting",
-        detail = "Some of the enemies it would hit already have the effect.",
+        detail = "Some enemies have the effect, or it can still stack higher.",
         default = "partial",
     },
     {

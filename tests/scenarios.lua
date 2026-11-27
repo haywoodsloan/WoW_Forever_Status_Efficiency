@@ -7396,7 +7396,17 @@ test("settings: a client whose labels cannot be drawn smaller still gets the who
         eq(label.textScale, nil)
     end
     w:click(view.tabs.spells)
-    eq(view.spells.rows[1].why.maxLines, 2, "what wraps is still kept to the lines it has room for")
+    eq(view.spells.intro.maxLines, 2, "what wraps is still kept to the lines it has room for")
+    local why = view.spells.rows[1].why
+    eq(why:GetText(), "tooltip mentions a duration")
+    check(why:GetUnboundedStringWidth() > 148, "the reason under a spell's name is too long for its line in this font")
+    check(why.fitCut and why:GetStringWidth() <= 148 and why.wordWrap == false,
+        "and what has one line is cut short where its room ends, so that it never runs into what comes after it")
+    for _, label in ipairs(Labels(w)) do
+        if label.fitRoom and not label.fitLines then
+            check(label:GetStringWidth() <= label.fitRoom + 0.5, "\"" .. tostring(label.text) .. "\" keeps to its room")
+        end
+    end
     w:click(view.tabs.appearance)
     w:click(view.previews.none.zones.RIGHT)
     eq(ns.db.corner, "RIGHT")
@@ -8169,6 +8179,18 @@ test("the settings window opens where it was last dragged to", function()
     Clean(w)
 end)
 
+test("settings: each of the three results says what it means, for an effect that stacks too", function()
+    local w = Simple()
+    local view = w:openSettings().view
+    eq(view.names.none:GetText(), "Worth casting")
+    eq(view.details.none:GetText(), "Nothing it would land on has the effect yet.")
+    eq(view.names.some:GetText(), "Partly worth casting")
+    eq(view.details.some:GetText(), "Some enemies have the effect, or it can still stack higher.")
+    eq(view.names.all:GetText(), "No need to cast")
+    eq(view.details.all:GetText(), "Everything it would land on already has the effect.")
+    Clean(w)
+end)
+
 --------------------------------------------------------------------------------
 -- The settings panel: the Spells tab
 --------------------------------------------------------------------------------
@@ -8277,6 +8299,10 @@ panel("Spells tab: who a spell is judged on, and how long its effect lasts", fun
     eq(rend.lasts:GetText(), "21 s")
     rend.lasts:SetFocus()
     eq(rend.lasts:GetText(), "21", "typing starts from the bare number")
+    w:type(rend.lasts, "21")
+    eq(ns.db.spells.Rend.duration, nil, "Enter on what was there changes nothing: the addon's figure stays the addon's")
+    eq(rend.lasts:HasFocus(), false, "and closes the box")
+    eq(rend.lasts:GetText(), "21 s")
     w:type(rend.lasts, "30")
     eq(ns.db.spells.Rend.duration, 30)
     eq(rend.lasts:GetText(), "30 s")
@@ -8284,6 +8310,8 @@ panel("Spells tab: who a spell is judged on, and how long its effect lasts", fun
     w:type(rend.lasts, "2 min")
     eq(ns.db.spells.Rend.duration, 120, "minutes are understood")
     eq(rend.lasts:GetText(), "2 min")
+    w:type(rend.lasts, "120")
+    eq(ns.db.spells.Rend.duration, 120, "Enter on a figure of your own leaves that yours")
 
     w:type(rend.lasts, "soon")
     check(rend.why:GetText():find("Type seconds", 1, true), "a bad entry is explained in the row")
@@ -8301,6 +8329,356 @@ panel("Spells tab: who a spell is judged on, and how long its effect lasts", fun
     eq(title, "How long the effect lasts")
     check(lines[1]:find("tooltip", 1, true), "the box says where the duration comes from: " .. tostring(lines[1]))
     Clean(w)
+end)
+
+--- The row of the Spells tab that shows a spell.
+local function Row(view, name)
+    for _, row in ipairs(view.spells.rows) do
+        if row:IsShown() and row.name:GetText() == name then
+            return row
+        end
+    end
+    error("the Spells tab has no row for " .. name, 2)
+end
+
+--- What a control of a row says when the mouse is on it: its title and its sentence.
+local function Says(w, widget)
+    local title, lines = w:hover(widget)
+    w:unhover(widget)
+    return title, lines and lines[1] or ""
+end
+
+panel("Spells tab: how many times an effect stacks", function(options)
+    options.saved = Proven()
+    local w, ns = Bar(options, SUNDER, REND, FRENZY, HEROIC)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    local view = w:openSettings().view
+    w:click(view.tabs.spells)
+    local sunder, rend, frenzy = Row(view, "Sunder Armor"), Row(view, "Rend"), Row(view, "Battle Frenzy")
+    eq(view.spells.headings[5]:GetText(), "Stacks")
+
+    eq(sunder.stacks:GetText(), "5", "Sunder Armor: as its tooltip says")
+    eq(sunder.stacks.textColor[1], 1)
+    local title, says = Says(w, sunder.stacks)
+    eq(title, "How many times the effect stacks")
+    check(says:find("Taken from the spell's tooltip.", 1, true), "the box says where the number comes from: " .. says)
+    check(says:find("The icon says \"Partly worth casting\" until the effect has that many stacks.", 1, true),
+        "and what it does to the icon: " .. says)
+    eq(frenzy.stacks:GetText(), "3", "a buff that stacks")
+    eq(rend.stacks:GetText(), "-", "a dash for an effect that goes on once, as most do")
+    eq(rend.stacks.textColor[1], 0.5, "in grey")
+    title, says = Says(w, rend.stacks)
+    check(says:find("Nothing says that the effect stacks. If it does, type the most stacks it can have.", 1, true), says)
+    local heroic = Row(view, "Heroic Strike")
+    eq(heroic.stacks:IsShown(), false, "a spell with no icon has no stacks to set")
+    eq(heroic.shared.frame:IsShown(), false, "and nobody whose copy could count")
+
+    -- Typing a number is the same as /se stacks.
+    rend.stacks:SetFocus()
+    eq(rend.stacks:GetText(), "", "typing starts from an empty box for an effect that does not stack")
+    w:type(rend.stacks, "3")
+    eq(ns.db.spells.Rend.stacks, 3)
+    eq(rend.stacks:GetText(), "3")
+    eq(rend.stacks.textColor[1], 1, "no longer grey")
+    eq(rend.stacks:HasFocus(), false)
+    title, says = Says(w, rend.stacks)
+    check(says:find("^You set this%. The icon says"), says)
+    w:type(rend.stacks, "1")
+    eq(ns.db.spells.Rend.stacks, 1, "1 says that it does not stack, whatever the addon makes of it")
+    eq(rend.stacks:GetText(), "1", "which shows as your 1, not as the addon's dash")
+    title, says = Says(w, rend.stacks)
+    check(says:find("You set this: the effect does not stack.", 1, true), says)
+    rend.stacks:SetFocus()
+    eq(rend.stacks:GetText(), "1", "typing starts from your own number")
+    w:type(rend.stacks, "1")
+    eq(ns.db.spells.Rend.stacks, 1, "Enter on what was there changes nothing")
+    eq(rend.stacks:HasFocus(), false)
+    w:type(rend.stacks, "")
+    eq(ns.db.spells.Rend, nil, "emptying the box lets the addon work it out again, and leaves nothing behind")
+    eq(rend.stacks:GetText(), "-")
+    eq(rend.stacks.textColor[1], 0.5)
+
+    sunder.stacks:SetFocus()
+    eq(sunder.stacks:GetText(), "5", "typing starts from the bare number")
+    w:type(sunder.stacks, "5")
+    eq(ns.db.spells["Sunder Armor"], nil, "Enter on the addon's own figure does not make it yours")
+    eq(sunder.stacks:HasFocus(), false, "it only closes the box")
+
+    for _, bad in ipairs({ "many", "0", "101", "2.5", "-3", "1e1" }) do
+        w:type(sunder.stacks, bad)
+        eq(sunder.why:GetText(), "Type a number from 1 to 100.", "\"" .. bad .. "\" is explained in the row")
+        eq(ns.db.spells["Sunder Armor"], nil, "\"" .. bad .. "\" changes nothing")
+        eq(sunder.stacks:HasFocus(), true, "and the box stays open to put it right")
+    end
+    w:escape(sunder.stacks)
+    eq(sunder.why:GetText(), "tooltip mentions a duration", "Escape drops the complaint")
+    eq(sunder.stacks:GetText(), "5", "and the typing")
+    w:type(sunder.stacks, " 4 ")
+    eq(ns.db.spells["Sunder Armor"].stacks, 4, "spaces around the number do not matter")
+    for _, auto in ipairs({ "auto", "-" }) do
+        w:type(sunder.stacks, "4")
+        w:type(sunder.stacks, auto)
+        eq(ns.db.spells["Sunder Armor"], nil, "\"" .. auto .. "\" goes back to the addon's figure, like an empty box")
+    end
+
+    -- The number typed here is the one the icons go by, from the next moment on.
+    for _ = 1, 2 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    eq(w:icon("ActionButton1"), "partial", "two of five")
+    w:type(sunder.stacks, "2")
+    eq(ns.db.spells["Sunder Armor"].stacks, 2)
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "cross", "two of two: full by the number typed in the panel, with no cast in between")
+
+    w:slash("stacks sunder armor 4")
+    eq(sunder.stacks:GetText(), "4", "/se stacks shows here straight away")
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "partial", "two of four")
+    w:slash("stacks sunder armor auto")
+    eq(sunder.stacks:GetText(), "5")
+    eq(ns.db.spells["Sunder Armor"], nil)
+    Clean(w)
+end)
+
+test("settings: the Stacks box says where each number comes from", function()
+    -- The game's own figure, for a tooltip that does not say.
+    local w, ns = World()
+    w:addSpell(900, {
+        name = "Festering Bite", harmful = true, cumulative = 4,
+        description = "Bites the target, festering its wounds for 12 sec.",
+        effect = { duration = 12, stacks = 4 },
+    })
+    w:addSpell(901, {
+        name = "Creeping Rot", harmful = true,
+        description = "Rots the target for 12 sec.",
+        effect = { duration = 12, shared = true, stacks = 3 },
+    })
+    w:addButton("ActionButton1", 1, 900)
+    w:addButton("ActionButton2", 2, 901)
+    ns = w:load(Proven())
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    local view = w:openSettings().view
+    w:click(view.tabs.spells)
+    local bite, rot = Row(view, "Festering Bite"), Row(view, "Creeping Rot")
+    eq(bite.stacks:GetText(), "4")
+    local _, says = Says(w, bite.stacks)
+    check(says:find("The game's own figure for the spell.", 1, true), says)
+
+    -- And what was read off a unit, which the effect may yet outgrow.
+    eq(rot.stacks:GetText(), "-", "nothing says that it stacks")
+    for _ = 1, 2 do
+        w:applyAura(boar, "Creeping Rot", 12, true, nil, nil, { shared = true, stacks = 3 })
+    end
+    w:advance(1.5)
+    eq(ns.db.learned["Creeping Rot"].stacks, 2, "twice over on the boar")
+    eq(rot.stacks:GetText(), "2", "what the addon sees shows up in the open panel by itself")
+    _, says = Says(w, rot.stacks)
+    check(says:find("The most seen on a unit so far, so the effect may go higher.", 1, true), says)
+    Clean(w)
+end)
+
+panel("Spells tab: whether another player's copy of an effect counts", function(options)
+    local w, ns, boar = Party(options, SUNDER, REND, RAGING, BLOCK)
+    local view = w:openSettings().view
+    w:click(view.tabs.spells)
+    local sunder, rend = Row(view, "Sunder Armor"), Row(view, "Rend")
+    local raging, block = Row(view, "Raging Shout"), Row(view, "Shield Block")
+    eq(view.spells.headings[6]:GetText(), "Shared")
+
+    eq(sunder.shared.ticked, true, "an enemy carries Sunder Armor once, whoever put it there")
+    eq(sunder.shared.mark:IsShown(), true, "the tick is drawn")
+    eq(raging.shared.ticked, true, "and you one shout, whichever warrior shouted")
+    eq(rend.shared.ticked, false, "a bleed is its caster's own")
+    eq(rend.shared.mark:IsShown(), false)
+    eq(block.shared.frame:IsShown(), false, "nobody else can put Shield Block on you: nothing to choose")
+    eq(block.stacks:IsShown(), true, "though it could stack")
+    local title, says = Says(w, sunder.shared.frame)
+    eq(title, "Another player's copy counts")
+    check(says:find("A unit carries the effect only once, whoever casts it", 1, true), says)
+    check(says:find("This is what the addon made of the spell's tooltip.", 1, true), "it says who decided: " .. says)
+    title, says = Says(w, rend.shared.frame)
+    check(says:find("Only an effect you put there yourself counts.", 1, true), says)
+    check(says:find("This is what the addon made of the spell's tooltip.", 1, true), says)
+
+    -- Another warrior's Sunder Armor is on the boar.
+    w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "theirs counts: one of five")
+
+    w:drain()
+    w:click(sunder.shared.frame)
+    eq(ns.db.spells["Sunder Armor"].shared, false, "unticked: the same as /se mine")
+    eq(sunder.shared.ticked, false)
+    eq(sunder.shared.mark:IsShown(), false)
+    eq(w.sounds[#w.sounds], 857, "with the game's click for a box unticked")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "and their copy stops counting at once")
+    title, says = Says(w, sunder.shared.frame)
+    check(says:find("Only an effect you put there yourself counts.", 1, true) and says:find("You set this.", 1, true), says)
+
+    w:click(sunder.shared.frame)
+    eq(ns.db.spells["Sunder Armor"], nil, "ticked again is what the addon made of it: nothing of yours is left behind")
+    eq(sunder.shared.ticked, true)
+    eq(w.sounds[#w.sounds], 856)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "and their copy counts again at once")
+
+    w:click(rend.shared.frame)
+    eq(ns.db.spells.Rend.shared, true, "ticked: the same as /se anyone")
+    w:applyAura(boar, "Rend", 21, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "now their Rend counts like yours")
+    title, says = Says(w, rend.shared.frame)
+    check(says:find("another player's copy counts like your own", 1, true) and says:find("You set this.", 1, true), says)
+    w:click(rend.shared.frame)
+    eq(ns.db.spells.Rend, nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "and theirs is theirs again")
+    eq(w:drain(), "", "the panel says nothing of this in chat")
+
+    -- The commands show in the row at once, and a click undoes them like any other choice.
+    w:slash("mine sunder armor")
+    eq(sunder.shared.ticked, false, "/se mine shows here straight away")
+    w:slash("anyone sunder armor")
+    eq(sunder.shared.ticked, true, "and so does /se anyone")
+    eq(ns.db.spells["Sunder Armor"].shared, true, "which keeps the choice even where the addon agrees")
+    title, says = Says(w, sunder.shared.frame)
+    check(says:find("You set this.", 1, true), says)
+    w:click(sunder.shared.frame)
+    eq(ns.db.spells["Sunder Armor"].shared, false)
+    w:click(sunder.shared.frame)
+    eq(ns.db.spells["Sunder Armor"], nil)
+
+    -- A spell that loses its icon has nobody whose copy could count.
+    w:click(sunder.show.buttons.never)
+    eq(sunder.shared.frame:IsShown(), false)
+    eq(sunder.stacks:IsShown(), false)
+    w:click(sunder.show.buttons.auto)
+    eq(sunder.shared.frame:IsShown(), true)
+    eq(sunder.shared.ticked, true)
+    Clean(w)
+end)
+
+panel("Spells tab: unticking Shared in the middle of a fight drops another player's copy at once", function(options)
+    local w, ns, _, warrior = Party(options, DEMO, REND)
+    local view = w:openSettings().view
+    w:click(view.tabs.spells)
+    local demo = Row(view, "Demoralizing Shout")
+    eq(demo.shared.ticked, true)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "their shout")
+    eq(w:icon("ActionButton2"), "cross", "your Rend")
+
+    w:click(demo.shared.frame)
+    eq(ns.db.spells["Demoralizing Shout"].shared, false)
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "check", "theirs no longer counts, and nothing can be read to say so")
+    eq(w:icon("ActionButton2"), "cross", "what is yours stays")
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "and their next one is not followed")
+
+    w:click(demo.shared.frame)
+    eq(ns.db.spells["Demoralizing Shout"], nil, "ticked again")
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "and the one after that counts again")
+    Clean(w)
+end)
+
+test("settings: a spell whose tooltip could not be read says so on its Shared tick", function()
+    local w = World()
+    w:addSpell(902, { name = "Strange Brand", harmful = true, effect = { duration = 20, shared = true } })
+    w:addButton("ActionButton1", 1, 902)
+    local ns = w:load()
+    w:slash("track strange brand")
+    local view = w:openSettings().view
+    w:click(view.tabs.spells)
+    local brand = Row(view, "Strange Brand")
+    eq(brand.shared.ticked, false, "it counts as your own until you say otherwise")
+    local _, says = Says(w, brand.shared.frame)
+    check(says:find("The spell's tooltip could not be read, so its effect is taken to be yours alone.", 1, true), says)
+    w:click(brand.shared.frame)
+    eq(ns.db.spells["Strange Brand"].shared, true)
+    _, says = Says(w, brand.shared.frame)
+    check(says:find("You set this.", 1, true), says)
+    Clean(w)
+end)
+
+test("settings: the columns of the Spells tab keep clear of each other, and so do their headings", function()
+    for _, wider in ipairs({ 1, 1.3, 2 }) do
+        local what = "letters " .. wider .. " times as wide"
+        local w = Bar({ fontWidth = wider }, SUNDER, REND, RAGING)
+        local view = w:openSettings().view
+        w:click(view.tabs.spells)
+        local row = Row(view, "Sunder Armor")
+        local function Left(region)
+            local _, _, _, x = region:GetPoint(1)
+            return x
+        end
+
+        -- Across a row: the name with the reason under it, then one control after another.
+        local parts = {
+            { "the spell's name", Left(row.name), row.name.fitRoom },
+            { "the reason under it", Left(row.why), row.why.fitRoom },
+            { "Show an icon", Left(row.show.frame), row.show.width },
+            { "Judged on", Left(row.on.frame), row.on.width },
+            { "Lasts", Left(row.lasts), row.lasts:GetWidth() },
+            { "Stacks", Left(row.stacks), row.stacks:GetWidth() },
+            { "Shared", Left(row.shared.frame), row.shared.frame:GetWidth() },
+        }
+        eq(parts[1][2], parts[2][2], "the reason starts under the name")
+        check(row.name:GetStringWidth() <= parts[1][3] + 0.5 and row.why:GetStringWidth() <= parts[2][3] + 0.5,
+            "the name and the reason keep to their room, with " .. what)
+        for i = 2, #parts - 1 do
+            local this, after = parts[i], parts[i + 1]
+            check(this[2] + this[3] + 4 <= after[2], string.format("%s ends at %d and %s starts at %d, with %s",
+                this[1], this[2] + this[3], after[1], after[2], what))
+        end
+        local last = parts[#parts]
+        check(last[2] + last[3] <= row:GetWidth(), "the last column is inside the row")
+        local _, _, _, starts = row.whyArea:GetPoint(1)
+        local _, _, _, ends = row.whyArea:GetPoint(2)
+        eq(starts, 0, "a row explains itself when the mouse is on the spell's picture, its name or the reason")
+        eq(ends, parts[1][2] + parts[1][3], "and no further: the buttons after them take their own clicks")
+
+        -- The headings: each starts where its column does, or is centred on a
+        -- column narrower than itself, and none reaches the next.
+        local spans = {}
+        for i, heading in ipairs(view.spells.headings) do
+            local point, _, _, x = heading:GetPoint(1)
+            local width = heading:GetStringWidth()
+            if point == "TOP" then
+                spans[i] = { x - width / 2, x + width / 2, x }
+            else
+                spans[i] = { x, x + width }
+            end
+        end
+        eq(#spans, 6)
+        for i = 1, 5 do
+            check(spans[i][2] + 4 <= spans[i + 1][1], string.format("heading %d ends at %.1f and the next starts at %.1f, with %s",
+                i, spans[i][2], spans[i + 1][1], what))
+        end
+        check(spans[6][2] <= 624.01, "the last heading ends inside the page, with " .. what)
+        eq(spans[2][1], 12 + parts[3][2], "\"Show an icon\" starts where its buttons do")
+        eq(spans[3][1], 12 + parts[4][2], "\"Judged on\" too")
+        eq(spans[4][1], 12 + parts[5][2], "and \"Lasts\" where its box does")
+        near(spans[5][3], 12 + parts[6][2] + parts[6][3] / 2, "\"Stacks\" is centred on its box")
+        near(spans[6][3], 12 + parts[7][2] + parts[7][3] / 2, "and \"Shared\" on its tick")
+        Clean(w)
+    end
 end)
 
 panel("Spells tab: a long list scrolls", function(options)
@@ -8373,7 +8751,7 @@ test("settings: the Spells tab keeps up with what the addon learns, without a cl
         w:advance(8)
     end
     eq(ns.db.learned["Ground Stomp"].hits, 6)
-    eq(row.why:GetText(), "left an effect after 6 of 6 casts", "what was learned shows up by itself")
+    eq(row.why:GetText(), "6 of 6 casts left an effect", "what was learned shows up by itself")
     eq(row.on.picked, "all", "judged on every enemy in the fight, as the area spell it turned out to be")
     eq(row.show.picked, "auto")
     eq(w.env.StatusEfficiencyOptions.view.spells.count:GetText(), "1 spell on your bars, 1 with an icon.")

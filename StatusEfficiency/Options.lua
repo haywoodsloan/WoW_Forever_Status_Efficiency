@@ -319,12 +319,16 @@ local function Fit(label, room, again)
         Try(label, "SetWordWrap", true)
     end
     local scale = 1
-    if room > 0 and Scale(label, 1) then
+    if room > 0 then
+        -- On a client whose labels cannot be drawn smaller, one that is too long is cut short at once.
+        local scalable = Scale(label, 1)
         local width = Measure(label, "GetUnboundedStringWidth") or Measure(label, "GetStringWidth")
         if width then
             if width > room then
-                scale = max(SMALLEST, room / width)
-                Scale(label, scale)
+                if scalable then
+                    scale = max(SMALLEST, room / width)
+                    Scale(label, scale)
+                end
                 if width * scale > room + 0.5 then
                     label.fitCut = true
                     Try(label, "SetWidth", room)
@@ -594,6 +598,32 @@ local function MakeGameTick(holder, parent)
     end
 end
 
+--- A tick box of the addon's own drawing, without words: the box, and the mark
+--- that shows while it is ticked.
+local function OwnTick(parent, size)
+    local box = CreateFrame("Button", nil, parent)
+    box:SetSize(size, size)
+
+    local edge = box:CreateTexture(nil, "BACKGROUND")
+    edge:SetAllPoints(box)
+    edge:SetColorTexture(0.45, 0.45, 0.5, 1)
+
+    local back = box:CreateTexture(nil, "BORDER")
+    back:SetPoint("TOPLEFT", box, "TOPLEFT", 1, -1)
+    back:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -1, 1)
+    back:SetColorTexture(0.03, 0.03, 0.05, 1)
+
+    local glow = box:CreateTexture(nil, "HIGHLIGHT")
+    glow:SetAllPoints(box)
+    glow:SetColorTexture(1, 1, 1, 0.15)
+
+    local mark = box:CreateTexture(nil, "ARTWORK")
+    mark:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)
+    mark:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -2, 2)
+    mark:SetTexture(Icons.Choice("check").texture)
+    return box, mark
+end
+
 --- A tick box with its words beside it: control.Set(ticked), and
 --- control.onChange(ticked) is called when a click changes it. control.Fit(room)
 --- says how much room the words have.
@@ -605,26 +635,7 @@ local function TickBox(parent, text, font)
     if box then
         control.native = true
     else
-        box = CreateFrame("Button", nil, parent)
-        box:SetSize(20, 20)
-
-        local edge = box:CreateTexture(nil, "BACKGROUND")
-        edge:SetAllPoints(box)
-        edge:SetColorTexture(0.45, 0.45, 0.5, 1)
-
-        local back = box:CreateTexture(nil, "BORDER")
-        back:SetPoint("TOPLEFT", box, "TOPLEFT", 1, -1)
-        back:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -1, 1)
-        back:SetColorTexture(0.03, 0.03, 0.05, 1)
-
-        local glow = box:CreateTexture(nil, "HIGHLIGHT")
-        glow:SetAllPoints(box)
-        glow:SetColorTexture(1, 1, 1, 0.15)
-
-        mark = box:CreateTexture(nil, "ARTWORK")
-        mark:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)
-        mark:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -2, 2)
-        mark:SetTexture(Icons.Choice("check").texture)
+        box, mark = OwnTick(parent, 20)
     end
 
     local label = Text(parent, font or "GameFontHighlight", text)
@@ -665,6 +676,34 @@ local function TickBox(parent, text, font)
     end)
 
     control.frame, control.label = box, label
+    control.Set(false)
+    return control
+end
+
+--- A small tick box with no words of its own, for a cell of a list:
+--- control.Set(ticked), and control.onChange(ticked) when a click changes it.
+--- It is always the addon's own drawing, like the rest of a row, since the
+--- game's box is as tall as a whole row.
+local function CellTick(parent, size)
+    local control = { ticked = false }
+    local box, mark = OwnTick(parent, size)
+
+    function control.Set(ticked)
+        ticked = ticked and true or false
+        control.ticked = ticked
+        Shown(mark, ticked)
+    end
+
+    box:SetScript("OnClick", function()
+        local ticked = not control.ticked
+        control.Set(ticked)
+        Sound(ticked and "IG_MAINMENU_OPTION_CHECKBOX_ON" or "IG_MAINMENU_OPTION_CHECKBOX_OFF")
+        if control.onChange then
+            ns.Guard(control.onChange, ticked)
+        end
+    end)
+
+    control.frame, control.mark = box, mark
     control.Set(false)
     return control
 end
@@ -1630,6 +1669,51 @@ local DURATION_WHY = {
     guess = "A guess: nothing better is known yet.",
 }
 
+-- Where the most stacks of an effect comes from. What was seen on a unit is the
+-- weakest of them: the effect may go higher than it has been seen to.
+local STACKS_WHY = {
+    you = "You set this.",
+    tooltip = "Taken from the spell's tooltip.",
+    game = "The game's own figure for the spell.",
+    seen = "The most seen on a unit so far, so the effect may go higher.",
+}
+
+-- Where each part of a row starts, from the row's left edge, and the room the
+-- spell's name has, with the reason under it. The headings go by these too.
+local COL = { name = 34, nameRoom = 148, show = 188, on = 324, lasts = 488, stacks = 540, shared = 586 }
+local LASTS_BOX, STACKS_BOX, CELL_TICK = 46, 30, 18
+
+--- What the box for an effect's stacks says when the mouse is on it.
+local function StacksTip(info)
+    local user = ns.db.spells[info.name]
+    local auto = " or empty the box to let the addon work it out."
+    if Spells:Stacking(info) then
+        return (STACKS_WHY[Spells:StackingSource(info)] or "By what is known of the spell.")
+            .. " The icon says \"" .. Icons.State("some").title .. "\" until the effect has that many stacks."
+            .. " Type another number to change it, 1 if the effect does not stack," .. auto
+    elseif user and type(user.stacks) == "number" then
+        return "You set this: the effect does not stack. Type the most stacks it can have to change it," .. auto
+    end
+    return "Nothing says that the effect stacks. If it does, type the most stacks it can have."
+end
+
+--- And what the tick for an effect that players share says.
+local function SharedTip(info, shared)
+    local user = ns.db.spells[info.name]
+    local source = " This is what the addon made of the spell's tooltip."
+    if user and user.shared ~= nil then
+        source = " You set this."
+    elseif info.described ~= true then
+        source = " The spell's tooltip could not be read, so its effect is taken to be yours alone."
+    end
+    if shared then
+        return "A unit carries the effect only once, whoever casts it, so another player's copy counts like your own. "
+            .. "Untick this if every caster has their own, as with a bleed." .. source
+    end
+    return "Only an effect you put there yourself counts. Tick this if a unit carries the effect only once, whoever "
+        .. "casts it, so that another player's copy counts like your own." .. source
+end
+
 --- A length of time in a few characters: "21 s", "2 min", "1 hr+".
 local function Short(seconds)
     if seconds >= Spells.MAX_DURATION then
@@ -1669,7 +1753,7 @@ local function WhyText(info, tracked, source, kind)
     local casts, hits = Spells:Record(info.name, kind)
     casts, hits = floor(casts + 0.5), floor(hits + 0.5)
     if source == "learned" then
-        return "left an effect after " .. hits .. " of " .. casts .. " casts",
+        return hits .. " of " .. casts .. " casts left an effect",
             "A new effect of yours followed " .. hits .. " of " .. casts .. " casts."
     elseif source == "demoted" then
         return "nothing after " .. (casts - hits) .. " of " .. casts .. " casts",
@@ -1696,13 +1780,28 @@ local function BuildRow(view, page, index)
     icon:SetPoint("LEFT", row, "LEFT", 4, 0)
     Try(icon, "SetTexCoord", 0.07, 0.93, 0.07, 0.93)
 
+    -- The spell's name, and under it why it is treated the way it is. Each has
+    -- one line: a long one is drawn in smaller letters, a longer one still is cut short.
     local name = Text(row, "GameFontHighlight")
-    name:SetJustifyV("MIDDLE")
-    name:SetPoint("LEFT", row, "LEFT", 34, 0)
-    name:SetWidth(108) -- a long name takes two lines, in smaller letters if it must; a longer one still is cut short
+    name:SetPoint("TOPLEFT", row, "TOPLEFT", COL.name, -2)
+    local why = Text(row, "GameFontDisableSmall")
+    why:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", COL.name, 2)
+    local whyArea = CreateFrame("Frame", nil, row)
+    whyArea:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+    whyArea:SetPoint("BOTTOMRIGHT", row, "BOTTOMLEFT", COL.name + COL.nameRoom, 0)
+    whyArea:EnableMouse(true)
+    Tip(whyArea, "Why")
+
+    --- Puts a complaint about what was typed where the reason is, until it is put right.
+    local function Complain(problem)
+        row.problem = problem
+        why:SetText(problem)
+        Fit(why, COL.nameRoom)
+        Colour(why, BAD)
+    end
 
     local show = Segmented(row, SHOW_CHOICES)
-    show.frame:SetPoint("LEFT", row, "LEFT", 146, 0)
+    show.frame:SetPoint("LEFT", row, "LEFT", COL.show, 0)
     show.onPick = function(key)
         local info = row.info
         if not info then
@@ -1722,7 +1821,7 @@ local function BuildRow(view, page, index)
     end
 
     local on = Segmented(row, ON_CHOICES)
-    on.frame:SetPoint("LEFT", row, "LEFT", 284, 0)
+    on.frame:SetPoint("LEFT", row, "LEFT", COL.on, 0)
     on.onPick = function(key)
         local info = row.info
         if not info then
@@ -1742,23 +1841,16 @@ local function BuildRow(view, page, index)
         SpellChanged()
     end
 
-    local why = Text(row, "GameFontDisableSmall")
-    why:SetJustifyV("MIDDLE")
-    why:SetPoint("LEFT", row, "LEFT", 504, 0)
-    why:SetWidth(106)
-    local whyArea = CreateFrame("Frame", nil, row)
-    whyArea:SetPoint("TOPLEFT", row, "TOPLEFT", 500, 0)
-    whyArea:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
-    whyArea:EnableMouse(true)
-    Tip(whyArea, "Why")
-
     local function ApplyDuration(box)
         local info = row.info
         if not info then
             return
         end
         local text = (box:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
-        if text == "" or text:lower() == "auto" then
+        if text == box.before then
+            -- Enter on what was already there: nothing was changed, so nothing
+            -- is. Above all the addon's own figure does not become yours.
+        elseif text == "" or text:lower() == "auto" then
             local choice = ns.db.spells[info.name]
             if choice then
                 choice.duration = nil
@@ -1767,10 +1859,7 @@ local function BuildRow(view, page, index)
         else
             local seconds = ParseSpan(text)
             if not seconds or seconds < Spells.MIN_DURATION or seconds > Spells.MAX_DURATION then
-                row.problem = "Type seconds, from " .. Spells.MIN_DURATION .. " to " .. Spells.MAX_DURATION .. "."
-                why:SetText(row.problem)
-                FitLines(why, 106, 2)
-                Colour(why, BAD)
+                Complain("Type seconds, from " .. Spells.MIN_DURATION .. " to " .. Spells.MAX_DURATION .. ".")
                 return
             end
             Spells:Choice(info.name).duration = seconds
@@ -1780,9 +1869,9 @@ local function BuildRow(view, page, index)
         SpellChanged()
     end
 
-    local built, lasts = pcall(Input, row, 46)
+    local built, lasts = pcall(Input, row, LASTS_BOX)
     if built and lasts then
-        lasts:SetPoint("LEFT", row, "LEFT", 450, 0)
+        lasts:SetPoint("LEFT", row, "LEFT", COL.lasts, 0)
         Try(lasts, "SetJustifyH", "CENTER")
         lasts:SetMaxLetters(12)
         lasts:SetScript("OnEditFocusGained", function(self)
@@ -1790,7 +1879,8 @@ local function BuildRow(view, page, index)
             local info = row.info
             if info then
                 local _, _, duration = Spells:Tracking(info)
-                self:SetText(tostring(floor(duration + 0.5)))
+                self.before = tostring(floor(duration + 0.5))
+                self:SetText(self.before)
                 Try(self, "HighlightText")
             end
         end)
@@ -1810,12 +1900,101 @@ local function BuildRow(view, page, index)
         lasts = nil
     end
 
+    -- How many times over the effect goes on one unit: the same as /se stacks.
+    local function ApplyStacks(box)
+        local info = row.info
+        if not info then
+            return
+        end
+        local text = (box:GetText() or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if text == box.before then
+            -- Nothing was changed, as with how long it lasts.
+        elseif text == "" or text == "-" or text:lower() == "auto" then
+            local choice = ns.db.spells[info.name]
+            if choice then
+                choice.stacks = nil
+                Spells:Tidy(info.name)
+            end
+        else
+            local most = text:find("^%d+$") and tonumber(text)
+            if not most or most < 1 or most > 100 then
+                Complain("Type a number from 1 to 100.")
+                return
+            end
+            Spells:Choice(info.name).stacks = most
+        end
+        row.problem = nil
+        box:ClearFocus()
+        SpellChanged()
+    end
+
+    local stacks
+    built, stacks = pcall(Input, row, STACKS_BOX)
+    if built and stacks then
+        stacks:SetPoint("LEFT", row, "LEFT", COL.stacks, 0)
+        Try(stacks, "SetJustifyH", "CENTER")
+        stacks:SetMaxLetters(4)
+        stacks:SetScript("OnEditFocusGained", function(self)
+            -- Typing starts from the bare number: your own if you set one, or
+            -- from nothing for an effect that does not stack.
+            local info = row.info
+            if info then
+                local user = ns.db.spells[info.name]
+                local most = (user and type(user.stacks) == "number" and user.stacks) or Spells:Stacking(info)
+                self.before = most and tostring(most) or ""
+                self:SetText(self.before)
+                Try(self, "SetTextColor", 1, 1, 1)
+                Try(self, "HighlightText")
+            end
+        end)
+        stacks:SetScript("OnEditFocusLost", function(self)
+            Try(self, "HighlightText", 0, 0)
+            row.problem = nil
+            ns.Guard(view.Refresh)
+        end)
+        stacks:SetScript("OnEnterPressed", function(self)
+            ns.Guard(ApplyStacks, self)
+        end)
+        stacks:SetScript("OnEscapePressed", function(self)
+            self:ClearFocus()
+        end)
+        Tip(stacks, "How many times the effect stacks")
+    else
+        stacks = nil
+    end
+
+    -- Whether another player's copy of the effect counts: the same as /se anyone
+    -- and /se mine. A choice of yours is only kept while it differs from what
+    -- the addon makes of the spell by itself, so ticking it back is going back.
+    local shared = CellTick(row, CELL_TICK)
+    shared.frame:SetPoint("LEFT", row, "LEFT", COL.shared, 0)
+    shared.onChange = function(ticked)
+        local info = row.info
+        if not info then
+            return
+        end
+        local choice = Spells:Choice(info.name)
+        choice.shared = nil
+        if Spells:Shared(info) ~= ticked then
+            choice.shared = ticked
+        end
+        Spells:Tidy(info.name)
+        if not ticked then
+            Tracker:ForgetTheirs(info.name)
+        end
+        SpellChanged()
+    end
+    Tip(shared.frame, "Another player's copy counts")
+
     --- Shows a spell in this row, or nothing.
     function row.Bind(info)
         if row.info ~= info then
             row.problem = nil
             if lasts and lasts:HasFocus() then
                 lasts:ClearFocus()
+            end
+            if stacks and stacks:HasFocus() then
+                stacks:ClearFocus()
             end
         end
         row.info = info
@@ -1833,8 +2012,7 @@ local function BuildRow(view, page, index)
         end
         Try(icon, "SetDesaturated", not tracked)
         icon:SetAlpha(tracked and 1 or 0.6)
-        name:SetText(info.name)
-        FitLines(name, 108, 2)
+        Say(name, info.name, COL.nameRoom)
         if tracked then
             name:SetTextColor(1, 1, 1)
         else
@@ -1863,6 +2041,32 @@ local function BuildRow(view, page, index)
                 .. " Type a number of seconds to change it, or empty the box to let the addon work it out."
         end
 
+        -- How often its effect stacks, and whether another player's copy of it
+        -- counts, are part of how it is judged too.
+        if stacks then
+            Shown(stacks, tracked)
+            if tracked and not stacks:HasFocus() then
+                local most = Spells:Stacking(info)
+                -- A dash, in grey, for an effect that goes on once: most do.
+                local none = not most and not (user and type(user.stacks) == "number")
+                stacks:SetText(most and tostring(most) or (none and "-" or "1"))
+                if none then
+                    Try(stacks, "SetTextColor", 0.5, 0.5, 0.5)
+                else
+                    Try(stacks, "SetTextColor", 1, 1, 1)
+                end
+            end
+            stacks.tipBody = StacksTip(info)
+        end
+        -- Nobody else can put on you what a skill only ever puts on its caster.
+        local sharable = tracked and not (kind == "buff" and info.selfOnly == true)
+        Shown(shared.frame, sharable)
+        if sharable then
+            local anyone = Spells:Shared(info)
+            shared.Set(anyone)
+            shared.frame.tipBody = SharedTip(info, anyone)
+        end
+
         local short, long = WhyText(info, tracked, source, kind)
         whyArea.tipTitle, whyArea.tipBody = info.name, long
         if row.problem then
@@ -1872,10 +2076,11 @@ local function BuildRow(view, page, index)
             why:SetText(short)
             why:SetTextColor(0.5, 0.5, 0.5)
         end
-        FitLines(why, 106, 2) -- a row is two lines tall
+        Fit(why, COL.nameRoom)
     end
 
     row.icon, row.name, row.show, row.on, row.lasts, row.why, row.whyArea = icon, name, show, on, lasts, why, whyArea
+    row.stacks, row.shared = stacks, shared
     return row
 end
 
@@ -1891,13 +2096,31 @@ local function BuildSpells(view, page)
     FitLines(intro, 608, 2) -- the column headings start under its second line
     list.intro = intro
 
-    local headings = { { "Spell", 16 }, { "Show an icon", 158 }, { "Judged on", 296 }, { "Lasts", 462 }, { "Why", 516 } }
+    -- A row starts 12 in from the page's edge, and a heading where its column
+    -- does, with the room up to the next one. The last two columns are narrower
+    -- than their headings may be drawn, so those two are centred on what they
+    -- name: the last with the room left up to the page's edge, the one before
+    -- it with what is left up to that.
+    local sharedAt = 12 + COL.shared + CELL_TICK / 2
+    local sharedReach = L.right - sharedAt
+    local stacksAt = 12 + COL.stacks + STACKS_BOX / 2
+    local stacksReach = sharedAt - sharedReach - 6 - stacksAt
+    local headings = {
+        { "Spell", 16 }, { "Show an icon", 12 + COL.show }, { "Judged on", 12 + COL.on }, { "Lasts", 12 + COL.lasts },
+        { "Stacks", stacksAt - stacksReach, 2 * stacksReach }, { "Shared", sharedAt - sharedReach, 2 * sharedReach },
+    }
     list.headings = {}
     for i = 1, #headings do
         local heading = Text(page, "GameFontNormalSmall", headings[i][1])
-        heading:SetPoint("TOPLEFT", page, "TOPLEFT", headings[i][2], -38)
-        -- Each has the room up to the next one.
-        Fit(heading, (headings[i + 1] and headings[i + 1][2] or L.right) - headings[i][2] - 8)
+        local room = headings[i][3]
+        if room then
+            heading:SetJustifyH("CENTER")
+            heading:SetPoint("TOP", page, "TOPLEFT", headings[i][2] + room / 2, -38)
+        else
+            heading:SetPoint("TOPLEFT", page, "TOPLEFT", headings[i][2], -38)
+            room = headings[i + 1][2] - headings[i][2] - 8
+        end
+        Fit(heading, room)
         list.headings[i] = heading
     end
     local rule = page:CreateTexture(nil, "ARTWORK")
