@@ -288,6 +288,7 @@ local OPTIONAL_READS = {
     Settings = true,
     InterfaceOptions_AddCategory = true, GetSpellTexture = true, SOUNDKIT = true, PlaySound = true,
     IsUsableAction = true, IsActionInRange = true, C_Texture = true, UnitIsVisible = true,
+    UnitCreatureID = true,
     -- Fonts, which the settings panel looks for before it borrows one.
     GameFontNormal = true, GameFontNormalLarge = true, GameFontNormalSmall = true, GameFontHighlight = true,
     GameFontHighlightSmall = true, GameFontHighlightHuge = true, GameFontDisable = true,
@@ -2179,7 +2180,8 @@ test("reports: only the first change after a cast held to its frame is kept, and
     w:cast(SUNDER, { travel = 0.02 })
     w:advance(0.02, 0.02)
     w:advance(0.3)
-    eq(w:icon("ActionButton3"), "partial", "the change went to Sunder Armor")
+    eq(w:icon("ActionButton3"), "check", "the change went to Sunder Armor")
+    check(ns.Tracker:Has(ns.KeyOf("target", "debuff"), "Sunder Armor", ns.Now()), "and is in the books for it")
     eq(w:icon("ActionButton1"), "check")
     eq(#late, 1, "and came four hundredths after Rend: inside its wait, so not too late for it")
 
@@ -2192,11 +2194,16 @@ test("reports: only the first change after a cast held to its frame is kept, and
     check(not ns.Tracker:HasEchoes(), "and not a second after it")
 
     -- Nor is a change that comes after that kept, even where the icons are
-    -- looked at so seldom that the cast has not been cleared away by then.
+    -- looked at so seldom that the cast is still listened for by then. (The
+    -- bars are read first: reading them brings on a look at the icons, and
+    -- this way that does not fall in between.)
     w:advance(2)
-    ns.db.interval = 5
+    ns.MarkBarsDirty()
+    w:advance(0.3)
     w:cast(REND, { miss = true })
-    w:advance(0.9)
+    w:advance(0.2)
+    ns.db.interval = 5
+    w:advance(0.7)
     check(ns.Tracker:HasEchoes(), "nothing has looked since")
     w:applyAura(boar, "Thorns", 30, false)
     w:advance(6)
@@ -4608,7 +4615,7 @@ end)
 -- Stacks
 --
 -- An effect that stacks is worth casting again until the last stack is on: the
--- half circle until then, the red X only then. Out of a fight the stacks are
+-- green check until then, the red X only then. Out of a fight the stacks are
 -- read off the unit. In a fight they are counted, one for each cast that is
 -- seen to land.
 --------------------------------------------------------------------------------
@@ -4666,12 +4673,13 @@ local function Open(w)
     w:advance(2)
 end
 
-test("stacks: a skill whose effect stacks shows the half circle until the last stack is on", function()
+test("stacks: a skill whose effect stacks shows the green check until the last stack is on", function()
     local w, ns = Sundering()
     eq(w:icon("ActionButton1"), "check", "no Sunder Armor on the boar yet")
     w:cast(SUNDER)
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial", "one of five: another one still does something")
+    eq(w:icon("ActionButton1"), "check", "one of five: another one still does something")
+    eq(Stacks(ns, "Sunder Armor"), 1)
     eq(w:icon("ActionButton2"), "check", "Rend has nothing to do with it")
     w:cast(SUNDER)
     w:advance(1.5)
@@ -4681,7 +4689,8 @@ test("stacks: a skill whose effect stacks shows the half circle until the last s
     for stack = 3, 4 do
         w:cast(SUNDER)
         w:advance(1.5)
-        eq(w:icon("ActionButton1"), "partial", stack .. " of five")
+        eq(w:icon("ActionButton1"), "check", stack .. " of five")
+        eq(Stacks(ns, "Sunder Armor"), stack)
     end
     w:cast(SUNDER)
     w:advance(1.5)
@@ -4698,7 +4707,7 @@ test("stacks: a skill whose effect stacks shows the half circle until the last s
 
     w:cast(SUNDER)
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial", "and the count starts over")
+    eq(w:icon("ActionButton1"), "check", "and the count starts over")
     eq(Stacks(ns, "Sunder Armor"), 1)
     Clean(w)
 end)
@@ -4707,19 +4716,20 @@ test("stacks: out of a fight the stacks are read off the enemy, and counted on f
     local w, ns, boar = Sundering()
     w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "one stack")
+    eq(w:icon("ActionButton1"), "check", "one stack")
+    eq(Stacks(ns, "Sunder Armor"), 1)
     eq((ns.db.learned["Sunder Armor"] or {}).stacks, nil, "once on a unit is no sign of an effect that stacks")
     w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
     w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
     w:advance(0.3)
     eq(Stacks(ns, "Sunder Armor"), 3, "read, not counted: nothing was cast")
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     eq(ns.db.learned["Sunder Armor"].stacks, 3, "three times over is, and is kept as the most it was seen to go")
 
     w:cast(SUNDER) -- the fight starts: from here on a stack is a cast that landed
     w:advance(1.5)
     eq(Stacks(ns, "Sunder Armor"), 4)
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     w:cast(SUNDER)
     w:advance(1.5)
     eq(w:icon("ActionButton1"), "cross", "five, three of them read and two counted")
@@ -4730,7 +4740,7 @@ test("stacks: out of a fight the stacks are read off the enemy, and counted on f
     w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
     w:advance(0.3)
     eq(Stacks(ns, "Sunder Armor"), 1)
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     Clean(w)
 end)
 
@@ -4748,7 +4758,7 @@ test("stacks: a landing that only renewed the effect found it there, and one tha
 
     w:cast(SUNDER)
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     if KindsTold() then
         eq(Stacks(ns, "Sunder Armor"), 2, "the report renewed an effect and added none: it was there, so two at least")
     else
@@ -4756,7 +4766,7 @@ test("stacks: a landing that only renewed the effect found it there, and one tha
     end
     w:cast(SUNDER)
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial", "counted low rather than high: five are on it, and it could be fewer")
+    eq(w:icon("ActionButton1"), "check", "counted low rather than high: five are on it, and it could be fewer")
 
     -- The effect is taken off the boar, which only shows as an effect going.
     -- The next cast puts it on afresh.
@@ -4769,7 +4779,7 @@ test("stacks: a landing that only renewed the effect found it there, and one tha
     else
         check(Stacks(ns, "Sunder Armor") > 1, "nothing to tell it from one more stack")
     end
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     Clean(w)
 end)
 
@@ -4778,7 +4788,8 @@ test("stacks: a buff that stacks is counted the same way", function()
     eq(w:icon("ActionButton1"), "check")
     w:cast(FRENZY)
     w:advance(0.5)
-    eq(w:icon("ActionButton1"), "partial", "one of three, read off you")
+    eq(w:icon("ActionButton1"), "check", "one of three, read off you")
+    eq(ns.Tracker:Stacks(ns.KeyOf("player", "buff"), "Battle Frenzy", ns.Now()), 1)
     w:cast(BLOCK)
     w:advance(0.5)
     eq(w:icon("ActionButton2"), "cross", "a buff that does not stack is there or not")
@@ -4789,7 +4800,8 @@ test("stacks: a buff that stacks is counted the same way", function()
     w:advance(0.3)
     w:cast(FRENZY)
     w:advance(0.5)
-    eq(w:icon("ActionButton1"), "partial", "two of three, counted in the fight")
+    eq(w:icon("ActionButton1"), "check", "two of three, counted in the fight")
+    eq(ns.Tracker:Stacks(ns.KeyOf("player", "buff"), "Battle Frenzy", ns.Now()), 2)
     w:cast(FRENZY)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "cross", "three of three")
@@ -4798,7 +4810,7 @@ test("stacks: a buff that stacks is counted the same way", function()
     Clean(w)
 end)
 
-test("stacks, area: the red X only when every enemy carries every stack", function()
+test("stacks, area: the half circle when some enemies carry every stack, the red X when all do", function()
     local w, ns = Bar({ saved = Proven() }, ROAR)
     local mobs = {}
     for i = 1, 2 do
@@ -4809,10 +4821,10 @@ test("stacks, area: the red X only when every enemy carries every stack", functi
     w:advance(0.5)
     w:cast(ROAR, { hits = mobs })
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial", "one of two on each of them")
+    eq(w:icon("ActionButton1"), "check", "one of two on each of them: room for another on both")
     w:cast(ROAR, { hits = { mobs[1] } })
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial", "full on one, and one short on the other")
+    eq(w:icon("ActionButton1"), "partial", "full on one, and one short on the other: some are full")
     w:cast(ROAR, { hits = { mobs[2] } })
     w:advance(1.5)
     eq(w:icon("ActionButton1"), "cross", "full on both")
@@ -4826,7 +4838,7 @@ test("stacks: a client that does not say how many times an effect is on a unit l
     end
     w:advance(0.3)
     eq(Stacks(ns, "Sunder Armor"), 1, "there, and nothing says how often")
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     w:cast(SUNDER, { quiet = true })
     w:advance(0.5)
     eq(Stacks(ns, "Sunder Armor"), 2, "a cast seen to land is still counted")
@@ -4920,7 +4932,8 @@ test("stacks: the game itself is asked how often an effect stacks, for a tooltip
     for stack = 1, 4 do
         w:cast(CORRODE)
         w:advance(1.5)
-        eq(w:icon("ActionButton1"), "partial", stack .. " of the five the game's own data gives it")
+        eq(w:icon("ActionButton1"), "check", stack .. " of the five the game's own data gives it")
+        eq(Stacks(ns, "Corrode"), stack)
     end
     w:cast(CORRODE)
     w:advance(1.5)
@@ -5042,7 +5055,7 @@ test("stacks: a client that keeps how often an effect stacks to itself in a figh
     w:leaveCombat()
     w:advance(0.5)
     eq(info.gameStacks, 5, "out of the fight the game answers")
-    eq(w:icon("ActionButton1"), "partial", "two of five, read off the boar")
+    eq(w:icon("ActionButton1"), "check", "two of five, read off the boar")
     eq(Stacks(ns, "Corrode"), 2)
     asked = w.maxStackCalls
     w:advance(5)
@@ -5050,7 +5063,7 @@ test("stacks: a client that keeps how often an effect stacks to itself in a figh
 
     w:cast(CORRODE)
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial", "three of five, counted in the next fight")
+    eq(w:icon("ActionButton1"), "check", "three of five, counted in the next fight")
     eq(Stacks(ns, "Corrode"), 3)
     eq(ns.db.report.spells["Corrode"].gameStacks, 5, "the answer is kept once it has come")
     Clean(w)
@@ -5093,7 +5106,8 @@ test("stacks: a client that cannot be asked how often an effect stacks leaves it
     eq(w:icon("ActionButton1"), "cross", "as far as it has been seen to go")
     w:slash("stacks Corrode 5")
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "until you say how far it goes")
+    eq(w:icon("ActionButton1"), "check", "until you say how far it goes")
+    eq(Stacks(ns, "Corrode"), 3)
     Clean(w)
 end)
 
@@ -5118,7 +5132,7 @@ test("stacks: a client that swaps an effect for a new one each time it is renewe
         w:cast(SUNDER)
         w:advance(1.5)
         eq(Stacks(ns, "Sunder Armor"), stack, "an effect going and one coming in the same report is no first stack")
-        eq(w:icon("ActionButton1"), "partial")
+        eq(w:icon("ActionButton1"), "check")
     end
     w:cast(SUNDER)
     w:advance(1.5)
@@ -5159,7 +5173,7 @@ test("stacks: another effect going as the first stack goes on does not make it m
         end
         w:advance(1.5)
         eq(Stacks(ns, "Sunder Armor"), 1, "order " .. order)
-        eq(w:icon("ActionButton1"), "partial")
+        eq(w:icon("ActionButton1"), "check")
         Clean(w)
     end
 end)
@@ -5214,7 +5228,7 @@ test("stacks: where the game shows a landing late, stacks are counted once the s
         w:cast(SUNDER, { travel = 0.1 })
         w:advance(1.5)
         eq(Stacks(ns, "Sunder Armor"), 1, "there, and not counted on yet: cast " .. cast)
-        eq(w:icon("ActionButton1"), "partial")
+        eq(w:icon("ActionButton1"), "check")
     end
     -- Three landings, none of them in the moment of its cast: that is how
     -- this skill shows here, and from now on each one counts.
@@ -5223,7 +5237,7 @@ test("stacks: where the game shows a landing late, stacks are counted once the s
         w:advance(1.5)
         eq(Stacks(ns, "Sunder Armor"), stack)
     end
-    eq(w:icon("ActionButton1"), "partial", "five on it and three counted: low rather than high")
+    eq(w:icon("ActionButton1"), "check", "five on it and three counted: low rather than high")
     for _ = 1, 2 do
         w:cast(SUNDER, { travel = 0.1 })
         w:advance(1.5)
@@ -5274,7 +5288,7 @@ test("stacks: where nothing is reported, each cast that is taken to land is take
         w:cast(SUNDER)
         w:advance(2.5)
         eq(Stacks(ns, "Sunder Armor"), stack)
-        eq(w:icon("ActionButton1"), "partial")
+        eq(w:icon("ActionButton1"), "check")
     end
     w:cast(SUNDER)
     w:advance(2.5)
@@ -5331,7 +5345,7 @@ test("stacks: a landing reported a frame after its cast is counted on, and a cha
     -- too far from it to add a stack.
     w:cast(SUNDER, { early = 0.2 })
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     eq(Stacks(ns, "Sunder Armor"), 2)
     local casts = ns.db.report.casts
     check(casts[#casts]:find("Sunder Armor", 1, true) and casts[#casts]:find("changed", 1, true), casts[#casts])
@@ -5352,7 +5366,7 @@ test("stacks: a skill you said does not stack keeps no count", function()
     eq(Booked(ns, "Sunder Armor").stacks, nil, "nothing is counted for it")
     w:slash("stacks Sunder Armor auto")
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "and when it stacks again the count starts low")
+    eq(w:icon("ActionButton1"), "check", "and when it stacks again the count starts low")
     eq(Stacks(ns, "Sunder Armor"), 1)
     Clean(w)
 end)
@@ -5372,7 +5386,7 @@ test("stacks: an enemy that goes out of sight during the wait is given no stack 
     eq(w:icon("ActionButton1"), "check", "the wolf is clean")
     w:target(boar)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     eq(Stacks(ns, "Sunder Armor"), 1, "there, and no more times over than it was seen to be")
 
     -- The same for one that had none: it is taken to be there, once.
@@ -5384,7 +5398,7 @@ test("stacks: an enemy that goes out of sight during the wait is given no stack 
     w:advance(1)
     w:target(fox)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     eq(Stacks(ns, "Sunder Armor"), 1)
     Clean(w)
 end)
@@ -5430,7 +5444,7 @@ test("stacks: a report that both added an effect and renewed one is not read as 
     w:cast(SUNDER)
     w:advance(1.5)
     eq(Stacks(ns, "Sunder Armor"), 1, "nothing on the books, and nothing to say it was there: a first stack")
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     Clean(w)
 end)
 
@@ -5850,12 +5864,14 @@ test("others: another warrior's Sunder Armor adds to the stacks", function()
     w:advance(0.5)
     w:partyCast(warrior, SUNDER)
     w:advance(0.5)
-    eq(w:icon("ActionButton1"), "partial", "three of five: one of yours and two of theirs")
+    eq(w:icon("ActionButton1"), "check", "three of five: one of yours and two of theirs")
+    eq(Stacks(ns, "Sunder Armor"), 3)
     w:cast(SUNDER)
     w:advance(1.5)
     w:partyCast(warrior, SUNDER, { miss = true })
     w:advance(0.5)
-    eq(w:icon("ActionButton1"), "partial", "four of five: their last one missed")
+    eq(w:icon("ActionButton1"), "check", "four of five: their last one missed")
+    eq(Stacks(ns, "Sunder Armor"), 4)
     w:partyCast(warrior, SUNDER)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "cross", "five between the two of you")
@@ -5866,7 +5882,8 @@ test("others: another warrior's Sunder Armor adds to the stacks", function()
     w:advance(0.5)
     w:target(wolf)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "one of five on the wolf, and it is theirs")
+    eq(w:icon("ActionButton1"), "check", "one of five on the wolf, and it is theirs")
+    eq(Stacks(ns, "Sunder Armor"), 1)
     w:slash("debug")
     local debug = w:drain()
     check(debug:find("Sunder Armor x1, ", 1, true) and debug:find("(another player's)", 1, true), debug)
@@ -5882,7 +5899,7 @@ test("others: one report for two casts in the same moment goes to yours", functi
     w:advance(1.5)
     eq(ns.Tracker:Stacks(ns.KeyOf("target", "debuff"), "Sunder Armor", ns.Now()), 1,
         "counted low rather than high: two are on it")
-    eq(w:icon("ActionButton1"), "partial")
+    eq(w:icon("ActionButton1"), "check")
     Clean(w)
 end)
 
@@ -6116,7 +6133,7 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
         "Rend is your own, and does not stack: " .. list)
 
     w:slash("stacks Sunder Armor 3")
-    check(w:drain():find("Sunder Armor is now full at 3 stacks: the yellow half circle below that, the red X at 3.",
+    check(w:drain():find("Sunder Armor is now full at 3 stacks: the green check below that, the red X at 3.",
         1, true))
     eq(ns.db.spells["Sunder Armor"].stacks, 3)
     for _ = 1, 3 do
@@ -6129,7 +6146,8 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
         1, true))
     eq(ns.db.spells["Sunder Armor"], nil, "nothing is left of the choice")
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "three of five")
+    eq(w:icon("ActionButton1"), "check", "three of five")
+    eq(Stacks(ns, "Sunder Armor"), 3)
     w:slash("stacks Sunder Armor 1")
     check(w:drain():find("Sunder Armor now counts as an effect that does not stack.", 1, true))
     w:advance(0.3)
@@ -6141,7 +6159,8 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
     w:slash("stacks Rend 4")
     w:applyAura(boar, "Rend", 21, true)
     w:advance(0.3)
-    eq(w:icon("ActionButton2"), "partial", "a skill whose tooltip says nothing of stacks can be given some")
+    eq(w:icon("ActionButton2"), "check", "a skill whose tooltip says nothing of stacks can be given some")
+    eq(Stacks(ns, "Rend"), 1, "one of the four it was given")
 
     w:slash("stacks Sunder Armor lots")
     check(w:drain():find("Give the most stacks as a whole number from 1 to 100", 1, true))
@@ -6161,7 +6180,8 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
     w:slash("anyone Rend")
     check(w:drain():find("Rend: another player's copy of its effect now counts like your own.", 1, true))
     w:advance(0.3)
-    eq(w:icon("ActionButton2"), "partial", "now it does: one of the four stacks it was given")
+    check(Booked(ns, "Rend") and Booked(ns, "Rend").how == "another player's", "now it does: it is in the books as theirs")
+    eq(w:icon("ActionButton2"), "check", "one of the four stacks it was given")
     w:slash("mine Rend")
     check(w:drain():find("Rend: only an effect you put there yourself counts now.", 1, true))
     w:advance(0.3)
@@ -6170,13 +6190,15 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
     w:drain()
     eq(ns.db.spells["Sunder Armor"].shared, false)
     w:removeAura(boar, "Sunder Armor")
-    w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
+    for _ = 1, 5 do
+        w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
+    end
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "the other way round: theirs no longer counts for Sunder Armor")
     w:slash("auto Sunder Armor")
     w:drain()
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "back to what the tooltip says: theirs counts, one of five")
+    eq(w:icon("ActionButton1"), "cross", "back to what the tooltip says: theirs counts, and it is five of five")
 
     w:slash("help")
     local help = w:drain()
@@ -6399,6 +6421,1281 @@ test("icons that an earlier version showed when targeting an enemy now show when
     local view = w:openSettings().view
     eq(view.appear.picked, "group")
     eq(view.appear.buttons.target, nil, "and no longer offer the old one")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Immune enemies
+--
+-- An enemy that is immune to a skill's effect is no reason to use the skill:
+-- it is left out when the skill is judged, and with nobody else to judge it
+-- on that is the red X. An enemy is only taken to be immune on the game's own
+-- word, said of it in the very moment a cast of yours went to it.
+--------------------------------------------------------------------------------
+
+--- A world with Rend, Sunder Armor and Demoralizing Shout on the first three
+--- buttons, a fire elemental that is immune to Rend targeted with its
+--- nameplate showing, and reports known to arrive.
+local function Elemental(options)
+    options = options or {}
+    options.saved = options.saved or Proven()
+    local w, ns = Bar(options, REND, SUNDER, DEMO)
+    local elemental = w:addMob("Fire Elemental", { immune = { Rend = true } })
+    w:showPlate(elemental)
+    w:target(elemental)
+    w:advance(0.3)
+    return w, ns, elemental
+end
+
+--- What a session finds saved when reports are known to arrive and the
+--- skills on these bars have long been seen to leave their effects: a cast
+--- or two that leave nothing do not cost one of them its icon.
+local function Seasoned()
+    local saved = Proven()
+    saved.learned = {
+        Rend = { casts = 12, hits = 12 },
+        ["Sunder Armor"] = { casts = 12, hits = 12 },
+        ["Thunder Clap"] = { casts = 12, hits = 12 },
+    }
+    return saved
+end
+
+--- What the addon keeps of a kind of creature being immune to a spell.
+local function Kept(ns, spell, mob)
+    local kinds = ns.db.immune[spell]
+    return kinds and kinds["#" .. mob.kind] or nil
+end
+
+--- The last line of a list in the saved report, or "".
+local function Last(lines)
+    return lines and lines[#lines] or ""
+end
+
+--- Another creature walks up: in sight, and targeted.
+local function Meet(w, name, fields)
+    local mob = w:addMob(name, fields)
+    w:showPlate(mob)
+    w:target(mob)
+    w:advance(0.3)
+    return mob
+end
+
+test("immune: an enemy the game calls immune to a skill gets the red X on it, and its kind after the second time", function()
+    local w, ns, elemental = Elemental()
+    eq(w:icon("ActionButton1"), "check", "nothing is known of it yet")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the game said it is immune: casting Rend again changes nothing")
+    eq(w:icon("ActionButton2"), "check", "which says nothing of Sunder Armor")
+    eq(w:icon("ActionButton3"), "check")
+    eq(Booked(ns, "Rend"), nil, "no Rend is on it")
+    local report = ns.db.report
+    check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): immune; the game said IMMUNE", 1, true),
+        Last(report.casts))
+    eq(report.verdicts.immune, 1)
+    check(Last(report.combat.immune):find("in the moment of Rend, said just after the cast was announced: taken as its "
+        .. "answer", 1, true), Last(report.combat.immune))
+    check(Last(report.combat.learned):find("Rend on Fire Elemental: immune for now, and for good once it is said of "
+        .. "its kind again", 1, true), Last(report.combat.learned))
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+    eq(Kept(ns, "Rend", elemental).name, "Fire Elemental")
+    eq(report.combat.target.heard, 1)
+    eq(report.combat.plate.heard, 1, "said once for each name the enemy goes by")
+    eq(report.combat.words.IMMUNE, 2)
+    check(report.combat.listening > 40, "listened for on your target, your soft target and the nameplates")
+    eq(report.combat.kinds.calm.number, 1, "and the game named the elemental's kind by its number")
+
+    -- One word is not counted on for long: an immunity can pass.
+    w:advance(11)
+    eq(w:icon("ActionButton1"), "cross", "eleven seconds on")
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "and after twelve the skill is worth a try again")
+
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", elemental).seen, 2, "said again after that while: that is its kind")
+    check(Last(report.combat.learned):find("its kind is counted on as immune from now on (said 2 times)", 1, true),
+        Last(report.combat.learned))
+    w:advance(60)
+    eq(w:icon("ActionButton1"), "cross", "and it stays")
+
+    -- The next one of its kind is known for it before the first cast.
+    Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "cross", "another fire elemental")
+    eq(w:icon("ActionButton2"), "check")
+    Meet(w, "Boar")
+    eq(w:icon("ActionButton1"), "check", "a boar is another kind of creature")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "and bleeds")
+    check(Booked(ns, "Rend"), "Rend is on the boar")
+    Clean(w)
+end)
+
+test("immune: two creatures of a kind, each called immune once, make it their kind", function()
+    local w, ns, first = Elemental()
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    local second = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "check", "one word about the first is not counted on for the second")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", second).seen, 2)
+    w:advance(20)
+    eq(w:icon("ActionButton1"), "cross", "long after the one word about it: its kind is known now")
+    w:target(first)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "and so is the first one's")
+    Clean(w)
+end)
+
+test("immune: said again of the same enemy within the first while, it is one occasion and not two", function()
+    local w, ns, elemental = Elemental()
+    w:cast(REND)
+    w:advance(5)
+    w:cast(REND) -- through the red X
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental).seen, 1, "the same shield could be up both times")
+    check(Last(ns.db.report.combat.learned):find("Rend on Fire Elemental: said again of the same enemy", 1, true),
+        Last(ns.db.report.combat.learned))
+    w:advance(11)
+    eq(w:icon("ActionButton1"), "cross", "the while starts over with the second word")
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("immune: a cast that leaves nothing is not taken for immunity without the game's word", function()
+    -- A client that does not say what a cast did to an enemy.
+    local w, ns = Elemental({ saved = Seasoned(), combatWords = "none" })
+    for cast = 1, 5 do
+        w:cast(REND)
+        w:advance(2)
+        eq(w:icon("ActionButton1"), "check", "cast " .. cast .. " showed nothing, as a miss does")
+    end
+    eq(next(ns.db.immune), nil, "nothing is kept of it")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    local report = ns.db.report
+    eq(report.verdicts.immune, nil)
+    check(report.combat.listening > 40, "the addon was listening")
+    eq(report.combat.target.heard, 0, "and heard nothing")
+    Clean(w)
+end)
+
+test("immune: a miss, a dodge or a resist is the game's word for a cast that left nothing, and not immunity", function()
+    local w, ns = Simple({ saved = Seasoned() })
+    w:cast(REND)
+    w:advance(22)
+    local report
+    for _, word in ipairs({ "MISS", "DODGE", "PARRY", "RESIST", "EVADE", "DEFLECT" }) do
+        w:cast(REND, { miss = true, word = word })
+        w:advance(2)
+        eq(w:icon("ActionButton1"), "check", word)
+        report = ns.db.report
+        check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): silent; the game said " .. word,
+            1, true), Last(report.casts))
+    end
+    eq(next(ns.db.immune), nil)
+    eq(report.combat.words.DODGE, 2, "heard under both of the boar's names")
+    eq(#report.combat.immune, 0)
+    eq(#report.combat.learned, 0)
+
+    -- A hit says nothing either way, and is not passed on at all.
+    w:cast(REND)
+    w:said(w.tokens.target, "WOUND", "CRITICAL")
+    w:advance(0.5)
+    check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast", 1, true),
+        Last(report.casts))
+    check(not Last(report.casts):find("the game said", 1, true), Last(report.casts))
+    eq(report.combat.words.WOUND, 2)
+    Clean(w)
+end)
+
+test("immune: an enemy seen to carry the effect after all is not immune, and its kind is never counted as immune again", function()
+    local w, ns, elemental = Elemental()
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+
+    -- It was a shield, and the shield is gone.
+    elemental.immune = nil
+    w:advance(12.5)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "Rend is on it now")
+    check(Booked(ns, "Rend"), "in the books")
+    eq(Kept(ns, "Rend", elemental).passes, true, "what was kept of its kind now says that its immunity comes and goes")
+    eq(Kept(ns, "Rend", elemental).seen, nil)
+    local report = ns.db.report
+    check(Last(report.combat.learned):find("Rend on Fire Elemental: seen to carry it after all, so its kind is not "
+        .. "counted as immune", 1, true), Last(report.combat.learned))
+    w:advance(21.5)
+    eq(w:icon("ActionButton1"), "check", "Rend has run out")
+
+    -- The shield is up again. Of an enemy that has carried the effect, nothing is kept.
+    elemental.immune = { Rend = true }
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "this will pass, so the skill stays worth a try")
+    check(Last(report.combat.learned):find("Rend on Fire Elemental: it has carried the effect before, so this will "
+        .. "pass: nothing kept", 1, true), Last(report.combat.learned))
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+
+    -- Nor of another one of its kind, shielded from the first cast on.
+    Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    for cast = 1, 2 do
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check", "cast " .. cast .. " at the second one")
+        check(Last(report.combat.learned):find("Rend on Fire Elemental: its kind has carried the effect before, so "
+            .. "this will pass: nothing kept", 1, true), Last(report.combat.learned))
+        w:advance(13)
+    end
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    w:slash("immune")
+    check(w:drain():find("no creature has been found immune to a skill of yours yet", 1, true),
+        "/se immune does not list a kind whose immunity comes and goes")
+    Clean(w)
+
+    -- And that is kept for the sessions after this one.
+    local saved = w.env.StatusEfficiencyDB
+    local w2, ns2, later = Elemental({ saved = saved })
+    for cast = 1, 2 do
+        w2:cast(REND)
+        w2:advance(0.3)
+        eq(w2:icon("ActionButton1"), "check", "next session, cast " .. cast)
+        w2:advance(13)
+    end
+    eq(Kept(ns2, "Rend", later).passes, true)
+    Clean(w2)
+end)
+
+test("immune: a kind counted on as immune is given up the moment the skill is seen to land on one", function()
+    local saved = Proven()
+    saved.immune = { Rend = { ["#1001"] = { seen = 2, name = "Fire Elemental" } } }
+    local w, ns, elemental = Elemental({ saved = saved })
+    eq(elemental.kind, 1001)
+    elemental.immune = nil -- these do bleed after all
+    eq(w:icon("ActionButton1"), "cross", "known for it from an earlier session")
+    w:cast(REND) -- through the red X
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "now because Rend is on it")
+    check(Booked(ns, "Rend"), "in the books")
+    eq(Kept(ns, "Rend", elemental).passes, true)
+    w:advance(21.5)
+    eq(w:icon("ActionButton1"), "check", "and when it has run out the skill is worth casting again")
+    Meet(w, "Fire Elemental")
+    eq(w:icon("ActionButton1"), "check", "on the next one of its kind as well")
+    Clean(w)
+end)
+
+test("immune: an enemy with the effect on it, whoever put it there, is not immune to it", function()
+    local w, ns, elemental = Elemental()
+    ns.SetAppear("always")
+    elemental.immune = nil
+    -- Not in a fight, where effects can be read: a Rend of yours is on the
+    -- elemental that no cast was seen to leave there.
+    w:applyAura(elemental, "Rend", 21, true)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "read off the elemental")
+    w:advance(21.5)
+    eq(w:icon("ActionButton1"), "check", "and gone again")
+
+    -- So when the game calls it immune to Rend later, that will pass.
+    elemental.immune = { Rend = true }
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    eq(Kept(ns, "Rend", elemental).passes, true)
+    check(Last(ns.db.report.combat.learned):find("Rend on Fire Elemental: it has carried the effect before, so this "
+        .. "will pass: nothing kept", 1, true), Last(ns.db.report.combat.learned))
+
+    -- A kind like that is not one of the immune ones /se immune forget counts.
+    w:slash("immune forget")
+    check(w:drain():find("forgot every creature that was found immune to a skill (0 kept until now).", 1, true),
+        "none was kept as immune")
+    eq(next(ns.db.immune), nil, "though what was kept of it is gone with the rest")
+    Clean(w)
+end)
+
+test("immune: someone else's cast of the skill seen to land on an enemy shows that it is not immune", function()
+    local w, ns, boar, warrior = Party(nil, REND, SUNDER)
+    boar.immune = { ["Sunder Armor"] = true }
+    w:cast(SUNDER)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "the game called the boar immune to your Sunder Armor")
+    eq(#ns.Tracker:Immunities(ns.Now()), 1)
+
+    -- Whatever shielded it is gone, and the other warrior's Sunder Armor lands.
+    boar.immune = nil
+    w:advance(2)
+    w:partyCast(warrior, SUNDER)
+    w:advance(0.3)
+    check(Booked(ns, "Sunder Armor"), "theirs is on the boar")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0, "so the boar is not immune to it")
+    eq(w:icon("ActionButton2"), "check", "one of five: yours would add a stack")
+    eq(Kept(ns, "Sunder Armor", boar).passes, true, "and its kind is known for an immunity that comes and goes")
+    Clean(w)
+end)
+
+test("immune: a change on an enemy that died in the moment of the cast does not show that its kind takes the effect", function()
+    local w, ns, first = Elemental({ saved = Seasoned() })
+    first.immune = nil
+    -- Rend leaves nothing, and the elemental dies in that frame: all its
+    -- effects go, which a client that does not say what changed reports like
+    -- a cast landing.
+    w:cast(REND, { miss = true, word = false })
+    w:kill(first)
+    w:advance(2)
+    w:hidePlate(first)
+
+    -- The next one of its kind is immune, and the game's word for that counts.
+    local second = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", second).seen, 1)
+    eq(Kept(ns, "Rend", second).passes, nil)
+    Clean(w)
+end)
+
+test("immune: a kind seen to carry the effect is not learned as immune from one of its kind that is called immune", function()
+    local w, ns, first = Elemental()
+    first.immune = nil
+    w:cast(REND)
+    w:advance(0.5)
+    check(Booked(ns, "Rend"), "Rend is on the first fire elemental")
+    eq(next(ns.db.immune), nil, "nothing to keep yet: nobody called one of them immune")
+
+    -- Another of its kind has a shield up.
+    local second = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    local report = ns.db.report
+    for cast = 1, 2 do
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check", "cast " .. cast .. ": its kind takes Rend, so this will pass")
+        check(Last(report.combat.learned):find("Rend on Fire Elemental: its kind has carried the effect before, so "
+            .. "this will pass: nothing kept", 1, true), Last(report.combat.learned))
+        w:advance(13)
+    end
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    eq(Kept(ns, "Rend", second).passes, true, "and that is kept for later sessions")
+    Clean(w)
+end)
+
+test("immune: /se debug names six of the enemies taken to be immune and counts the rest", function()
+    local w, ns = Bar({ saved = Proven() }, CLAP)
+    local all = {}
+    for i = 1, 8 do
+        all[i] = w:addMob("Stone Elemental", { immune = { ["Thunder Clap"] = true } })
+        w:showPlate(all[i])
+    end
+    w:target(all[1])
+    w:advance(0.5)
+    w:cast(CLAP, { hits = all })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "nobody here will ever have it")
+    eq(#ns.Tracker:Immunities(ns.Now()), 8)
+    w:slash("debug")
+    local debug = w:drain()
+    local _, named = debug:gsub("Thunder Clap: Stone Elemental is taken to be immune", "")
+    eq(named, 6)
+    check(debug:find("    and 2 more", 1, true), debug)
+    Clean(w)
+end)
+
+test("immune: a skill that hits every enemy leaves the immune ones out", function()
+    local w, ns = Bar({ saved = Proven() }, CLAP, REND)
+    local kobolds = { w:addMob("Kobold"), w:addMob("Kobold") }
+    local elemental = w:addMob("Stone Elemental", { immune = { ["Thunder Clap"] = true } })
+    local all = { kobolds[1], kobolds[2], elemental }
+    for i = 1, #all do
+        w:showPlate(all[i])
+    end
+    w:target(kobolds[1])
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check")
+
+    w:cast(CLAP, { hits = all })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "both kobolds have it, and the elemental was called immune")
+    local report = ns.db.report
+    check(Last(report.casts):find("Thunder Clap (debuff, hidden, waited for a report): changed x2, immune, 0.00s after "
+        .. "the cast; the game said IMMUNE", 1, true), Last(report.casts))
+    eq(Kept(ns, "Thunder Clap", elemental).seen, 1)
+
+    -- One word is not counted on for long, and then one enemy of three is without it.
+    w:advance(12.5)
+    eq(w:icon("ActionButton1"), "partial", "the elemental is worth a try again")
+    w:cast(CLAP, { hits = all })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Thunder Clap", elemental).seen, 2, "said again: that is its kind")
+    w:advance(29)
+    eq(w:icon("ActionButton1"), "cross", "for as long as the kobolds carry it")
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "it has run out on the kobolds: worth casting for them")
+
+    -- Another of its kind joins the fight, and is left out from the start.
+    local second = w:addMob("Stone Elemental", { immune = { ["Thunder Clap"] = true } })
+    second.engaged = true
+    w:showPlate(second)
+    all[#all + 1] = second
+    w:cast(CLAP, { hits = all })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "two kobolds with it, two elementals that never will have it")
+    eq(#report.combat.learned, 2, "said of a kind that is counted on already: nothing new to note")
+
+    -- With only immune enemies left, there is nobody to cast it for.
+    w:kill(kobolds[2])
+    w:kill(kobolds[1])
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "only the elementals are left")
+    w:target(elemental)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(w:icon("ActionButton2"), "check", "Rend is another matter: nothing was said of it")
+    Clean(w)
+end)
+
+test("immune: an effect that stacks shows the red X on an immune enemy, not the check of a stack to add", function()
+    local w, ns = Bar({ saved = Proven() }, SUNDER, ROAR)
+    local golem = Meet(w, "Iron Golem", { immune = { ["Sunder Armor"] = true, ["Searing Roar"] = true } })
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(SUNDER)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "no stack will ever be on it")
+    eq(Stacks(ns, "Sunder Armor"), 0)
+
+    -- An area skill that stacks: the golem is left out, and the kobold decides.
+    local kobold = w:addMob("Kobold")
+    w:showPlate(kobold)
+    w:advance(0.3)
+    local both = { golem, kobold }
+    w:cast(ROAR, { hits = both })
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "one of two on the kobold: another cast adds a stack there")
+    w:cast(ROAR, { hits = both })
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "two of two on the kobold, and the golem never will have any")
+    Clean(w)
+end)
+
+test("immune: the game's word counts only in the moment of a cast of yours at that enemy", function()
+    local w, ns, boar, warrior = Party({ saved = Seasoned() }, REND, SUNDER)
+    Open(w)
+    local report = ns.db.report
+
+    -- Someone else's attack is called immune, a while after a cast of yours.
+    w:said(boar, "IMMUNE")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    check(Last(report.combat.immune):find("2.00s after Rend, too far from it to be its answer", 1, true),
+        Last(report.combat.immune))
+
+    -- And with no cast of yours anywhere near.
+    w:advance(6)
+    w:said(boar, "IMMUNE")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    check(Last(report.combat.immune):find("with no cast of yours at that enemy", 1, true), Last(report.combat.immune))
+
+    -- Two frames after a cast of yours that showed nothing is too late to be its answer.
+    w:cast(REND, { miss = true, word = false })
+    w:advance(0.1)
+    w:said(boar, "IMMUNE")
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check")
+    check(Last(report.combat.immune):find("0.10s after Rend, too far from it to be its answer", 1, true),
+        Last(report.combat.immune))
+
+    -- And two frames before one is too early.
+    w:said(boar, "IMMUNE")
+    w:advance(0.1)
+    w:cast(REND, { miss = true, word = false })
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check")
+    check(Last(report.combat.immune):find("0.10s before Rend, too far from it to be its answer", 1, true),
+        Last(report.combat.immune))
+
+    -- The other warrior's Rend is refused by an enemy that is immune to it. Yours was not cast.
+    local elemental = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    warrior.target = elemental
+    w:advance(6)
+    w:partyCast(warrior, REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the game did not say that of a cast of yours")
+    check(Last(report.combat.immune):find("with no cast of yours at that enemy", 1, true), Last(report.combat.immune))
+
+    eq(next(ns.db.immune), nil, "nothing was learned from any of it")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    eq(#report.combat.learned, 0)
+    eq(report.verdicts.immune, nil)
+    Clean(w)
+end)
+
+test("immune: an enemy that changed in the moment it was called immune leaves open what your cast did", function()
+    for _, first in ipairs({ "cast", "word" }) do
+        local w, ns, boar = Party(nil, REND, SUNDER)
+        -- Your Rend lands in the very moment someone else's attack is called immune.
+        if first == "word" then
+            w:said(boar, "IMMUNE")
+        end
+        w:cast(REND)
+        if first == "cast" then
+            w:said(boar, "IMMUNE")
+        end
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross", "the landing stands, " .. first .. " first")
+        check(Booked(ns, "Rend"), "Rend is taken to be on the boar")
+        eq(next(ns.db.immune), nil, "and nothing is learned from the word")
+        eq(#ns.Tracker:Immunities(ns.Now()), 0)
+        local report = ns.db.report
+        check(Last(report.combat.immune):find("in the moment of Rend, which was seen to land there just then: left open",
+            1, true), Last(report.combat.immune))
+        check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast; the "
+            .. "game said IMMUNE", 1, true), Last(report.casts))
+        eq(report.verdicts.immune, nil)
+        local learned = ns.db.learned.Rend
+        eq(learned and learned.casts or 0, 0, "nor is the cast counted for Rend or against it, " .. first .. " first")
+
+        -- Nor does that landing prove that the boar takes Rend: the game's
+        -- word, said again with nothing to show for the cast, is its answer.
+        w:advance(21.5)
+        eq(w:icon("ActionButton1"), "check", "Rend ran out")
+        boar.immune = { Rend = true }
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross")
+        eq(Kept(ns, "Rend", boar).seen, 1)
+        Clean(w)
+    end
+end)
+
+test("immune: a change a frame after the cast still leaves it open, and one after that is too late to", function()
+    local w, ns, boar = Party(nil, REND, SUNDER)
+    -- Called immune in the frame of the cast, and its effects change in the next.
+    boar.immune = { Rend = true }
+    w:cast(REND)
+    w:advance(0.05)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(0.3)
+    local report = ns.db.report
+    check(Last(report.combat.immune):find("in the moment of Rend, which was seen to land there just then: left open",
+        1, true), Last(report.combat.immune))
+    eq(next(ns.db.immune), nil, "nothing is learned")
+    eq(w:icon("ActionButton1"), "cross", "and the change passes for the landing, as it would without the word")
+    Clean(w)
+
+    -- Two frames after: the game's word was the answer, and this is something else.
+    w, ns, boar = Party(nil, REND, SUNDER)
+    boar.immune = { Rend = true }
+    w:cast(REND)
+    w:advance(0.1)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(0.3)
+    report = ns.db.report
+    check(Last(report.combat.immune):find("in the moment of Rend, said just after the cast was announced: taken as its "
+        .. "answer", 1, true), Last(report.combat.immune))
+    eq(Kept(ns, "Rend", boar).seen, 1)
+    eq(Booked(ns, "Rend"), nil, "no Rend in the books")
+    eq(w:icon("ActionButton1"), "cross", "by the game's word")
+    Clean(w)
+end)
+
+test("immune: called immune a frame after its effects changed with your cast, an enemy leaves open what the cast did", function()
+    local w, ns, boar = Party(nil, REND, SUNDER)
+    -- The icons are looked at every frame here, and the frames come faster
+    -- than the game's word does: the cast is looked at between the change on
+    -- the boar and the word. A cast at an enemy is not judged that soon,
+    -- however plainly it showed.
+    ns.db.interval = 0.01
+    w:cast(REND)
+    w:advance(0.04, 0.02)
+    w:said(boar, "IMMUNE")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the landing stands")
+    check(Booked(ns, "Rend"), "Rend is taken to be on the boar")
+    local report = ns.db.report
+    check(Last(report.combat.immune):find("in the moment of Rend, which was seen to land there just then: left open",
+        1, true), Last(report.combat.immune))
+    check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast; the "
+        .. "game said IMMUNE", 1, true), Last(report.casts))
+    eq(next(ns.db.immune), nil, "nothing is learned from the word")
+    eq(report.verdicts.immune, nil)
+
+    -- Nor from the change: the boar is not known to take Rend. Called immune
+    -- again with nothing to show for the cast, that is the cast's answer.
+    w:advance(21.5)
+    eq(w:icon("ActionButton1"), "check", "Rend ran out")
+    boar.immune = { Rend = true }
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", boar).seen, 1)
+    Clean(w)
+end)
+
+test("immune: where your effects can be counted in a fight, a change that was not yours leaves the game's word standing", function()
+    local w, ns, elemental = Elemental({ combatAuras = "ids" })
+    -- A count of none is only believed once the fight has shown an effect of
+    -- yours through it: Sunder Armor is on the elemental.
+    w:cast(SUNDER)
+    w:advance(2.5)
+    check(Booked(ns, "Sunder Armor"), "Sunder Armor is on it")
+    -- Rend is called immune as someone else's effect lands on the elemental.
+    -- Counted before and after, it has no new effect of yours: the change
+    -- was not the cast landing, and the game said why the cast left nothing.
+    w:cast(REND)
+    w:applyAura(elemental, "Mortal Wounds", 10, false)
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Booked(ns, "Rend"), nil, "no Rend in the books")
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+    local report = ns.db.report
+    check(Last(report.casts):find("immune", 1, true), Last(report.casts))
+    check(Last(report.combat.immune):find("in the moment of Rend, said just after the cast was announced: taken as its "
+        .. "answer", 1, true), Last(report.combat.immune))
+    local learned = ns.db.learned.Rend
+    eq(learned and learned.casts or 0, 0, "and it is not held against Rend as a cast that left nothing")
+    Clean(w)
+end)
+
+test("immune: called immune in the moment another attack on the enemy missed says nothing of your cast", function()
+    for _, first in ipairs({ "cast", "words" }) do
+        local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+        w:cast(REND)
+        w:advance(22)
+        -- Your Rend is dodged in the very moment someone else's attack is called immune.
+        if first == "words" then
+            w:said(boar, "IMMUNE")
+            w:cast(REND, { miss = true, word = "DODGE", said = "first" })
+        else
+            w:cast(REND, { miss = true, word = "DODGE" })
+            w:said(boar, "IMMUNE")
+        end
+        w:advance(2)
+        eq(w:icon("ActionButton1"), "check", "which of the two words was for the cast is not told, " .. first .. " first")
+        eq(next(ns.db.immune), nil)
+        eq(#ns.Tracker:Immunities(ns.Now()), 0)
+        local report = ns.db.report
+        check(Last(report.combat.immune):find("in the moment of Rend, when another attack was turned away there too: "
+            .. "left open", 1, true), Last(report.combat.immune))
+        check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): silent; the game said DODGE, IMMUNE",
+            1, true), Last(report.casts))
+        eq(report.verdicts.immune, nil)
+        Clean(w)
+    end
+
+    -- Whatever the other word was, the two are written on the cast's line in the same order every time.
+    for _, word in ipairs({ "MISS", "PARRY", "RESIST", "BLOCK", "ABSORB", "EVADE", "DEFLECT", "REFLECT" }) do
+        local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+        w:cast(REND, { miss = true, word = word })
+        w:said(boar, "IMMUNE")
+        w:advance(2)
+        local both = word < "IMMUNE" and (word .. ", IMMUNE") or ("IMMUNE, " .. word)
+        check(Last(ns.db.report.casts):find("; the game said " .. both, 1, true), Last(ns.db.report.casts))
+        eq(next(ns.db.immune), nil, word)
+        Clean(w)
+    end
+end)
+
+test("immune: with two casts of yours at an enemy in one moment, neither is taken to be the one that was meant", function()
+    for _, order in ipairs({ "both casts, then the word", "the word between the casts", "the word first" }) do
+        local w, ns, elemental = Elemental({ saved = Seasoned() })
+        if order == "the word first" then
+            w:said(elemental, "IMMUNE")
+        end
+        w:cast(REND, { word = false })
+        if order == "the word between the casts" then
+            w:said(elemental, "IMMUNE")
+        end
+        w:cast(SUNDER, { miss = true, word = false })
+        if order == "both casts, then the word" then
+            w:said(elemental, "IMMUNE")
+        end
+        w:advance(2)
+        eq(w:icon("ActionButton1"), "check", order)
+        eq(w:icon("ActionButton2"), "check", order)
+        eq(next(ns.db.immune), nil, order)
+        eq(#ns.Tracker:Immunities(ns.Now()), 0, order)
+        local report = ns.db.report
+        check(Last(report.combat.immune):find("in the moment of two casts of yours at that enemy: left open", 1, true),
+            order .. ": " .. Last(report.combat.immune))
+        eq(#report.combat.immune, 1, "one line for the one word")
+        eq(report.verdicts.immune, nil)
+        Clean(w)
+    end
+end)
+
+test("immune: a cast of yours announced a frame after the game's word shares the word with the cast before it", function()
+    -- Rend is held to the frame of its cast: a frame later it has nothing
+    -- left to wait for. Its cast is kept all the same until the moment of the
+    -- game's word is over, for the sake of a second cast in that moment.
+    local saved = Seasoned()
+    saved.learned.Rend = { casts = 12, hits = 12, prompt = 5, tardy = 0, instant = 5, lag = 0, timed = 3 }
+    local w, ns = Elemental({ saved = saved })
+    check(Sharp(ns, REND), "Rend is held to the frame of its cast")
+    -- The icons are looked at every frame, and the frames come fast: Rend,
+    -- the game's word two frames on, and Sunder Armor two frames after that.
+    -- The word is in the moment of both casts, which are not in each other's.
+    ns.db.interval = 0.01
+    w:cast(REND, { said = 0.03 })
+    w:advance(0.08, 0.02)
+    w:cast(SUNDER, { miss = true, word = false })
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton2"), "check")
+    eq(next(ns.db.immune), nil, "it is held against neither")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    local report = ns.db.report
+    check(Last(report.combat.immune):find("in the moment of two casts of yours at that enemy: left open", 1, true),
+        Last(report.combat.immune))
+    eq(#report.combat.immune, 1, "one line for the one word")
+    eq(report.verdicts.immune, nil)
+    Clean(w)
+end)
+
+test("immune: the game's word is the cast's answer just before the cast is announced and a frame after it", function()
+    local cases = {
+        { said = "first", line = "said just before the cast was announced" },
+        { said = 0.05, line = "said just after the cast was announced" },
+    }
+    for _, case in ipairs(cases) do
+        local w, ns, elemental = Elemental()
+        w:cast(REND, { said = case.said })
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross", case.line)
+        check(Last(ns.db.report.combat.immune):find("in the moment of Rend, " .. case.line .. ": taken as its answer",
+            1, true), Last(ns.db.report.combat.immune))
+        eq(Kept(ns, "Rend", elemental).seen, 1)
+        Clean(w)
+    end
+
+    -- Two frames after it is somebody else's business, as far as can be told.
+    local w, ns = Elemental({ saved = Seasoned() })
+    w:cast(REND, { said = 0.09 }) -- the frame that starts then
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check")
+    check(Last(ns.db.report.combat.immune):find("0.10s after Rend, too far from it to be its answer", 1, true),
+        Last(ns.db.report.combat.immune))
+    eq(next(ns.db.immune), nil)
+    Clean(w)
+end)
+
+test("immune: a skill that is held to the frame of its cast is answered in that frame too", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    for _ = 1, 3 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    check(Sharp(ns, REND), "Rend is known to show in the frame of its cast")
+    local elemental = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    for _, said in ipairs({ "first", "after", 0.05 }) do
+        w:cast(REND, { said = said ~= "after" and said or nil })
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross", tostring(said))
+        eq(ns.db.report.verdicts.immune, said == "first" and 1 or said == "after" and 2 or 3)
+        -- A change on the elemental just after it is not kept as one that
+        -- came too late for the cast: the cast has its answer.
+        w:applyAura(elemental, "Mortal Wounds", 10, false)
+        w:advance(13)
+    end
+    eq(#ns.db.report.late, 0)
+    eq(Kept(ns, "Rend", elemental).seen, 3)
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the boar is no elemental")
+    Clean(w)
+end)
+
+test("immune: a client that keeps the game's word from addons, or does not send it, learns nothing and breaks nothing", function()
+    local cases = {
+        { options = { combatWords = "secret" }, heard = 1, unread = 1, listening = true,
+            debug = "What the game said attacks did to enemies: heard 4 times, kept secret 4 times. Of those "
+                .. "\"immune\": 0." },
+        { options = { combatWords = "none" }, heard = 0, unread = 0, listening = true,
+            debug = "What the game said attacks did to enemies: heard 0 times, kept secret 0 times. Of those "
+                .. "\"immune\": 0." },
+        { options = { unknownEvents = { UNIT_COMBAT = true } }, heard = 0, unread = 0, listening = false,
+            debug = "This client does not let an addon hear what attacks did to enemies" },
+    }
+    for _, case in ipairs(cases) do
+        case.options.saved = Seasoned()
+        local w, ns = Elemental(case.options)
+        for _ = 1, 2 do
+            w:cast(REND)
+            w:advance(2)
+            eq(w:icon("ActionButton1"), "check", "nothing told the addon why the cast left nothing")
+        end
+        eq(next(ns.db.immune), nil)
+        local said = ns.db.report.combat
+        eq(said.target.heard, case.heard * 2)
+        eq(said.target.unread, case.unread * 2)
+        eq(said.listening > 0, case.listening)
+        eq(next(said.words), nil, "no word could be read")
+        w:slash("debug")
+        local debug = w:drain()
+        check(debug:find(case.debug, 1, true), debug)
+        Clean(w)
+    end
+end)
+
+test("immune: where the game hides what kind of creature an enemy is, only that one enemy is taken to be immune", function()
+    local w, ns, first = Elemental({ combatIdentity = false })
+    -- Met before the fight, when the game still said what it was.
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", first).seen, 1)
+
+    -- A second one walks into the fight: the game will not say what it is.
+    local second = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "that one enemy, for now")
+    eq(Kept(ns, "Rend", first).seen, 1, "nothing is added to what is known of fire elementals")
+    local report = ns.db.report
+    check(Last(report.combat.learned):find("Rend on an enemy the game does not name: that one enemy is immune for now",
+        1, true), Last(report.combat.learned))
+    w:advance(12.5)
+    eq(w:icon("ActionButton1"), "check", "worth another try after a while")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    check(Last(report.combat.learned):find("Rend on an enemy the game does not name: that one enemy is immune from "
+        .. "now on", 1, true), Last(report.combat.learned))
+    -- Said once more a moment later, of a cast through the red X: it stays as it is.
+    w:advance(3)
+    w:cast(REND)
+    w:advance(0.3)
+    check(Last(report.combat.learned):find("said again of the same enemy", 1, true), Last(report.combat.learned))
+    w:advance(60)
+    eq(w:icon("ActionButton1"), "cross", "for as long as it is about")
+    eq(report.combat.kinds.calm.number, 1, "the saved report: one enemy named by its number, out of the fight")
+    eq(report.combat.kinds.hidden.none, 1, "and one not named at all, in it")
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("Rend: an enemy the game does not name is taken to be immune, for as long as it is about", 1, true),
+        debug)
+    w:slash("immune rend")
+    check(w:drain():find("the game will not say what kind of creature that is right now", 1, true),
+        "nor can its kind be marked by hand in the middle of the fight")
+
+    -- It bleeds after all, and Rend is used through the red X: seen to land,
+    -- the enemy is not taken to be immune any more.
+    second.immune = nil
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "Rend is on it now")
+    check(Booked(ns, "Rend"), "in the books")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    w:advance(21.5)
+    eq(w:icon("ActionButton1"), "check", "and when Rend has run out it is worth casting again")
+    Clean(w)
+end)
+
+test("immune: where the game tells only an enemy's name in a fight, its kind goes by that name", function()
+    local w, ns = Elemental({ combatIdentity = "names" })
+    Open(w) -- the fight starts
+    for nth = 1, 2 do
+        Meet(w, "Lava Spawn", { immune = { Rend = true } })
+        eq(w:icon("ActionButton1"), "check", "lava spawn " .. nth)
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross")
+        eq(ns.db.immune.Rend["Lava Spawn"].seen, nth)
+    end
+    Meet(w, "Lava Spawn", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "cross", "the third one is known by its name")
+    eq(ns.db.report.combat.kinds.hidden.name, 3)
+    w:slash("immune")
+    local list = w:drain()
+    check(list:find("  Rend: Lava Spawn", 1, true), list)
+    Clean(w)
+end)
+
+test("immune: where the game hides its own name for an enemy in a fight and still tells its number, the kind goes by the number", function()
+    local w, ns = Elemental({ combatIdentity = "ids" })
+    Open(w) -- the fight starts
+    local spawn = Meet(w, "Lava Spawn", { immune = { Rend = true } })
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", spawn).seen, 1)
+    eq(Kept(ns, "Rend", spawn).name, "Lava Spawn")
+    eq(ns.db.report.combat.kinds.hidden.number, 1, "named by its number, in the fight")
+    Clean(w)
+end)
+
+test("immune: a client without the call for a creature's number reads it off the enemy's own name for the game", function()
+    local w, ns, elemental = Elemental({ noCreatureID = true })
+    w:cast(REND)
+    w:advance(13)
+    w:cast(REND)
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental).seen, 2)
+    Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("immune: a player is never a kind of creature", function()
+    local w, ns = Bar({ saved = Proven() }, REND, SUNDER)
+    local paladin = Meet(w, "Uther", { npc = false, guid = "Player-1-00000777", immune = true })
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "behind a shield, for now")
+    eq(w:icon("ActionButton2"), "check", "nothing was said of Sunder Armor")
+    eq(next(ns.db.immune), nil, "nothing is kept: the next player is somebody else")
+    local report = ns.db.report
+    check(Last(report.combat.learned):find("Rend on a player: that one enemy is immune for now", 1, true),
+        Last(report.combat.learned))
+    eq(report.combat.kinds.calm.none + report.combat.kinds.hidden.none, 0, "a player is not counted as a creature "
+        .. "the game would not name")
+    w:slash("immune rend")
+    check(w:drain():find("that is a player, and no kind of creature", 1, true), "nor can a player be marked by hand")
+
+    paladin.immune = nil -- the shield is gone
+    w:advance(12.5)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "Rend is on them")
+    check(Booked(ns, "Rend"), "in the books")
+    Clean(w)
+end)
+
+test("immune: what is known of one enemy only is dropped when it has not been seen for ten minutes", function()
+    local w, ns = Bar({ saved = Proven() }, REND, SUNDER)
+    local paladin = Meet(w, "Uther", { npc = false, guid = "Player-1-00000777", immune = true })
+    w:cast(REND)
+    w:advance(13)
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "said twice of that one enemy")
+    w:advance(700)
+    eq(w:icon("ActionButton1"), "cross", "and it stays while they are about, however long")
+    eq(#ns.Tracker:Immunities(ns.Now()), 1)
+
+    w:target(nil)
+    w:hidePlate(paladin)
+    w:leaveCombat()
+    w:advance(300)
+    eq(#ns.Tracker:Immunities(ns.Now()), 1, "five minutes out of sight")
+    w:advance(340)
+    eq(#ns.Tracker:Immunities(ns.Now()), 0, "after ten it is forgotten")
+    w:showPlate(paladin)
+    w:target(paladin)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("/se immune lists what was learned, marks a kind by hand and forgets", function()
+    local w, ns, elemental = Elemental()
+    w:slash("help")
+    local help = w:drain()
+    check(help:find("/se immune - the creatures found immune to a skill", 1, true), help)
+    check(help:find("/se immune forget [spell]", 1, true), help)
+    w:slash("immune")
+    check(w:drain():find("no creature has been found immune to a skill of yours yet", 1, true), "nothing to list yet")
+
+    w:cast(REND)
+    w:advance(0.3)
+    w:slash("immune")
+    local list = w:drain()
+    check(list:find("no kind of creature is counted on as immune yet.", 1, true), list)
+    check(list:find("Heard once, and counted on when the game says so again:", 1, true), list)
+    check(list:find("  Rend: Fire Elemental", 1, true), list)
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("What the game said attacks did to enemies: heard 2 times, kept secret 0 times. Of those "
+        .. "\"immune\": 2.", 1, true), debug)
+    check(debug:find("Rend: Fire Elemental is taken to be immune, 12s more unless the game says so again", 1, true),
+        debug)
+    check(debug:find("0 left something, 1 left nothing, 0 could not be judged", 1, true), debug)
+
+    w:advance(13)
+    w:cast(REND)
+    w:advance(0.3)
+    w:slash("immune")
+    list = w:drain()
+    check(list:find("creatures taken to be immune, by skill. They are left out when the skill is judged:", 1, true),
+        list)
+    check(list:find("  Rend: Fire Elemental", 1, true), list)
+    check(not list:find("Heard once", 1, true), list)
+    check(list:find("/se immune forget [spell] forgets them.", 1, true), list)
+
+    -- By hand: the kind you have targeted, for a skill the game has said nothing about.
+    eq(w:icon("ActionButton2"), "check")
+    w:slash("immune sunder armor")
+    check(w:drain():find("Fire Elemental now counts as immune to Sunder Armor, on your say-so, until you take it back "
+        .. "with /se immune forget Sunder Armor.", 1, true), "it says what it did")
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "at once")
+    eq(Kept(ns, "Sunder Armor", elemental).told, true)
+    w:slash("immune")
+    list = w:drain()
+    check(list:find("  Sunder Armor: Fire Elemental (you said so)", 1, true), list)
+
+    -- What you said stands, even when the skill is seen to land on one.
+    local learned = #ns.db.report.combat.learned
+    w:cast(SUNDER)
+    w:advance(31)
+    eq(w:icon("ActionButton2"), "cross", "Sunder Armor landed and ran out, and your word still holds")
+    eq(Kept(ns, "Sunder Armor", elemental).told, true)
+    eq(Kept(ns, "Sunder Armor", elemental).passes, nil)
+    eq(#ns.db.report.combat.learned, learned, "nor is it written down that its kind is not immune after all")
+    -- And when the game then calls that one immune, which would pass for any other kind.
+    elemental.immune["Sunder Armor"] = true
+    w:cast(SUNDER)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross")
+    eq(Kept(ns, "Sunder Armor", elemental).told, true)
+    eq(Kept(ns, "Sunder Armor", elemental).passes, nil)
+
+    w:slash("immune forget sunder armor")
+    check(w:drain():find("forgot the creatures that were found immune to Sunder Armor (1 kept until now).", 1, true),
+        "it says what it forgot")
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check")
+    eq(w:icon("ActionButton1"), "cross", "Rend's are still kept")
+    -- Forgotten with it: that Sunder Armor was seen to land on this one. The
+    -- game's word for it counts like a first word again.
+    elemental.immune["Sunder Armor"] = true
+    w:cast(SUNDER)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross")
+    eq(Kept(ns, "Sunder Armor", elemental).seen, 1)
+    w:slash("immune forget")
+    check(w:drain():find("forgot every creature that was found immune to a skill (2 kept until now).", 1, true),
+        "and all of them")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(next(ns.db.immune), nil)
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+
+    -- Nothing to mark without an enemy targeted, or for a skill that is not on the bars.
+    w:target(nil)
+    w:slash("immune rend")
+    check(w:drain():find("target the creature first", 1, true), "no target")
+    w:target(elemental)
+    w:slash("immune no such skill")
+    local answer = w:drain()
+    check(not answer:find("now counts as immune", 1, true), answer)
+    eq(next(ns.db.immune), nil)
+    Clean(w)
+end)
+
+test("/se immune forget with a spell leaves what is known of the other skills", function()
+    local w, ns, elemental = Elemental()
+    elemental.immune = { Rend = true, ["Sunder Armor"] = true }
+    w:cast(REND)
+    w:advance(1.5)
+    w:cast(SUNDER)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(w:icon("ActionButton2"), "cross")
+    eq(#ns.Tracker:Immunities(ns.Now()), 2, "said once of each skill: that one enemy, for now")
+
+    w:slash("immune forget sunder armor")
+    check(w:drain():find("forgot the creatures that were found immune to Sunder Armor (1 kept until now).", 1, true),
+        "it says what it forgot")
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check")
+    eq(w:icon("ActionButton1"), "cross", "what the game said of Rend a moment ago still stands")
+    eq(#ns.Tracker:Immunities(ns.Now()), 1)
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+    eq(ns.db.immune["Sunder Armor"], nil)
+    Clean(w)
+end)
+
+test("immune: what was learned is kept over a reload, and /se reset forgets it", function()
+    local w, ns, elemental = Elemental()
+    w:cast(REND)
+    w:advance(13)
+    w:cast(REND)
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental).seen, 2)
+    Clean(w)
+
+    local saved = w.env.StatusEfficiencyDB
+    local w2, ns2 = Elemental({ saved = saved })
+    eq(w2:icon("ActionButton1"), "cross", "known before the first cast of the next session")
+    eq(w2:icon("ActionButton2"), "check")
+    w2:slash("reset")
+    w2:drain()
+    ns2.SetAppear("always") -- as these scenarios have it
+    w2:advance(0.5)
+    eq(next(ns2.db.immune), nil)
+    eq(w2:icon("ActionButton1"), "check", "everything learned is gone")
+    Clean(w2)
+end)
+
+test("immune: a kind that was kept without its name gets the name when one of its kind is met", function()
+    -- Kept in a session in which the game told the creature's number and not its name.
+    local saved = Proven()
+    saved.immune = { Rend = { ["#1001"] = { seen = 2 } } }
+    local w, ns, elemental = Elemental({ saved = saved })
+    eq(elemental.kind, 1001)
+    eq(w:icon("ActionButton1"), "cross", "counted on by its number")
+    eq(Kept(ns, "Rend", elemental).name, "Fire Elemental")
+    w:slash("immune")
+    local list = w:drain()
+    check(list:find("  Rend: Fire Elemental", 1, true), list)
+    Clean(w)
+end)
+
+test("immune: saved settings that are not what the addon wrote do no harm", function()
+    local broken = {
+        "broken", 7, true,
+        { Rend = "yes" },
+        { Rend = { ["#1001"] = "immune" } },
+        { Rend = { ["#1001"] = { seen = "often", name = 5 } } },
+        { Rend = { ["#1001"] = { seen = -3, passes = "no", told = "yes" } } },
+        { [5] = { x = 1 }, Rend = { [7] = { seen = 9 } } },
+    }
+    for i = 1, #broken do
+        local saved = Proven()
+        saved.immune = broken[i]
+        local w, ns, elemental = Elemental({ saved = saved })
+        eq(w:icon("ActionButton1"), "check", "case " .. i .. ": nothing sound was kept")
+        w:slash("immune")
+        w:drain()
+        w:cast(REND)
+        w:advance(13)
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross", "case " .. i .. ": and it is learned as usual")
+        eq(Kept(ns, "Rend", elemental).seen, 2, "case " .. i)
+        w:slash("immune")
+        check(w:drain():find("  Rend: Fire Elemental", 1, true), "case " .. i)
+        w:slash("immune forget")
+        w:drain()
+        Clean(w)
+    end
+end)
+
+test("immune: a skill with no icon learns nothing from the game's word, and an immune enemy costs no skill its icon", function()
+    local w, ns = Bar({ saved = Proven() }, REND, HEROIC, CLAP)
+    local ghost = Meet(w, "Restless Ghost", { immune = true })
+    eq(w:icon("ActionButton2"), nil, "Heroic Strike leaves nothing behind")
+    w:cast(HEROIC)
+    w:said(ghost, "IMMUNE")
+    w:advance(2)
+    eq(next(ns.db.immune), nil, "nothing is kept for a skill that has no icon to show it on")
+    eq(w:icon("ActionButton2"), nil)
+
+    -- Rend has only its tooltip to speak for it: three casts that leave nothing cost it its icon.
+    -- Not when the game says why they left nothing.
+    for _ = 1, 4 do
+        w:cast(REND)
+        w:advance(13)
+    end
+    check(w:icon("ActionButton1") ~= nil, "Rend still has its icon")
+    local learned = ns.db.learned.Rend
+    eq(learned and learned.casts or 0, 0, "an immune enemy says nothing about what the skill leaves on others")
+    Meet(w, "Boar")
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("immune: where casts are taken to land for want of reports, the game's word takes that back", function()
+    -- A client that never reports a unit's effects changing: every cast is taken to have landed.
+    local quiet = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, ns, elemental = Elemental({ auraEvents = false, saved = quiet })
+    w:cast(REND)
+    eq(Booked(ns, "Rend") ~= nil, true, "taken to have landed, as it is cast")
+    w:advance(0.3)
+    eq(Booked(ns, "Rend"), nil, "the game said otherwise")
+    eq(w:icon("ActionButton1"), "cross", "by its word now")
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+    w:advance(12.5)
+    eq(w:icon("ActionButton1"), "check", "and when the word is no longer counted on, the skill is worth a try: "
+        .. "nothing is left in the books that would say Rend is on it")
+    Clean(w)
+end)
+
+test("immune: a buff is never refused, and what the game says of a friend is nobody's immunity", function()
+    local w, ns, boar, warrior = Party(nil, REND, BLOCK, SUNDER)
+    Open(w)
+    -- Shield Block goes on you while the boar is called immune to somebody's attack.
+    w:cast(BLOCK)
+    w:said(boar, "IMMUNE")
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "cross", "Shield Block is on you")
+    eq(w:icon("ActionButton1"), "check")
+    eq(next(ns.db.immune), nil)
+    local report = ns.db.report
+    check(not Last(report.casts):find("the game said", 1, true), "the word is not put down to a buff: "
+        .. Last(report.casts))
+
+    -- A friend you have targeted is called immune to something. No enemy, no business of the addon's.
+    w:target(warrior)
+    w:advance(0.3)
+    local before = #report.combat.immune
+    w:said(warrior, "IMMUNE")
+    w:advance(0.3)
+    eq(#report.combat.immune, before, "not even a line in the saved report")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    Clean(w)
+end)
+
+test("immune: the saved report keeps what the game said within bounds", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    w:cast(REND)
+    w:advance(1)
+    for _ = 1, 30 do
+        w:said(boar, "IMMUNE")
+        w:advance(0.3)
+    end
+    local said = ns.db.report.combat
+    eq(#said.immune, 20, "the last twenty times it said \"immune\"")
+    eq(said.words.IMMUNE, 60)
+    for i = 1, 40 do
+        w:said(boar, "WORD" .. i)
+    end
+    w:advance(0.3)
+    local kinds = 0
+    for _ in pairs(said.words) do
+        kinds = kinds + 1
+    end
+    eq(kinds, 17, "sixteen words kept apart, and the rest together")
+    eq(said.words.others, 50)
+    eq(next(ns.db.immune), nil)
+    Clean(w)
+end)
+
+test("immune: meeting more kinds of creature than are remembered at once starts the list over, and loses nothing learned", function()
+    local w, ns, elemental = Elemental()
+    w:cast(REND)
+    w:advance(13)
+    w:cast(REND)
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental).seen, 2)
+    w:leaveCombat()
+    for i = 1, 210 do
+        local mob = w:addMob("Critter " .. i)
+        w:target(mob)
+        w:advance(0.1)
+        w:kill(mob)
+    end
+    w:target(elemental)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the elemental's kind is asked again, and known")
+    local third = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", third).name, "Fire Elemental")
     Clean(w)
 end)
 
@@ -8183,11 +9480,11 @@ test("settings: each of the three results says what it means, for an effect that
     local w = Simple()
     local view = w:openSettings().view
     eq(view.names.none:GetText(), "Worth casting")
-    eq(view.details.none:GetText(), "Nothing it would land on has the effect yet.")
+    eq(view.details.none:GetText(), "Nothing it would land on has the full effect yet.")
     eq(view.names.some:GetText(), "Partly worth casting")
-    eq(view.details.some:GetText(), "Some enemies have the effect, or it can still stack higher.")
+    eq(view.details.some:GetText(), "Some of what it would land on already has the full effect.")
     eq(view.names.all:GetText(), "No need to cast")
-    eq(view.details.all:GetText(), "Everything it would land on already has the effect.")
+    eq(view.details.all:GetText(), "Everything it would land on already has the full effect.")
     Clean(w)
 end)
 
@@ -8429,7 +9726,7 @@ panel("Spells tab: how many times an effect stacks", function(options)
         w:cast(SUNDER)
         w:advance(1.5)
     end
-    eq(w:icon("ActionButton1"), "partial", "two of five")
+    eq(w:icon("ActionButton1"), "check", "two of five")
     w:type(sunder.stacks, "2")
     eq(ns.db.spells["Sunder Armor"].stacks, 2)
     w:advance(0.1)
@@ -8438,7 +9735,7 @@ panel("Spells tab: how many times an effect stacks", function(options)
     w:slash("stacks sunder armor 4")
     eq(sunder.stacks:GetText(), "4", "/se stacks shows here straight away")
     w:advance(0.1)
-    eq(w:icon("ActionButton1"), "partial", "two of four")
+    eq(w:icon("ActionButton1"), "check", "two of four")
     w:slash("stacks sunder armor auto")
     eq(sunder.stacks:GetText(), "5")
     eq(ns.db.spells["Sunder Armor"], nil)
@@ -8508,10 +9805,12 @@ panel("Spells tab: whether another player's copy of an effect counts", function(
     check(says:find("Only an effect you put there yourself counts.", 1, true), says)
     check(says:find("This is what the addon made of the spell's tooltip.", 1, true), says)
 
-    -- Another warrior's Sunder Armor is on the boar.
-    w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
+    -- Another warrior's Sunder Armor is on the boar, as many times over as it goes.
+    for _ = 1, 5 do
+        w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
+    end
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "theirs counts: one of five")
+    eq(w:icon("ActionButton1"), "cross", "theirs counts: five of five")
 
     w:drain()
     w:click(sunder.shared.frame)
@@ -8529,7 +9828,7 @@ panel("Spells tab: whether another player's copy of an effect counts", function(
     eq(sunder.shared.ticked, true)
     eq(w.sounds[#w.sounds], 856)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "partial", "and their copy counts again at once")
+    eq(w:icon("ActionButton1"), "cross", "and their copy counts again at once")
 
     w:click(rend.shared.frame)
     eq(ns.db.spells.Rend.shared, true, "ticked: the same as /se anyone")

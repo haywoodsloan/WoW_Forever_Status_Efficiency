@@ -108,7 +108,8 @@ local HELP = {
     "icons on your action buttons show whether casting again is worth it.",
     "  A debuff: green check = no enemy it would hit has it, yellow half circle = some do, red X = all do.",
     "  A buff: green check = you do not have it, red X = you do.",
-    "  An effect that stacks: yellow half circle until the last stack is on, red X only then.",
+    "  An effect that stacks: green check until the last stack is on, red X only then.",
+    "  An enemy that is immune to a skill is not counted. /se immune shows which the addon has learned.",
     "  /se options - the settings window: when the icons appear, where they sit, how big they are, which icon",
     "    means what, and how each spell on your bars is treated",
     "  /se on | off   /se when <always | combat | group> - when the icons appear",
@@ -120,6 +121,8 @@ local HELP = {
     "  /se duration <spell> <seconds | auto>",
     "  /se stacks <spell> <how many | auto> - how many times over a skill's effect goes on one unit",
     "  /se anyone <spell> | mine <spell> - count another player's copy of its effect too, or only your own",
+    "  /se immune - the creatures found immune to a skill   /se immune <spell> - mark the kind you have targeted",
+    "  /se immune forget [spell] - forget them, for one skill or for all",
     "  /se corner <tl | top | tr | left | center | right | bl | bottom | br>   /se size <pixels | auto>",
     "  /se icon <green | yellow | red> <icon name | file ID | texture path | none | default>   /se icons lists the names",
     "  /se debug - what the game lets the addon see right now",
@@ -342,7 +345,7 @@ function commands.stacks(rest)
     WithSpell(spell, function(name)
         if most and most > 1 then
             Choice(name).stacks = most
-            Print(format("%s is now full at %d stacks: the yellow half circle below that, the red X at %d.",
+            Print(format("%s is now full at %d stacks: the green check below that, the red X at %d.",
                 name, most, most))
         elseif most then
             Choice(name).stacks = most
@@ -370,6 +373,88 @@ function commands.mine(rest)
         Choice(name).shared = false
         Tracker:ForgetTheirs(name)
         Print(name .. ": only an effect you put there yourself counts now.")
+    end)
+end
+
+--- /se immune: what was learned of immune creatures, by skill.
+local function ListImmune()
+    local names = Spells:ImmuneSpells()
+    local sure, once = {}, {}
+    for i = 1, #names do
+        local counted, heard = {}, {}
+        local kinds = Spells:ImmuneKinds(names[i])
+        for k = 1, #kinds do
+            local kind = kinds[k]
+            if kind.sure then
+                counted[#counted + 1] = kind.name .. (kind.told and " (you said so)" or "")
+            else
+                heard[#heard + 1] = kind.name
+            end
+        end
+        if #counted > 0 then
+            sure[#sure + 1] = "  " .. names[i] .. ": " .. table.concat(counted, ", ")
+        end
+        if #heard > 0 then
+            once[#once + 1] = "  " .. names[i] .. ": " .. table.concat(heard, ", ")
+        end
+    end
+    if #sure == 0 and #once == 0 then
+        Print("no creature has been found immune to a skill of yours yet. The addon learns it when the game says "
+            .. "\"immune\" as you use a skill on one, and counts on it for that kind of creature once it has heard "
+            .. "so twice. /se immune <spell> marks the kind you have targeted yourself.")
+        return
+    end
+    if #sure > 0 then
+        Print("creatures taken to be immune, by skill. They are left out when the skill is judged:")
+        for i = 1, #sure do
+            print(sure[i])
+        end
+    else
+        Print("no kind of creature is counted on as immune yet.")
+    end
+    if #once > 0 then
+        print("  Heard once, and counted on when the game says so again:")
+        for i = 1, #once do
+            print("  " .. once[i])
+        end
+    end
+    print("  /se immune forget [spell] forgets them. A skill seen to land on one drops it by itself.")
+end
+
+function commands.immune(rest)
+    rest = Trim(rest)
+    if rest == "" then
+        ListImmune()
+        return
+    end
+    local word, more = rest:match("^(%S+)%s*(.*)$")
+    if word:lower() == "forget" then
+        if more == "" then
+            local dropped = ns.ForgetImmune()
+            ns.Options.RefreshAll()
+            Print(format("forgot every creature that was found immune to a skill (%d kept until now).", dropped))
+            return
+        end
+        WithSpell(more, function(name)
+            local dropped = ns.ForgetImmune(name)
+            Print(format("forgot the creatures that were found immune to %s (%d kept until now).", name, dropped))
+        end)
+        return
+    end
+    WithSpell(rest, function(name)
+        local who, why = ns.MarkImmune(name)
+        if who then
+            Print(format("%s now counts as immune to %s, on your say-so, until you take it back with /se immune "
+                .. "forget %s.", who, name, name))
+        elseif why == "player" then
+            Print("that is a player, and no kind of creature: only creatures can be marked as immune to a skill.")
+        elseif why == "hidden" then
+            Print("the game will not say what kind of creature that is right now, so nothing was marked. Try again "
+                .. "when the fight is over.")
+        else
+            Print("target the creature first: /se immune <spell> marks the kind of creature you have targeted as "
+                .. "immune to that skill.")
+        end
     end)
 end
 
@@ -734,9 +819,39 @@ function commands.debug()
     else
         print("  Casts heard from your group: none yet.")
     end
+    -- An enemy is only taken to be immune on the game's own word for what a
+    -- cast did to it, so whether that word is heard at all matters.
+    local said = journal.combat
+    if next(ns.saying) == nil then
+        print("  This client does not let an addon hear what attacks did to enemies, so which enemies are immune "
+            .. "is not learned. /se immune <spell> marks the kind you have targeted by hand.")
+    elseif type(said) == "table" then
+        local heard, unread = 0, 0
+        for _, kind in pairs({ "target", "softenemy", "plate" }) do
+            local count = said[kind]
+            if type(count) == "table" then
+                heard = heard + (count.heard or 0)
+                unread = unread + (count.unread or 0)
+            end
+        end
+        print(format("  What the game said attacks did to enemies: heard %d times, kept secret %d times. Of those "
+            .. "\"immune\": %d.", heard, unread, type(said.words) == "table" and said.words.IMMUNE or 0))
+    else
+        print("  What the game said attacks did to enemies: nothing heard yet.")
+    end
+    local immune = Tracker:Immunities(now)
+    for i = 1, #immune do
+        if i > 6 then
+            print(format("    and %d more", #immune - 6))
+            break
+        end
+        print(format("    %s: %s is taken to be immune, %s", immune[i].name, ns.EnemyName(immune[i].key),
+            immune[i].left and (Span(immune[i].left) .. " more unless the game says so again")
+                or "for as long as it is about"))
+    end
     local verdicts = journal.verdicts
     local landed = (verdicts.changed or 0) + (verdicts.seen or 0)
-    local empty = (verdicts.silent or 0) + (verdicts["nothing new"] or 0)
+    local empty = (verdicts.silent or 0) + (verdicts["nothing new"] or 0) + (verdicts.immune or 0)
     local open = (verdicts.unproven or 0) + (verdicts.assumed or 0) + (verdicts.unclear or 0) + (verdicts.unknown or 0)
     print(format("  Casts made with details hidden this session: %d left something, %d left nothing, %d could not be judged.",
         landed, empty, open))

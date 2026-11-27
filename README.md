@@ -6,9 +6,12 @@ status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 
 | Icon | A spell that leaves a debuff on enemies | A spell that leaves a buff on you |
 | --- | --- | --- |
-| Green check | None of the enemies it would hit has the debuff. Casting puts it on all of them. | You do not have the buff. |
-| Yellow half circle | Some of them have it and some do not. Or it stacks, and is not yet on as many times over as it goes. | It stacks, and is not yet on you as many times over as it goes. |
+| Green check | None of the enemies it would hit has the debuff in full. Casting puts it on all of them, or adds a stack on all of them. | You do not have the buff, or it stacks and is not yet on you as many times over as it goes. |
+| Yellow half circle | Some of them have it in full and some do not. | Not used: a buff is judged on one person. |
 | Red X | All of them already have it, at full stacks. Casting again changes nothing. | You already have it, at full stacks. Casting again changes nothing. |
+
+An enemy that is immune to a debuff is left out: it never will have it, and is
+no reason to cast.
 
 No icon means there is nothing to say: the spell applies no status effect, or
 it is a debuff and there is no enemy to judge and no fight going on. Out of the
@@ -16,7 +19,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.4.1 is an early draft. It loads and draws its icons in the real
+Version 0.4.2 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -44,7 +47,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: v0.4.1".
+first line of the reply gives the version, "Status Efficiency: v0.4.2".
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -62,9 +65,17 @@ not have the buff, a red X while you do. A buff you can also put on other
 people (a heal over time, a stamina buff) is judged on the friend you have
 targeted, and on you when your target is an enemy or nobody.
 
-A skill whose effect stacks, like Sunder Armor, shows the yellow half circle
-from its first stack to the one before the last: the effect is there, and
-casting again still adds to it. The red X comes with the last stack.
+A skill whose effect stacks, like Sunder Armor, keeps the green check until
+the last stack is on: casting again still adds to it. The red X comes with the
+last stack. A skill that stacks and hits every enemy shows the yellow half
+circle when some of them carry every stack and others do not.
+
+An enemy that is immune to a skill does not count for it. Use Rend on an
+elemental that cannot bleed and the game says "Immune". From then on Rend
+shows the red X on that elemental, and once the game has said so a second
+time, on every creature of its kind, in later sessions too. A skill that hits
+every enemy is judged on the ones that can take its effect. `/se immune` lists
+what was learned (see [Immune enemies](#immune-enemies)).
 
 An effect that a unit carries only once, whoever put it there, counts when it
 is another player's. With another warrior's Demoralizing Shout on the enemy
@@ -167,8 +178,8 @@ sentence.
 - **Lasts**: how long the effect lasts. Type a number of seconds to change it,
   or empty the box to let the addon work it out again.
 - **Stacks**: how many times over the effect can be on one unit, with a dash
-  for an effect that goes on once. Until it is on that many times the icon is
-  the yellow half circle. Type a number to change it, `1` for an effect that
+  for an effect that goes on once. Until it is on that many times the icon
+  stays the green check. Type a number to change it, `1` for an effect that
   does not stack, or empty the box to let the addon work it out again. The
   same as `/se stacks`.
 - **Shared**: ticked when a unit carries the effect only once, whoever casts
@@ -219,6 +230,8 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se stacks <spell> <how many>` | Say how many times over the effect can be on one unit: the red X shows at that many. `1` is an effect that does not stack, and `auto` goes back to what the game and the tooltip say. |
 | `/se anyone <spell>` | Another player's copy of the effect counts like your own. |
 | `/se mine <spell>` | Only an effect you put there yourself counts. |
+| `/se immune` | Lists the creatures found to be immune to a skill. `/se immune <spell>` marks the kind of creature you have targeted as immune to that skill yourself. |
+| `/se immune forget [spell]` | Forgets them, for one skill or for all. |
 | `/se corner <where>` | Moves the icon: `tl`, `top`, `tr`, `left`, `center`, `right`, `bl`, `bottom`, `br`. |
 | `/se size <pixels>` | Icon size from 8 to 48. `auto` sizes it from the button again. |
 | `/se icons` | Lists the icon names and what each result uses now. |
@@ -339,6 +352,57 @@ spell can leave a shorter effect. So their cast is given:
 - the whole time for an effect that stacks, which is one effect that every
   caster renews.
 
+### Immune enemies
+
+Nothing an addon may read says beforehand what a creature is immune to. What
+the game does say, in a fight too, is a word for what an attack or a spell
+just did to a unit, the same word it floats over that unit's portrait: "Miss",
+"Dodge", "Resist", "Immune". It does not say whose attack the word is about.
+
+So an enemy is taken to be immune to a skill only when the game says "Immune"
+of it in the very moment a cast of yours with that skill went to it, with
+nothing to show for the cast there. Then:
+
+- **That enemy** gets the red X on the skill for twelve seconds. An immunity
+  can pass (a shield, a banishment), so one word is not counted on for longer.
+  When the game says so again after that while, the enemy stays immune for as
+  long as it is about.
+- **Its kind of creature** is kept with your settings, and counted on once
+  the game has said so on two occasions: the same creature twice, or two of a
+  kind once each. From then on every creature of that kind is left out for
+  that skill before the first cast, in later sessions too.
+- **An enemy seen to carry the effect** is not immune, whatever was said
+  before: what was kept of it is dropped at once. Its kind is then known for
+  an immunity that comes and goes, and is never counted on as immune again.
+  Nor is anything kept when the game calls an enemy immune that has carried
+  the effect before: that will pass, and the skill stays worth a try.
+
+In a group somebody else's attack can be called immune in the moment of your
+cast. The word is not taken for your cast's answer, and nothing is learned
+from it, when anything else in that moment could be the answer instead:
+
+- the enemy's effects changed in that moment, as they do when a cast lands.
+  The landing then stands, as it would without the word;
+- the game also said "Miss", "Dodge", "Parry", "Resist" or the like of that
+  enemy in that moment: one of the two words was for another attack;
+- two casts of yours went to that enemy in that moment.
+
+Nothing else passes for immunity. A cast that showed nothing may as well have
+missed, and several in a row may as well have missed in a row, so silence
+never turns an icon red.
+
+What kind of creature an enemy is comes from the game's own number for it,
+which is part of the name the game gives the enemy. Where a client hides that
+during a fight, an enemy met before the fight is still known, one that joins
+later goes by its name if the client tells that, and otherwise only that one
+enemy is learned about and not its kind. A player is never a kind of creature.
+
+`/se immune` lists the kinds found immune to each skill, and the ones heard of
+only once. `/se immune <spell>` marks the kind of creature you have targeted
+as immune to that skill on your say-so, which stands until you take it back:
+`/se immune forget <spell>` forgets what is kept for one skill, and
+`/se immune forget` for all of them.
+
 ### Who is looked at
 
 - A debuff aimed at one enemy is judged against your target (or the enemy the
@@ -445,7 +509,14 @@ said which spell it was and for how many it kept that back, how many were of a
 spell of yours that another player's copy counts for, how many of those were
 seen to land, how often another player's copy was read for how long it lasts,
 and how often the game said with it who had put it there. And the last 20
-changes that came too late for a cast held to its moment (`late`). `/se debug`
+changes that came too late for a cast held to its moment (`late`). And what
+the game said attacks did to enemies (`combat`): through how many unit names
+the addon could listen for it, how often it heard something and how often the
+word was kept from it, each word with how often it came, a line for each of
+the last 20 times the game said "Immune" with what that was taken for, a line
+for each thing learned from it, and how the game named the kinds of the
+enemies you met (by number, by name only, or not at all). A cast's own line
+ends with the words the game said of its targets in that moment. `/se debug`
 prints the summary. The full
 record is saved with the addon's settings at the next `/reload` or logout,
 under `report` in `WTF\Account\<account>\SavedVariables\StatusEfficiency.lua`,
@@ -554,8 +625,29 @@ window gave the page.
   real number: a stack added by someone outside your group, or by a group
   member whose cast the game kept secret, or by a cast of yours whose landing
   was reported a moment later than usual, is not counted. The button then
-  shows the yellow half circle where the red X would be right. It is put right
+  shows the green check where the red X would be right. It is put right
   when the effect is read out of a fight.
+- **An immune enemy is only known by the game's word for it.** If a client
+  does not send that word to addons, or keeps it secret during a fight, no
+  enemy is ever learned to be immune and the green check stays, as before
+  0.4.2. `/se debug` and the record (`combat`) say what your client does.
+  The same goes for these, in each of which the green check stays where a red
+  X would be right:
+  - a skill whose damage lands while only its effect is refused, if the game
+    does not announce the refusal;
+  - a spell that takes a while to reach its target, which is answered when it
+    arrives and not when it is cast;
+  - an "Immune" that came together with a miss or with a change on the enemy
+    (see [Immune enemies](#immune-enemies)).
+
+  `/se immune <spell>` marks such a creature by hand.
+- **An immunity that lasts longer than twelve seconds can be taken for a
+  lasting one.** Cast a skill twice at an enemy behind a long shield, twelve
+  seconds or more apart, before the skill has ever been seen to land on that
+  kind of creature, and the kind is kept as immune. The red X then stays on
+  after the shield is gone. Casting the skill once all the same puts it right
+  for good: the effect is seen to land, and that kind is never counted on as
+  immune again. So does `/se immune forget <spell>`.
 - **A skill is held to the moment of its cast only after three landings.**
   Until then its casts are waited for a little longer, and in that time
   another effect arriving on the enemy after a miss can pass for the landing.
@@ -575,9 +667,10 @@ window gave the page.
   effects do not change). For a buff it needs a client that lets it count
   effects in combat. Otherwise use `/se ignore <spell>`. A real status spell
   can lose its icon this way when its first three casts all miss, or after a
-  long run of misses or immune enemies. It keeps being watched, and gets its
-  icon back by itself, with a line in chat, once at least two in five of its
-  casts have left something. `/se track <spell>` gives it back at once. The
+  long run of misses, or of casts at immune enemies that the game did not
+  call immune (one it did call immune is not held against the skill). It
+  keeps being watched, and gets its icon back by itself, with a line in chat,
+  once at least two in five of its casts have left something. `/se track <spell>` gives it back at once. The
   other way round, a real status spell whose tooltip words its length
   unusually is still given its icon, because only the wordings listed in
   point 3 are ruled out.
