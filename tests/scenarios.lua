@@ -3702,6 +3702,55 @@ test("saved settings are loaded, and damaged ones repaired", function()
     Clean(w)
 end)
 
+test("nothing is said in chat when the addon loads", function()
+    -- A first login with nothing saved.
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, HEROIC)
+    w:addButton("ActionButton3", 3, SHOUT)
+    w:install()
+    w:advance(2)
+    eq(w:drain(), "", "chat after a first login")
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "cross", "and it is at work all the same")
+    eq(w:drain(), "", "chat after the first cast")
+
+    -- A later login, with what that session saved.
+    local saved = w.env.StatusEfficiencyDB
+    local w2 = World()
+    w2:addButton("ActionButton1", 1, REND)
+    w2:addButton("ActionButton2", 2, HEROIC)
+    w2:addButton("ActionButton3", 3, SHOUT)
+    local ns2 = w2:load(saved)
+    w2:advance(2)
+    eq(w2:drain(), "", "chat after a later login")
+
+    -- The first login after an update, with settings an earlier version saved.
+    local w3 = World()
+    w3:addButton("ActionButton1", 1, REND)
+    w3:addButton("ActionButton2", 2, HEROIC)
+    local ns3 = w3:load({ version = 1, learned = {
+        Rend = { exact = true, casts = 27, hits = 22, duration = 21 },
+        ["Heroic Strike"] = { casts = 9, hits = 8 },
+    } })
+    w3:advance(2)
+    eq(ns3.db.version, 2, "the settings were brought up to date")
+    eq(w3:drain(), "", "chat after the first login with a new version")
+
+    -- The version is there for the asking.
+    w2:slash("")
+    local help = w2:drain()
+    check(help:find("v" .. ns2.VERSION .. ",", 1, true), "/se gives the version: " .. help)
+    Clean(w)
+    Clean(w2)
+    Clean(w3)
+end)
+
 test("a saved icon size that makes no sense goes back to following the button", function()
     for _, bad in ipairs({ 3, 500, -4 }) do
         local w = World()

@@ -15,7 +15,7 @@ it is a debuff and there is no enemy to judge. Out of the box the icons also
 stay away until you target an enemy, and from a skill you cannot use right now
 (too close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.3.6 is an early draft. It loads and draws its icons in the real
+Version 0.3.7 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -42,7 +42,8 @@ few rough edges.
    on the `## Interface:` line of `StatusEfficiency.toc` (it ships as `16001`,
    for client 1.60.1).
 
-When it loads you get one line in chat: "Status Efficiency: v0.3.6 loaded."
+It loads without a word in chat. To see that it is there, type `/se`: the
+first line of the reply gives the version, "Status Efficiency: v0.3.7".
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -165,7 +166,7 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 
 | Command | What it does |
 | --- | --- |
-| `/se` | Lists the commands. |
+| `/se` | Lists the commands. The first line gives the version of the addon. |
 | `/se options` | Opens or closes the settings window. `/se options spells` opens it on the Spells tab. |
 | `/se on`, `/se off` | Turns the icons on or off. |
 | `/se when <always\|target\|combat>` | When the icons appear: always, while an enemy is targeted (the default), or only in combat. |

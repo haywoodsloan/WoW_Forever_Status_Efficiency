@@ -1723,7 +1723,7 @@ function handlers.PLAYER_LOGIN()
     if ns.Options then
         ns.Options.Register()
     end
-    ns.Print("v" .. ns.VERSION .. " loaded. Type /se for commands, or /se options for the settings window.")
+    -- Nothing is said in chat for loading. /se gives the version.
 end
 
 function handlers.PLAYER_ENTERING_WORLD()
