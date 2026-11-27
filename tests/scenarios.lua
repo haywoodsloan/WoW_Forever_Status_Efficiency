@@ -3769,36 +3769,50 @@ end)
 -- When the icons appear
 --------------------------------------------------------------------------------
 
-test("a new install shows the icons only while an enemy is targeted", function()
+test("a new install shows the icons only during a fight, yours or your group's", function()
     local w = World()
     w:addButton("ActionButton1", 1, REND)
     w:addButton("ActionButton2", 2, HEROIC)
     w:addButton("ActionButton3", 3, SHOUT)
     local ns = w:install()
-    eq(ns.db.appear, "target", "the default")
+    eq(ns.db.appear, "group", "the default")
     eq(w:icon("ActionButton1"), nil, "Rend with nothing targeted")
-    eq(w:icon("ActionButton3"), nil, "Battle Shout waits for an enemy too")
+    eq(w:icon("ActionButton3"), nil, "Battle Shout waits for a fight too")
 
     local boar = w:addMob("Boar")
     w:showPlate(boar)
     w:target(boar)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "check", "Rend on a clean enemy")
+    eq(w:icon("ActionButton1"), nil, "an enemy is targeted, but there is no fight yet")
+    eq(w:icon("ActionButton3"), nil)
+
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w.combat, true, "the first blow starts the fight")
+    eq(w:icon("ActionButton1"), "cross", "Rend is on the boar")
     eq(w:icon("ActionButton2"), nil, "Heroic Strike applies nothing")
-    eq(w:icon("ActionButton3"), "check", "Battle Shout, now that an enemy is targeted")
+    eq(w:icon("ActionButton3"), "check", "Battle Shout, now that you are fighting")
 
     local guard = w:addMob("Guard", { hostile = false })
     w:target(guard)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), nil, "a friend is not an enemy")
-    eq(w:icon("ActionButton3"), nil)
+    eq(w:icon("ActionButton1"), "check", "a friend is not an enemy: nobody you have picked has Rend")
+    eq(w:icon("ActionButton3"), "check", "and the fight keeps the icons on")
 
+    w:kill(boar)
+    w:leaveCombat()
     w:target(boar)
     w:advance(0.3)
-    eq(w:icon("ActionButton3"), "check")
-    w:kill(boar)
+    eq(w:icon("ActionButton1"), nil, "the fight is over")
+    eq(w:icon("ActionButton3"), nil)
+
+    -- Someone in your party picks a fight close by.
+    local healer = w:addPartyMember("Healer", { engaged = true })
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), nil, "nor is a dead one")
+    eq(w.combat, false, "you are not in combat yourself")
+    eq(w:icon("ActionButton3"), "check", "their fight brings the icons up as well")
+    healer.engaged = false
+    w:advance(0.3)
     eq(w:icon("ActionButton3"), nil)
     Clean(w)
 end)
@@ -3829,6 +3843,9 @@ test("what is not shown is still followed", function()
 
     w:target(boar)
     w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "an enemy alone does not bring them back")
+    w:enterCombat()
+    w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross", "Rend was followed all along")
     eq(w:icon("ActionButton2"), "cross", "and so was the buff cast while the icons were away")
     Clean(w)
@@ -3853,11 +3870,11 @@ test("/se when always shows a buff at any time, and a debuff whenever there is a
     Clean(w)
 end)
 
-test("/se when combat shows the icons only during a fight", function()
+test("/se when combat shows the icons only while you are in combat yourself", function()
     local w, ns = Simple({ combatAuras = "ids" })
     w:drain()
     w:slash("when combat")
-    check(w:drain():find("icons now appear when in combat", 1, true), "it says so")
+    check(w:drain():find("icons now appear when you are in combat", 1, true), "it says so")
     eq(ns.db.appear, "combat")
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil, "an enemy is targeted, but there is no fight yet")
@@ -3877,6 +3894,13 @@ test("/se when combat shows the icons only during a fight", function()
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil, "the fight is over")
     eq(w:icon("ActionButton3"), nil)
+
+    -- A fight that is somebody else's does not count.
+    w:addPartyMember("Healer", { engaged = true })
+    w:advance(0.3)
+    eq(ns.GroupState(), "fighting", "someone in your party is fighting close by")
+    eq(w:icon("ActionButton1"), nil, "but you are not")
+    eq(w:icon("ActionButton3"), nil)
     Clean(w)
 end)
 
@@ -3884,8 +3908,8 @@ end)
 -- Through a fight
 --
 -- A fight keeps the icons on from its first moment to its last, whatever is
--- targeted: your own fight, or one that someone in your party or raid is in
--- close by.
+-- targeted: your own fight, and where the setting says so, one that someone
+-- in your party or raid is in close by.
 --------------------------------------------------------------------------------
 
 test("fight: the icons stay on when your target dies in the middle of a fight", function()
@@ -3895,7 +3919,7 @@ test("fight: the icons stay on when your target dies in the middle of a fight", 
     w:addButton("ActionButton3", 3, SHOUT)
     w:addButton("ActionButton4", 4, CLAP)
     local ns = w:install()
-    eq(ns.db.appear, "target", "the default: icons while an enemy is targeted")
+    eq(ns.db.appear, "group", "the default: icons while you or your group are in combat")
     local boar, wolf = w:addMob("Boar"), w:addMob("Wolf")
     w:showPlate(boar)
     w:showPlate(wolf)
@@ -3980,11 +4004,11 @@ test("fight: someone in your party fighting close by keeps the icons on", functi
     Clean(w)
 end)
 
-test("fight: /se when combat counts the fight of someone in your group close by", function()
+test("fight: a fight of someone in your group counts where the setting says so, and only there", function()
     local w = World()
     w:addButton("ActionButton1", 1, REND)
     w:addButton("ActionButton3", 3, SHOUT)
-    w:load({ appear = "combat" })
+    local ns = w:load({ appear = "group" })
     local tank = w:addPartyMember("Tank", { engaged = true })
     local boar = w:addMob("Boar")
     w:showPlate(boar)
@@ -4000,6 +4024,26 @@ test("fight: /se when combat counts the fight of someone in your group close by"
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross", "and now it has: an enemy you picked is judged for what it carries")
 
+    -- Set to your own combat only, the tank's fight is not enough.
+    w:slash("when combat")
+    w:advance(0.3)
+    eq(ns.db.appear, "combat")
+    eq(ns.GroupState(), "fighting")
+    eq(w:icon("ActionButton1"), nil, "the tank is fighting and you are not")
+    eq(w:icon("ActionButton3"), nil)
+    w:enterCombat()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "your own fight brings them up")
+    eq(w:icon("ActionButton3"), "check")
+    w:leaveCombat()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "and they go when it ends, though the tank fights on")
+    eq(w:icon("ActionButton3"), nil)
+
+    w:slash("when group")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "back to counting the tank's fight")
+    eq(w:icon("ActionButton3"), "check")
     tank.engaged = false
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil, "nobody is fighting any more")
@@ -4182,8 +4226,22 @@ test("fight: /se debug says what your group is doing", function()
     healer.engaged = true
     w:slash("debug")
     debug = w:drain()
-    check(debug:find("Your group: someone close by is in combat, which keeps the icons on", 1, true),
-        "fighting: " .. debug)
+    check(debug:find("Your group: someone close by is in combat, which keeps the icons on like a fight of your own.",
+        1, true), "fighting: " .. debug)
+
+    -- What their fight does for the icons goes by the setting.
+    w:slash("when combat")
+    w:slash("debug")
+    debug = w:drain()
+    check(debug:find("Your group: someone close by is in combat, which does not bring the icons up", 1, true),
+        "fighting, with the icons set to your own combat: " .. debug)
+    w:slash("when always")
+    w:slash("debug")
+    debug = w:drain()
+    check(debug:find("Your group: someone close by is in combat.", 1, true),
+        "fighting, with the icons always on: " .. debug)
+    w:slash("when group")
+    w:drain()
 
     healer.distance = 300
     w:slash("debug")
@@ -4198,14 +4256,35 @@ test("/se when says and sets when the icons appear", function()
     w:slash("when")
     local said = w:drain()
     check(said:find("icons appear always", 1, true), "with nothing after it, it says how things are: " .. said)
-    check(said:find("/se when <always | target | combat>", 1, true), "and how to change them: " .. said)
+    check(said:find("/se when <always | combat | group>", 1, true), "and how to change them: " .. said)
+    check(said:find("always, when you are in combat, or when you or your group are in combat", 1, true),
+        "in the words on the buttons of the settings: " .. said)
 
-    w:slash("when target")
-    eq(ns.db.appear, "target")
-    check(w:drain():find("icons now appear when targeting an enemy", 1, true))
+    w:slash("when group")
+    eq(ns.db.appear, "group")
+    check(w:drain():find("icons now appear when you or your group are in combat.", 1, true))
+    w:slash("when combat")
+    eq(ns.db.appear, "combat")
+    check(w:drain():find("icons now appear when you are in combat.", 1, true))
+    w:slash("when party")
+    eq(ns.db.appear, "group", "party is another word for the group")
+    w:slash("when combat")
+    w:slash("when raid")
+    eq(ns.db.appear, "group", "and so is raid")
+    w:drain()
+
     w:slash("when sometimes")
-    eq(ns.db.appear, "target", "a word it does not know changes nothing")
-    check(w:drain():find("/se when <always | target | combat>", 1, true))
+    eq(ns.db.appear, "group", "a word it does not know changes nothing")
+    check(w:drain():find("/se when <always | combat | group>", 1, true))
+    w:slash("when target")
+    eq(ns.db.appear, "group", "nor does the choice that earlier versions had")
+    check(w:drain():find("/se when <always | combat | group>", 1, true), "it is told the three there are")
+    eq(ns.SetAppear("target"), false, "and nothing else in the addon can set that choice either")
+    eq(ns.db.appear, "group")
+    w:slash("")
+    local help = w:drain()
+    check(help:find("/se when <always | combat | group> - when the icons appear", 1, true),
+        "the list of commands names the same three: " .. help)
     w:slash("when ALWAYS")
     eq(ns.db.appear, "always", "capitals do not matter")
 
@@ -4222,9 +4301,38 @@ test("a saved choice of when that makes no sense goes back to the default", func
         local w = World()
         w:addButton("ActionButton1", 1, REND)
         local ns = w:load({ appear = bad })
-        eq(ns.db.appear, "target", "saved as " .. tostring(bad))
+        eq(ns.db.appear, "group", "saved as " .. tostring(bad))
         Clean(w)
     end
+end)
+
+test("icons that an earlier version showed when targeting an enemy now show when you or your group are in combat", function()
+    -- "When targeting an enemy" was the default until 0.3.8, so this is what
+    -- most saved settings hold.
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton3", 3, SHOUT)
+    local ns = w:load({ appear = "target", version = 2, corner = "BOTTOM" })
+    eq(ns.db.appear, "group", "the part of the old choice that is kept: all through a fight")
+    eq(ns.db.corner, "BOTTOM", "the other settings are left alone")
+    eq(w:drain(), "", "and nothing is said about it in chat")
+
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "an enemy targeted before the fight no longer brings the icons up")
+    eq(w:icon("ActionButton3"), nil)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the fight does")
+    eq(w:icon("ActionButton3"), "check")
+
+    -- The settings show the choice it became.
+    local view = w:openSettings().view
+    eq(view.appear.picked, "group")
+    eq(view.appear.buttons.target, nil, "and no longer offer the old one")
+    Clean(w)
 end)
 
 --------------------------------------------------------------------------------
@@ -4295,7 +4403,8 @@ test("an icon stays through a fight in which every skill empties the rage bar", 
     w:addButton("ActionButton1", 1, REND)
     w:addButton("ActionButton2", 2, CLAP)
     w:addButton("ActionButton3", 3, BLOCK)
-    w:install()
+    local ns = w:load()
+    eq(ns.db.usableOnly, true, "the default: an icon only on a skill that can be used")
     local function Spend()
         for slot = 1, 3 do
             w:setUsable(slot, false, true)
@@ -5364,19 +5473,32 @@ panel("picking when the icons appear", function(options)
     local view = w:openSettings().view
     eq(view.appear.picked, "always", "what these scenarios load with")
     eq(view.appear.buttons.always.picked, true)
+    eq(view.appear.buttons.always.label:GetText(), "Always")
+    eq(view.appear.buttons.combat.label:GetText(), "When you are in combat")
+    eq(view.appear.buttons.group.label:GetText(), "When you or your group are in combat")
+    eq(view.appear.buttons.target, nil, "three choices, and the one earlier versions had is not among them")
 
     w:click(view.appear.buttons.combat)
     eq(ns.db.appear, "combat")
     eq(view.appear.picked, "combat")
     eq(view.appear.buttons.always.picked, false)
-    w:slash("when target")
-    eq(view.appear.picked, "target", "/se when moves it too")
+    w:slash("when group")
+    eq(view.appear.picked, "group", "/se when moves it too")
+    w:click(view.appear.buttons.always)
+    eq(ns.db.appear, "always")
+    w:click(view.appear.buttons.group)
+    eq(ns.db.appear, "group")
+    eq(view.appear.buttons.group.picked, true)
 
-    local title, lines = w:hover(view.appear.buttons.target)
-    eq(title, "When targeting an enemy")
-    check(lines[1]:find("enemy targeted", 1, true), "each choice explains itself: " .. tostring(lines[1]))
-    w:unhover(view.appear.buttons.target)
+    local title, lines = w:hover(view.appear.buttons.group)
+    eq(title, "When you or your group are in combat")
+    check(lines[1]:find("party or raid", 1, true), "each choice explains itself: " .. tostring(lines[1]))
+    w:unhover(view.appear.buttons.group)
     eq(w.tooltip, nil)
+    title, lines = w:hover(view.appear.buttons.combat)
+    eq(title, "When you are in combat")
+    check(lines[1]:find("in combat yourself", 1, true), tostring(lines[1]))
+    w:unhover(view.appear.buttons.combat)
 
     w:click(view.enable.frame)
     near(view.appear.frame:GetAlpha(), 0.4, "dimmed while the icons are off")
@@ -5385,10 +5507,10 @@ panel("picking when the icons appear", function(options)
 
     w:closeSettings()
     w:advance(0.3)
-    eq(w:icon("ActionButton3"), "check", "an enemy is targeted")
-    w:target(nil)
+    eq(w:icon("ActionButton3"), nil, "an enemy is targeted, but nobody is fighting")
+    w:enterCombat()
     w:advance(0.3)
-    eq(w:icon("ActionButton3"), nil, "and now none is")
+    eq(w:icon("ActionButton3"), "check", "and now you are")
     Clean(w)
 end)
 

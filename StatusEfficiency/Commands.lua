@@ -110,7 +110,7 @@ local HELP = {
     "  A buff: green check = you do not have it, red X = you do.",
     "  /se options - the settings window: when the icons appear, where they sit, how big they are, which icon",
     "    means what, and how each spell on your bars is treated",
-    "  /se on | off   /se when <always | target | combat> - when the icons appear",
+    "  /se on | off   /se when <always | combat | group> - when the icons appear",
     "  /se usable <on | off> - an icon only on a skill you can use right now, or on every skill",
     "  /se list - the spells on your bars and how each is treated",
     "  /se track <spell> | ignore <spell> | auto <spell>",
@@ -170,15 +170,15 @@ end
 
 local APPEAR_WORDS = {
     always = "always", all = "always",
-    target = "target", targeting = "target", targeted = "target", enemy = "target",
     combat = "combat", fight = "combat", fighting = "combat",
+    group = "group", party = "group", raid = "group",
 }
 
 function commands.when(rest)
     local when = APPEAR_WORDS[Trim(rest):lower()]
     if not when then
-        Print("icons appear " .. AppearWords(ns.db.appear) .. ". /se when <always | target | combat> changes that: "
-            .. "always, when targeting an enemy, or when in combat.")
+        Print("icons appear " .. AppearWords(ns.db.appear) .. ". /se when <always | combat | group> changes that: "
+            .. "always, when you are in combat, or when you or your group are in combat.")
         return
     end
     ns.Options.Change(function()
@@ -575,14 +575,20 @@ local USABLE_SOURCES = {
     ["not asked yet"] = "not asked yet",
 }
 
--- What ns.GroupState says of your party or raid, in words. A fight of theirs
--- close by keeps the icons on like one of your own.
+-- What ns.GroupState says of your party or raid, in words.
 local GROUP_WORDS = {
     alone = "you are in no party or raid",
     quiet = "nobody in it is in combat",
     far = "someone in it is in combat, but nobody close by",
-    fighting = "someone close by is in combat, which keeps the icons on like a fight of your own",
+    fighting = "someone close by is in combat",
     unsaid = "the game will not say who in it is in combat, or who is close by",
+}
+
+-- What a fight of theirs close by does for the icons, which goes by the
+-- setting for when they appear.
+local GROUP_FIGHT = {
+    group = ", which keeps the icons on like a fight of your own",
+    combat = ", which does not bring the icons up: they are set to appear when you are in combat yourself",
 }
 
 function commands.debug()
@@ -595,7 +601,9 @@ function commands.debug()
         tostring(ns.Plain(version)), tostring(ns.Plain(build)), tostring(ns.Plain(interface))))
     print(format("  Secret values: %s. Aura details hidden right now: %s. In combat: %s.",
         YesNo(ns.hasSecretValues), YesNo(ns.AurasSecret()), YesNo(ns.InCombat())))
-    print("  Your group: " .. (GROUP_WORDS[ns.GroupState()] or "nothing known") .. ".")
+    local group = ns.GroupState()
+    print("  Your group: " .. (GROUP_WORDS[group] or "nothing known")
+        .. (group == "fighting" and GROUP_FIGHT[ns.db.appear] or "") .. ".")
 
     local buttons, withSpell, showing = #ns.buttons, 0, 0
     for i = 1, buttons do

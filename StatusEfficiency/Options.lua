@@ -85,13 +85,14 @@ local APPEAR_CHOICES = {
     { key = "always", label = "Always", width = 54, words = "always", tip = "Always",
         body = "Whenever there is something to judge: a buff at any time, a debuff whenever there is an enemy to check "
             .. "and all through a fight." },
-    { key = "target", label = "When targeting an enemy", width = 150, words = "when targeting an enemy",
-        tip = "When targeting an enemy",
-        body = "While you have an enemy targeted, and all through a fight: your own, or one that someone in your "
-            .. "group is in close by. Buff icons wait for that too." },
-    { key = "combat", label = "When in combat", width = 104, words = "when in combat", tip = "When in combat",
-        body = "Only during a fight: your own, or one that someone in your group is in close by. Otherwise your "
-            .. "buttons stay bare." },
+    { key = "combat", label = "When you are in combat", width = 140, words = "when you are in combat",
+        tip = "When you are in combat",
+        body = "Only while you are in combat yourself. The rest of the time your buttons stay bare, even while "
+            .. "others in your group are fighting." },
+    { key = "group", label = "When you or your group are in combat", width = 218,
+        words = "when you or your group are in combat", tip = "When you or your group are in combat",
+        body = "While you are in combat, and while someone in your party or raid is in combat close by. The rest "
+            .. "of the time your buttons stay bare." },
 }
 Options.APPEAR_CHOICES = APPEAR_CHOICES
 

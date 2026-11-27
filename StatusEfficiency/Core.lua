@@ -12,13 +12,13 @@
 --   red X                the buff is there, so casting again changes nothing
 --
 -- A spell that applies no status effect gets no icon. Two settings say when the
--- icons appear at all: always, while an enemy is targeted (the default), or
--- only during a fight; and on every skill, or only on one that can be used right
--- now (the default).
+-- icons appear at all: always, only while you are in combat, or while you or
+-- someone in your party or raid close by is in combat (the default); and on
+-- every skill, or only on one that can be used right now (the default).
 --
--- A fight keeps the icons on from its first moment to its last, whatever is
--- targeted: your own fight, or one that someone in your party or raid is in
--- close by. A debuff with no enemy to judge it on shows the green check then.
+-- A fight that brings the icons up keeps them on from its first moment to its
+-- last, whatever is targeted. A debuff with no enemy to judge it on shows the
+-- green check then.
 --
 -- In combat the client hides what effects a unit has, but still reports the
 -- moment they change. A cast only counts as applied once the unit it went to
@@ -63,12 +63,16 @@ local STANDARD_BUTTON = 45 -- an action button's width, for when one cannot be m
 ns.SIZE_MIN, ns.SIZE_MAX = SIZE_MIN, SIZE_MAX
 
 -- When the icons appear at all: "always" (whenever there is something to judge),
--- "target" (while an enemy is targeted, and all through a fight) or "combat"
--- (only during a fight). A fight is yours, or one that someone in your group is
--- in close by.
-local APPEAR = { always = true, target = true, combat = true }
-local APPEAR_DEFAULT = "target"
+-- "combat" (only while you are in combat yourself) or "group" (while you are in
+-- combat, or someone in your party or raid is in combat close by).
+local APPEAR = { always = true, combat = true, group = true }
+local APPEAR_DEFAULT = "group"
 ns.APPEAR_DEFAULT = APPEAR_DEFAULT
+
+-- A choice of earlier versions that is gone, and the one that takes its place.
+-- "target" (0.3.0 to 0.3.8) showed the icons while an enemy was targeted, and
+-- from 0.3.8 all through a fight as well, which is the part that is kept.
+local APPEAR_BEFORE = { target = "group" }
 
 -- The layout of what is saved. 2 (0.3.6): the cast counts under `learned` no
 -- longer take an enemy's death for a skill leaving something.
@@ -113,6 +117,7 @@ local function LoadSettings()
     if not CORNERS[saved.corner] then
         saved.corner = "TOPLEFT"
     end
+    saved.appear = APPEAR_BEFORE[saved.appear] or saved.appear
     if not APPEAR[saved.appear] then
         saved.appear = APPEAR_DEFAULT
     end
@@ -1403,14 +1408,14 @@ local function Refresh(now)
     -- on either way, so nothing is missed while they are away.
     --
     -- A fight keeps them on from its first moment to its last, whatever is
-    -- targeted: your own fight, or one that someone in your party or raid is
-    -- in close by. Tied to a living target alone, they went away each time
-    -- that target died and came back with the next one.
+    -- targeted: your own fight, and under "group" also one that someone in
+    -- your party or raid is in close by. Tied to a living target, they went
+    -- away each time that target died and came back with the next one.
     local group = ns.GroupState()
     NoteGroup(group)
     local fighting = ns.InCombat() or group == "fighting"
     local when = ns.db.appear
-    local appear = when == "always" or fighting or (when ~= "combat" and primaryUnit ~= nil)
+    local appear = when == "always" or ns.InCombat() or (when == "group" and fighting)
     local usableOnly = ns.db.usableOnly
 
     local wantSweep, wantBuffs, wantFriend, wantLearn = false, false, false, false
@@ -1710,7 +1715,7 @@ function ns.SetEnabled(on)
     end
 end
 
---- Sets when the icons appear: "always", "target" or "combat". Says whether
+--- Sets when the icons appear: "always", "combat" or "group". Says whether
 --- that was one of the three.
 function ns.SetAppear(when)
     if not APPEAR[when] then
