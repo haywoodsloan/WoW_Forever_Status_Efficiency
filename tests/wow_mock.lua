@@ -56,6 +56,31 @@
 --   noVisible      true: UnitIsVisible does not exist. What is left for telling
 --                  how near a group member is, is UnitInRange, which answers
 --                  with secret values while details are hidden.
+--   groupCasts     what the client sends when someone in your group casts a
+--                  spell. Default: UNIT_SPELLCAST_SUCCEEDED under each of their
+--                  unit tokens, with the spell readable at all times. "secret":
+--                  the spell and the cast are secret values while details are
+--                  hidden (which is what the 12.1.5 documentation allows for).
+--                  "sealed": they are secret at all times. "none": nothing is
+--                  sent for anyone but you.
+--   noApplications true: an aura does not say how many times over it is on
+--                  the unit.
+--   maxStacks      how the client answers when asked how many times over a
+--                  spell's effect can stack. Default: plainly at all times.
+--                  "secret": with a secret value while details are hidden
+--                  (which is what the 12.1.5 documentation allows for).
+--                  "none": the call does not exist. "words": it answers
+--                  with the number written out as text.
+--   refreshReplaces true: renewing an effect puts a new one in its place, and
+--                  the one report of it shows an effect going and one coming.
+--                  "twice": two reports of one moment, the old effect going
+--                  and then the new one coming. "new first": the same two the
+--                  other way round.
+--   othersHidden   true: only the effects you applied yourself can be listed
+--                  or asked after by name. Asking for everyone's is refused.
+--   noSource       true: an aura does not say which unit put it there. By
+--                  default it names you for one of yours, and the party or
+--                  raid name of the group member whose cast left it.
 --   byName         set of aura names the client still shows by name in combat.
 --   alwaysSecret   set of aura names whose details are secret at all times.
 --   noCSecrets     true: C_Secrets does not exist.
@@ -294,7 +319,20 @@ function Mock.new(options)
         if unit == "player" then
             return world.player
         end
-        return world.tokens[unit]
+        local direct = world.tokens[unit]
+        if direct then
+            return direct
+        end
+        -- "party2target": whoever that unit has targeted.
+        local owner = unit:match("^(.+)target$")
+        if owner then
+            if owner == "player" then
+                return world.tokens.target
+            end
+            local mob = world.tokens[owner]
+            return mob and mob.target or nil
+        end
+        return nil
     end
 
     world.player = { guid = "Player-1-0001", name = "Tester", hostile = false, auras = {} }
@@ -469,6 +507,21 @@ function Mock.new(options)
                 isFromPlayerOrPlayerPet = aura.fromPlayer,
             }
         end
+        local applications = aura.stacks or 0 -- 0 for an effect that does not stack
+        if options.noApplications then
+            applications = nil
+        end
+        -- Who put it there, by the first name the game has for them: a party
+        -- name before a raid name. Nothing for someone outside your group.
+        local source = nil
+        if aura.fromPlayer then
+            source = "player"
+        elseif aura.source and world.tokens[aura.source.token] == aura.source then
+            source = aura.source.partyToken or aura.source.token
+        end
+        if options.noSource then
+            source = nil
+        end
         return {
             name = aura.name,
             spellId = aura.spellId,
@@ -478,6 +531,8 @@ function Mock.new(options)
             isHarmful = aura.harmful,
             isHelpful = not aura.harmful,
             isFromPlayerOrPlayerPet = aura.fromPlayer,
+            applications = applications,
+            sourceUnit = source,
         }
     end
 
@@ -534,6 +589,9 @@ function Mock.new(options)
             if AurasHidden() then
                 error("C_UnitAuras.GetAuraDataByIndex requires unit aura access", 2)
             end
+            if options.othersHidden and not (filter and filter:find("PLAYER", 1, true)) then
+                error("C_UnitAuras.GetAuraDataByIndex: other players' auras are not available", 2)
+            end
             local aura = Matching(mob, filter)[index]
             return aura and Public(aura) or nil
         end
@@ -548,6 +606,9 @@ function Mock.new(options)
             end
             if options.alwaysSecret and options.alwaysSecret[name] then
                 return nil
+            end
+            if options.othersHidden and not (filter and filter:find("PLAYER", 1, true)) then
+                error("C_UnitAuras.GetAuraDataBySpellName: other players' auras are not available", 2)
             end
             for _, aura in ipairs(Matching(mob, filter)) do
                 if aura.name == name then
@@ -641,6 +702,21 @@ function Mock.new(options)
         IsSelfBuff = not options.noSelfBuffAPI and function(spell)
             local data = FindSpell(spell)
             return data ~= nil and data.selfOnly == true
+        end or nil,
+        -- How many times over the spell's effect can be on one unit, from the
+        -- spell's own data (`cumulative` of world:addSpell): 0 for a spell
+        -- that says nothing of it, which is every spell that does not ask
+        -- for more.
+        GetSpellMaxCumulativeAuraApplications = options.maxStacks ~= "none" and function(spell)
+            local data = FindSpell(spell)
+            world.maxStackCalls = (world.maxStackCalls or 0) + 1
+            local most = data and data.cumulative or 0
+            if options.maxStacks == "secret" and AurasHidden() then
+                return Secret(most)
+            elseif options.maxStacks == "words" then
+                return tostring(most)
+            end
+            return most
         end or nil,
         RequestLoadSpellData = function(spell)
             local data = FindSpell(spell)
@@ -903,6 +979,7 @@ function Mock.new(options)
         UNIT_SPELLCAST_SENT = true, UNIT_SPELLCAST_SUCCEEDED = true,
         UNIT_SPELLCAST_CHANNEL_START = true, UNIT_SPELLCAST_FAILED = true,
         UNIT_SPELLCAST_FAILED_QUIET = true, UNIT_SPELLCAST_INTERRUPTED = true,
+        GROUP_ROSTER_UPDATE = true,
     }
     if options.unknownEvents then
         for event in pairs(options.unknownEvents) do
@@ -2168,7 +2245,9 @@ function Mock.new(options)
     --- Puts someone in your party, or in your raid with options.raid: a
     --- friendly player ten yards away who is not fighting. `fields` can say
     --- otherwise: engaged = true (in combat), distance = how many yards away,
-    --- unchecked = true (the game's range test is not made for them).
+    --- unchecked = true (the game's range test is not made for them), target =
+    --- the mob they have targeted, subgroup = true (in a raid, they are in your
+    --- own party of five and so go by a party name as well as a raid name).
     --- A member is not one of world.mobs: nothing you cast lands on them by
     --- itself, and they stay in their fight when you leave yours.
     function world:addPartyMember(name, fields)
@@ -2186,15 +2265,38 @@ function Mock.new(options)
         if self.options.raid then
             prefix, first, last = "raid", 2, 40
         end
+        if self.options.raid and member.subgroup then
+            for i = 1, 4 do
+                if not self.tokens["party" .. i] then
+                    self.tokens["party" .. i] = member
+                    member.partyToken = "party" .. i
+                    break
+                end
+            end
+        end
         for i = first, last do
             local token = prefix .. i
             if not self.tokens[token] then
                 self.tokens[token] = member
                 member.token = token
+                self:fire("GROUP_ROSTER_UPDATE")
                 return member
             end
         end
         error("the group is full")
+    end
+
+    --- Someone leaves your group. The names they went by are free for the
+    --- next one to join.
+    function world:removePartyMember(member)
+        if self.tokens[member.token] == member then
+            self.tokens[member.token] = nil
+        end
+        if member.partyToken and self.tokens[member.partyToken] == member then
+            self.tokens[member.partyToken] = nil
+        end
+        member.grouped = false
+        self:fire("GROUP_ROSTER_UPDATE")
     end
 
     function world:target(mob)
@@ -2259,12 +2361,28 @@ function Mock.new(options)
     end
 
     --- Puts a debuff on a unit, or a buff when `helpful` is true. The unit is a
-    --- mob, or world.player.
-    function world:applyAura(mob, name, duration, fromPlayer, spellId, helpful)
+    --- mob, or world.player. `how` says how the effect behaves:
+    ---   shared = true   a unit carries it once, whoever put it there: the
+    ---                   next caster's takes the place of the last one's.
+    ---                   Without it every caster has an effect of their own.
+    ---   stacks = n      it can be on the unit up to n times over, and each
+    ---                   application adds one
+    ---   caster = name   which of the other players put it there, for an
+    ---                   effect that is not yours: two of them each have one
+    ---                   of their own
+    ---   source = member the group member (from world:addPartyMember) who put
+    ---                   it there, which the aura then says
+    function world:applyAura(mob, name, duration, fromPlayer, spellId, helpful, how)
         local harmful = not helpful
+        local mine = fromPlayer ~= false
+        local shared = how and how.shared
+        local most = how and how.stacks
+        local caster = how and how.caster or nil
+        local source = not mine and how and how.source or nil
         -- Recasting refreshes the same instance unless asked otherwise.
         for _, aura in ipairs(mob.auras) do
-            if aura.name == name and aura.fromPlayer == (fromPlayer ~= false) and aura.harmful == harmful then
+            if aura.name == name and (shared or (aura.fromPlayer == mine and aura.caster == caster))
+                and aura.harmful == harmful then
                 local replaced = self.options.refreshReplaces
                 if replaced then
                     aura.auraInstanceID = self.nextAura
@@ -2272,14 +2390,30 @@ function Mock.new(options)
                 end
                 aura.duration = duration
                 aura.expirationTime = duration > 0 and self.clock + duration or 0
-                self:auraChanged(mob, replaced and "replaced" or "updated")
+                aura.fromPlayer = mine -- it is the last caster's now
+                aura.caster = caster
+                aura.source = source
+                if most then
+                    aura.stacks = math.min(most, (aura.stacks or 1) + 1)
+                end
+                if replaced == "twice" then
+                    -- Two reports of one moment: the old effect going, the new one coming.
+                    self:auraChanged(mob, "removed")
+                    self:auraChanged(mob, "added")
+                elseif replaced == "new first" then
+                    self:auraChanged(mob, "added")
+                    self:auraChanged(mob, "removed")
+                else
+                    self:auraChanged(mob, replaced and "replaced" or "updated")
+                end
                 return aura
             end
         end
         local aura = {
             name = name, spellId = spellId or 0, duration = duration,
             expirationTime = duration > 0 and self.clock + duration or 0,
-            auraInstanceID = self.nextAura, harmful = harmful, fromPlayer = fromPlayer ~= false,
+            auraInstanceID = self.nextAura, harmful = harmful, fromPlayer = mine,
+            stacks = most and 1 or nil, caster = caster, source = source,
         }
         self.nextAura = self.nextAura + 1
         mob.auras[#mob.auras + 1] = aura
@@ -2335,7 +2469,9 @@ function Mock.new(options)
     --- quiet = true (does not start combat).
     ---
     --- A spell's effect = { duration, name, area, extra, fromPlayer, buff,
-    --- replaces, toggle }. With buff = true it lands on the player, or on a
+    --- replaces, toggle, shared, stacks, party }. `shared` and `stacks` are as
+    --- world:applyAura has them, and `party` marks a buff that someone else's
+    --- cast puts on you too (see world:partyCast). With buff = true it lands on the player, or on a
     --- friendly target when the spell is helpful and not selfOnly, and removes
     --- the buff named by `replaces` (two stances cannot be up together). With
     --- toggle = true, casting it while its effect is up takes the effect away.
@@ -2394,7 +2530,7 @@ function Mock.new(options)
                     if effect.toggle and up then
                         self:removeAura(mob, name)
                     else
-                        self:applyAura(mob, name, effect.duration, effect.fromPlayer, nil, effect.buff)
+                        self:applyAura(mob, name, effect.duration, effect.fromPlayer, nil, effect.buff, effect)
                     end
                     if effect.extra then
                         self:applyAura(mob, effect.extra, effect.duration, nil, nil, effect.buff)
@@ -2423,6 +2559,107 @@ function Mock.new(options)
         self:fire("UNIT_SPELLCAST_SUCCEEDED", "player", castID, shownID)
 
         if opts.early then
+            return
+        end
+        if opts.travel and opts.travel > 0 then
+            self.effects[#self.effects + 1] = { at = self.clock + opts.travel, run = Land }
+        else
+            Land()
+        end
+    end
+
+    --- Sends UNIT_SPELLCAST_SUCCEEDED for someone in your group, once for each
+    --- unit token they go by. What the client lets an addon read of it is
+    --- options.groupCasts.
+    local function SendCastEvent(member, castID, spellID)
+        local mode = options.groupCasts
+        if mode == "none" then
+            return
+        end
+        local hidden = mode == "sealed" or (mode == "secret" and AurasHidden())
+        local tokens = {}
+        for token, other in pairs(world.tokens) do
+            if other == member then
+                tokens[#tokens + 1] = token
+            end
+        end
+        table.sort(tokens)
+        world.groupCastsSent = (world.groupCastsSent or 0) + #tokens
+        for _, token in ipairs(tokens) do
+            for i = 1, #world.frames do
+                local frame = world.frames[i]
+                if frame.events.UNIT_SPELLCAST_SUCCEEDED or frame.unitEvents.UNIT_SPELLCAST_SUCCEEDED == token then
+                    local handler = frame.scripts.OnEvent
+                    if handler then
+                        local ok, err
+                        if hidden then
+                            ok, err = pcall(handler, frame, "UNIT_SPELLCAST_SUCCEEDED", Secret(token), Secret(castID),
+                                Secret(spellID))
+                        else
+                            ok, err = pcall(handler, frame, "UNIT_SPELLCAST_SUCCEEDED", token, castID, spellID)
+                        end
+                        if not ok then
+                            world.errors[#world.errors + 1] = tostring(err)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    --- Someone in your group (from world:addPartyMember) casts a spell. Whatever
+    --- it leaves is theirs, not yours.
+    --- opts: miss = true (nothing lands), on = the mob it goes to (default: the
+    --- one they have targeted, member.target), hits = the mobs an area spell
+    --- reaches, or the units a buff reaches (default for an area spell: their
+    --- target and every mob in the fight; for a buff marked `party`: you; for
+    --- any other buff: only they themselves), first = "effect" (the effect
+    --- shows on the unit before the cast is announced, in the same frame),
+    --- travel = seconds before the effect lands, lasts = how long the effect
+    --- lasts (default: member.lasts[its name], for a member whose effects
+    --- last longer or less long than yours, and else as long as yours).
+    function world:partyCast(member, spellID, opts)
+        opts = opts or {}
+        local data = assert(self.spells[spellID], "unknown spell " .. tostring(spellID))
+        local castID = "Cast-3-0-0-0-" .. spellID .. "-" .. self.nextCast
+        self.nextCast = self.nextCast + 1
+        local effect = data.effect
+        local target = opts.on or member.target
+
+        local function Land()
+            if not effect or opts.miss then
+                return
+            end
+            local victims = opts.hits
+            if not victims then
+                if effect.buff then
+                    victims = { effect.party and self.player or member }
+                elseif effect.area then
+                    victims = {}
+                    for _, mob in pairs(self.mobs) do
+                        if not mob.dead and (mob.engaged or mob == target) then
+                            victims[#victims + 1] = mob
+                        end
+                    end
+                else
+                    victims = { target }
+                end
+            end
+            local name = effect.name or data.name
+            local lasts = opts.lasts or (member.lasts and member.lasts[name]) or effect.duration
+            local how = { shared = effect.shared, stacks = effect.stacks, caster = effect.caster, source = member }
+            for _, mob in ipairs(victims) do
+                if mob and not mob.dead then
+                    self:applyAura(mob, name, lasts, false, nil, effect.buff, how)
+                end
+            end
+        end
+
+        if opts.first == "effect" then
+            Land()
+        end
+        SendCastEvent(member, castID, spellID)
+        if opts.first == "effect" then
             return
         end
         if opts.travel and opts.travel > 0 then

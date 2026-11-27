@@ -20,6 +20,12 @@
 --      behind; if it has, it gets its icon back once its casts are seen to
 --      leave something after all.
 --   4. Casting it has repeatedly been followed by a new effect of yours.
+--
+-- The tooltip is read for two more things. How many times over an effect can
+-- be on one unit: a skill whose effect stacks is worth using until the last
+-- stack is on. And whether the effect is each caster's own, as damage or
+-- healing over time is, or one that a unit carries only once whoever put it
+-- there: another player's copy of that kind does what yours would.
 
 local _, ns = ...
 
@@ -260,6 +266,114 @@ function Spells.ParseDuration(text)
 end
 
 --------------------------------------------------------------------------------
+-- Reading stacks, and whose effect it is, out of tooltip text
+--
+-- The words are English ones here too. In another language nothing is read:
+-- a skill then counts as one whose effect does not stack and is your own,
+-- which is how every skill was treated before 0.4.0. /se stacks and
+-- /se anyone say otherwise for a skill.
+--------------------------------------------------------------------------------
+
+local STACKS_MIN, STACKS_MAX = 2, 100
+
+--- A description without colour codes, in lower case with single spaces.
+local function Plainly(text)
+    text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " ")
+    return (text:lower():gsub("%s+", " "))
+end
+
+-- Words right before a number that make it the most times an effect stacks.
+local UP_TO = { "up to", "maximum of", "max of", "a total of" }
+
+local function EndsWithAny(lead, phrases)
+    for i = 1, #phrases do
+        if EndsWith(lead, phrases[i]) then
+            return true
+        end
+    end
+    return false
+end
+
+--- The most times a spell's effect can be on one unit, read from its
+--- description, or nil for one that says nothing of the kind. "Can be
+--- applied up to 5 times", "Stacks up to 5 times" and "up to 5 stacks" all
+--- give 5. Also returns the words it was read from.
+function Spells.ParseStacks(text)
+    if type(text) ~= "string" or text == "" then
+        return nil
+    end
+    text = Plainly(text)
+    for first, number, last in text:gmatch("()(%d+)()") do
+        local value = tonumber(number)
+        -- Part of a number with a point in it, "2.5", is no count of anything.
+        local before, after = text:sub(first - 1, first - 1), text:sub(last, last + 1)
+        if value and value >= STACKS_MIN and value <= STACKS_MAX and not before:find("[%d%.,]")
+            and not after:find("^[%.,]%d") then
+            -- Only the sentence the number stands in is looked at.
+            local lead = text:sub(max(1, first - LEAD), first - 1):gsub("^.*%. ", ""):gsub(" $", "")
+            local word = text:sub(last, last + 16):match("^ ?(%a+)")
+            local told
+            if word == "times" then
+                -- "applied up to 5 times", "stacks 3 times": a count of how
+                -- often something else happens has neither word before it.
+                told = (lead:find("stack") ~= nil or lead:find("appl") ~= nil)
+                    and (EndsWithAny(lead, UP_TO) or lead:find("stack%a*$") ~= nil or lead:find("appl%a*$") ~= nil)
+            elseif word == "stacks" or word == "applications" then
+                told = EndsWithAny(lead, UP_TO) or EndsWith(lead, "max") or EndsWith(lead, "maximum")
+            else
+                told = lead:find("stack%a* up to$") ~= nil or lead:find("stack%a* to$") ~= nil
+            end
+            if told then
+                local words = (word == "times" or word == "stacks" or word == "applications")
+                    and (number .. " " .. word) or number
+                return value, Quote(lead, words)
+            end
+        end
+    end
+    return nil
+end
+
+-- Wordings that show an effect to be each caster's own. One that does its
+-- work bit by bit, damage or healing: every caster's adds to the others'.
+-- And one that makes the enemy attack its caster: someone else's does not do
+-- that for you. Anything else that lasts is taken to be on a unit only once.
+local OWN_PLAIN = {
+    "damage over", "over time", "per sec", "every sec", "each sec", "periodic",
+    "attacks on you", "attack you", "taunt",
+}
+local OWN_TIMED = { "over (%d+[%.,]?%d*) ?([^%s%d%p]+)", "every (%d+[%.,]?%d*) ?([^%s%d%p]+)" }
+
+--- The words in a spell description that show its effect to be each
+--- caster's own, or nil when there are none: "damage over 18 sec", "every 3
+--- sec", "attacks on you".
+function Spells.ParseOwn(text)
+    if type(text) ~= "string" or text == "" then
+        return nil
+    end
+    text = Plainly(text)
+    for i = 1, #OWN_TIMED do
+        local position = 1
+        while true do
+            local first, last, _, word = text:find(OWN_TIMED[i], position)
+            if not first then
+                break
+            end
+            if SecondsPer(word) then
+                return text:sub(first, last)
+            end
+            position = last + 1
+        end
+    end
+    for i = 1, #OWN_PLAIN do
+        local first, last = text:find(OWN_PLAIN[i], 1, true)
+        if first then
+            return text:sub(first, last)
+        end
+    end
+    return nil
+end
+
+--------------------------------------------------------------------------------
 -- What the client says about a spell
 --------------------------------------------------------------------------------
 
@@ -285,6 +399,9 @@ local function Load(info, now)
         local text = ns.SpellDescription(id)
         if text and text ~= "" then
             info.tooltipDuration, info.tooltipRead, info.tooltipPassed = Spells.ParseDuration(text)
+            info.tooltipStacks, info.stacksRead = Spells.ParseStacks(text)
+            info.ownRead = Spells.ParseOwn(text)
+            info.described = true
             info.done = true
         end
     end
@@ -300,9 +417,12 @@ local function Load(info, now)
 end
 
 --- Static facts about a spell: { id, name, harmful, helpful, selfOnly, passive,
---- range, tooltipDuration, tooltipRead, tooltipPassed }. The last two are the
+--- range, tooltipDuration, tooltipRead, tooltipPassed, tooltipStacks,
+--- stacksRead, ownRead, described, gameStacks }. `tooltipRead` and `tooltipPassed` are the
 --- words the duration was read from and the first time in the description
---- that was not taken for one.
+--- that was not taken for one. `stacksRead` is the words the most stacks were
+--- read from, `ownRead` the words that show the effect to be each caster's
+--- own, and `described` is true once a description was there to read.
 --- Returns nil while the client does not know the spell's name, with a second
 --- value of true if it is still worth asking again.
 function Spells:Get(spellID, now)
@@ -448,7 +568,84 @@ function Spells:Tracking(info)
     return tracked, area, duration, source, kind
 end
 
---- Your own choices for a spell, made on first use: { track, kind, aoe, duration }.
+--- What the game's own data says of how often a spell's effect stacks: the
+--- number for one that does, false for one that does not, nil while the
+--- client has not said. It may keep that back while effect details are
+--- hidden, so it is asked again until it has answered, or has had nothing to
+--- say with the details open: then this client cannot be asked. Once it has
+--- answered it is not asked again.
+function Spells:GameStacks(info)
+    local most = info.gameStacks
+    if most == nil then
+        most = ns.SpellMaxStacks(info.id)
+        if most ~= nil then
+            most = most >= STACKS_MIN and most <= STACKS_MAX and most
+        elseif not ns.AurasSecret() then
+            most = false
+        end
+        info.gameStacks = most
+    end
+    return most
+end
+
+--- The most times a spell's effect can be on one unit, when that is more than
+--- once: what you said with /se stacks, or else the largest of what the game
+--- says of the spell, what its tooltip says, and what has been read off a
+--- unit. Nil for an effect that does not stack.
+function Spells:Stacking(info)
+    local user = ns.db.spells[info.name]
+    local most = user and user.stacks
+    if type(most) ~= "number" then
+        local learned = ns.db.learned[info.name]
+        local seen = learned and learned.stacks
+        most = info.tooltipStacks
+        if type(seen) == "number" and (not most or seen > most) then
+            most = seen
+        end
+        local game = self:GameStacks(info)
+        if game and (not most or game > most) then
+            most = game
+        end
+    end
+    if type(most) == "number" and most >= STACKS_MIN then
+        return most
+    end
+    return nil
+end
+
+--- Where the most stacks of a spell comes from: "you", "tooltip", "game" (the
+--- game's own data for the spell), "seen" (read off a unit in play), or nil
+--- for one that does not stack.
+function Spells:StackingSource(info)
+    local most = self:Stacking(info)
+    if not most then
+        return nil
+    end
+    local user = ns.db.spells[info.name]
+    if user and type(user.stacks) == "number" then
+        return "you"
+    end
+    if info.tooltipStacks == most then
+        return "tooltip"
+    end
+    return info.gameStacks == most and "game" or "seen"
+end
+
+--- True when a unit carries the spell's effect only once, whoever put it
+--- there, so that another player's copy counts for as much as yours: what you
+--- said with /se anyone or /se mine, or else what the tooltip shows (see
+--- Spells.ParseOwn). A spell whose description could not be read counts as
+--- your own.
+function Spells:Shared(info)
+    local user = ns.db.spells[info.name]
+    if user and user.shared ~= nil then
+        return user.shared
+    end
+    return info.described == true and info.ownRead == nil
+end
+
+--- Your own choices for a spell, made on first use: { track, kind, aoe,
+--- duration, stacks, shared }.
 function Spells:Choice(name)
     local choice = ns.db.spells[name]
     if not choice then
@@ -576,6 +773,100 @@ function Spells:LearnExact(name, duration, kind)
     end
 end
 
+--- Records how many times over an effect with the spell's own name was read
+--- on a unit. That is how a spell whose tooltip does not say so in words this
+--- file knows is found to stack: to at least that many.
+function Spells:LearnStacks(name, stacks)
+    if type(stacks) ~= "number" or stacks < STACKS_MIN or stacks > STACKS_MAX then
+        return
+    end
+    local learned = Learned(name)
+    if type(learned.stacks) ~= "number" or stacks > learned.stacks then
+        learned.stacks = stacks
+        ns.Log("%s: read %d times over on a unit, so its effect stacks", name, stacks)
+        ns.MarkDirty()
+    end
+end
+
+--------------------------------------------------------------------------------
+-- How long another player's copy lasts
+--
+-- A talent can make your effect last longer than the same spell does from
+-- someone without it: a warrior's shouts last half again as long with one. So
+-- how long yours lasts is not how long theirs does. In a fight, where a group
+-- member's cast is heard and nothing on the unit can be read, giving theirs
+-- your time would leave the cross up after their effect had gone.
+--
+-- Out of a fight their copy can be read, and often who put it there. What a
+-- member's own copy was read to last is what their casts are given from then
+-- on. Without that, theirs is given two thirds of yours, and no more than the
+-- shortest copy of anyone else's that was read. An effect that stacks is one
+-- effect which every caster adds to and renews, so it keeps its whole time.
+--
+-- None of this is saved. It is about the people you are with, and is dropped
+-- when the group changes (Core.lua).
+--------------------------------------------------------------------------------
+
+local THEIR_SHARE = 2 / 3 -- of how long yours lasts, for a copy nothing is known of
+
+local copyTimes = {} -- spell name -> the shortest another player's copy of its effect was read to last
+local memberTimes = {} -- group token -> { spell name -> the shortest that member's copy was read to last }
+
+--- Records that another player's copy of a spell's effect was read off a
+--- unit: how long it lasts and, where the game says who put it there, which
+--- group member that is (`token`, see ns.GroupToken). Returns "member" or
+--- "anyone" when that was news, about the member or about nobody in
+--- particular, and nil when it was not.
+function Spells:LearnCopy(name, duration, token)
+    if type(duration) ~= "number" or duration < MIN_DURATION or duration > MAX_DURATION then
+        return nil -- one with no timer, say: nothing to go by
+    end
+    local news
+    local shortest = copyTimes[name]
+    if not shortest or duration < shortest then
+        copyTimes[name] = duration
+        news = "anyone"
+    end
+    if token then
+        local times = memberTimes[token]
+        if not times then
+            times = {}
+            memberTimes[token] = times
+        end
+        if not times[name] or duration < times[name] then
+            times[name] = duration
+            news = "member"
+            ns.Log("%s: the copy %s put there lasts %ds", name, token, duration)
+        end
+    end
+    return news
+end
+
+--- How long a group member's cast of a spell is taken to leave its effect
+--- for, where it can only be heard. `mine` is how long yours lasts, or their
+--- rank of it where that is less. `token` is the name the member was heard
+--- under, and `stacking` is true for an effect that stacks.
+function Spells:CopyTime(name, mine, token, stacking)
+    local times = token and memberTimes[token]
+    local known = times and times[name]
+    if known then
+        return known
+    end
+    local time = stacking and mine or mine * THEIR_SHARE
+    local shortest = copyTimes[name]
+    if shortest and shortest < time then
+        time = shortest
+    end
+    return time
+end
+
+--- Forgets what was read of other players' copies: the group has changed, and
+--- with it whom each party or raid name stands for.
+function Spells:ForgetCopies()
+    ns.Wipe(copyTimes)
+    ns.Wipe(memberTimes)
+end
+
 --------------------------------------------------------------------------------
 -- How long a cast takes to show on its target
 --
@@ -587,6 +878,25 @@ end
 -- A spell used at arm's length shows at once, so the gap is timed and the wait
 -- cut down to fit. One cast from a distance may have to fly there, for longer
 -- or shorter depending on where you stand, so it always gets the full wait.
+--
+-- A wait of half a second is still long in a group, where an enemy's effects
+-- change a few times a second for reasons that are none of yours. In play,
+-- about one cast in three of a skill that leaves nothing was followed by
+-- such a change within its wait, and a cast that missed was shown as landed
+-- as often. So a spell is held to what its casts have been seen to do:
+--
+--   * One whose casts have kept showing at once is given a quarter of a
+--     second and no more.
+--   * One whose casts have kept showing in the very frame they were
+--     announced, which is what the game was seen to do with every skill used
+--     at arm's length, is held to that frame, give or take a twentieth of a
+--     second for a report that comes a frame apart from its cast.
+--
+-- Whatever shows inside the shorter wait and not in the frame itself counts
+-- against it, so a spell that stops showing that fast gets its time back. What
+-- comes later than that is no longer taken for the cast. Core.lua keeps a few
+-- lines about it in the saved report, so that it can be checked afterwards
+-- that nothing was turned away that was a cast landing after all.
 --------------------------------------------------------------------------------
 
 local min = math.min
@@ -596,16 +906,36 @@ local WAIT_NEAR = 1.5 -- for a spell used at arm's length that has not been time
 local NEAR = 10 -- yards: no flight time to speak of within this
 local LAG_TIMED = 3 -- landings to time before a spell's gap is trusted
 local LAG_FADE = 0.3 -- how fast an old, longer gap is forgotten
+local PROMPT = 0.15 -- a cast that showed within this long of being announced showed at once
+local PROMPT_SEEN, PROMPT_SHARE = 5, 0.8 -- how many landings at once, and what share of all, hold a spell to it
+local WAIT_PROMPT = 0.25 -- how long such a spell is given
+local INSTANT_SEEN, INSTANT_SHARE = 3, 0.9 -- the same for landings in the very frame of the cast
+local WAIT_INSTANT = 0.05 -- how long such a spell is given, before the cast is announced and after
+local LATE_SEEN, LATE_SHARE = 3, 0.5 -- how many landings, and how few of them in the frame, make a spell one that shows late
+local PROMPT_CAP = 20 -- halve the counts past this so old results fade
 
 Spells.WAIT_MAX = WAIT_MAX
 
 --- How long to wait for a cast of this spell to change the effects on its
---- target before deciding that it left nothing there.
+--- target before deciding that it left nothing there. The second value is
+--- true for a spell that is held to the frame of its cast: a change is then
+--- not looked for any longer before the cast is announced than after it.
 function Spells:Wait(info)
     if type(info.range) ~= "number" or info.range > NEAR then
         return WAIT_MAX
     end
     local learned = ns.db.learned[info.name]
+    local prompt = learned and learned.prompt
+    if type(prompt) == "number" then
+        local landings = prompt + (type(learned.tardy) == "number" and learned.tardy or 0)
+        local instant = learned.instant
+        if type(instant) == "number" and instant >= INSTANT_SEEN and instant >= INSTANT_SHARE * landings then
+            return WAIT_INSTANT, true
+        end
+        if prompt >= PROMPT_SEEN and prompt >= PROMPT_SHARE * landings then
+            return WAIT_PROMPT
+        end
+    end
     local lag = learned and learned.lag
     local timed = learned and learned.timed
     if type(lag) ~= "number" or type(timed) ~= "number" or timed < LAG_TIMED then
@@ -614,10 +944,26 @@ function Spells:Wait(info)
     return max(WAIT_MIN, min(WAIT_MAX, 2 * lag + 0.5))
 end
 
+--- True for a spell whose casts have mostly shown on the unit outside the
+--- frame they were announced in: a change that comes a while after a cast of
+--- it is then as good a sign of its landing as there is.
+function Spells:ShowsLate(name)
+    local learned = ns.db.learned[name]
+    local prompt = learned and learned.prompt
+    if type(prompt) ~= "number" then
+        return false
+    end
+    local landings = prompt + (type(learned.tardy) == "number" and learned.tardy or 0)
+    local instant = type(learned.instant) == "number" and learned.instant or 0
+    return landings >= LATE_SEEN and instant < LATE_SHARE * landings
+end
+
 --- Records that a cast of this spell showed on its target `delay` seconds
---- after it went off.
+--- after it went off: none at all when it showed in the very frame the cast
+--- was announced, and less than none when it showed before that.
 function Spells:Landed(name, delay)
     local learned = Learned(name)
+    local sameFrame = delay == 0
     delay = max(0, min(WAIT_MAX, delay))
     local lag = learned.lag
     if type(lag) ~= "number" then
@@ -628,6 +974,23 @@ function Spells:Landed(name, delay)
     learned.lag = floor(lag * 100 + 0.5) / 100
     local timed = type(learned.timed) == "number" and learned.timed or 0
     learned.timed = min(LAG_TIMED, timed + 1)
+    -- How many of its landings showed at once, and how many later. And of
+    -- the ones at once, how many in the very frame of the cast.
+    local prompt = type(learned.prompt) == "number" and learned.prompt or 0
+    local tardy = type(learned.tardy) == "number" and learned.tardy or 0
+    local instant = type(learned.instant) == "number" and learned.instant or 0
+    if delay <= PROMPT then
+        prompt = prompt + 1
+        if sameFrame then
+            instant = instant + 1
+        end
+    else
+        tardy = tardy + 1
+    end
+    if prompt + tardy > PROMPT_CAP then
+        prompt, tardy, instant = prompt / 2, tardy / 2, instant / 2
+    end
+    learned.prompt, learned.tardy, learned.instant = prompt, tardy, instant
 end
 
 --------------------------------------------------------------------------------

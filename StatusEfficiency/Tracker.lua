@@ -28,6 +28,14 @@
 --     instance ids), a cast that adds nothing is treated as a miss, an effect
 --     that drops off early is removed, and one that outlives its timer is kept.
 --   * Whenever effects can be read outright, what is read replaces the guess.
+--   * An effect that stacks is counted: each cast seen to land adds one, up to
+--     the most the spell allows, and what is read outright replaces the count.
+--     Where the client shows that a report only renewed effects, the effect
+--     was on the unit before the cast, whoever put it there.
+--   * An effect a unit carries only once, whoever casts it, can be someone
+--     else's. It is read off the unit where that is allowed. In a fight it is
+--     put in the books when the effects on a unit change in the very frame
+--     someone in your group is heard casting that spell.
 --
 -- The books do not care whether a unit is an enemy carrying your debuffs or
 -- you carrying your buffs: Core.lua decides which unit a spell is judged on.
@@ -43,7 +51,7 @@ ns.Tracker = Tracker
 
 local pairs, type, next = pairs, type, next
 local sort, remove = table.sort, table.remove
-local max = math.max
+local max, min = math.max, math.min
 
 local GRACE = 2.0 -- seconds after a cast in which its effect is expected to appear
 local EARLY = 0.3 -- a unit's effects can be seen to change this long before its cast is reported
@@ -53,6 +61,10 @@ local FOREVER = 3600 -- stand-in timer for an effect that has no duration
 local CHANGE_TTL = 5 -- how long the time of a unit's last change is kept
 local DUE_EARLY, DUE_LATE = 0.1, 0.3 -- how long before and after an effect was due to end a report is still its ending
 local LINGER = 0.5 -- an effect that ran out is remembered this long, so the report of its ending is known for what it is
+local GUEST_TTL = 1 -- how long a cast by someone in your group is kept, for the report that shows it landing
+local SLACK = 0.001 -- two times this close together are the same moment
+local ECHO = 0.6 -- how long after a cast that is held to its frame a change on the unit is still noted
+local FRAME = 0.05 -- a report this close to a cast being announced came in the frame of the cast, or the next one
 
 Tracker.GRACE = GRACE
 
@@ -73,12 +85,28 @@ Tracker.GRACE = GRACE
 --     told      when the client's report of its ending was heard
 --     moot      a change when it was due went to a cast, so whether its
 --               ending was reported is left open
+--     stacks    how many times over it is on the unit, for an effect that
+--               stacks: counted from the casts seen to land, or read outright
+--     counted   when that count was last made from a report of a landing,
+--     before    what it was until then, and whether the landing was counted
+--     sure      on: if the report turns out not to show what kind of landing
+--               it was, the count is made again
+--     theirs    another player's, as far as is known: your own effects, when
+--               they are counted, do not include it
 -- }
 local records = {}
 local pending = {} -- casts inside their grace period, oldest first
+local guests = {} -- casts by people in your group that could leave an effect of one of your spells
+-- Casts of yours that are held to the frame they were announced in, kept a
+-- little longer than their wait: { cast, till }. A change that comes too late
+-- for one is no longer its landing. It is noted in the saved report all the
+-- same, so that it can be checked there that the game does not show landings
+-- that late.
+local echoes = {}
 local sent = {} -- cast id -> snapshot taken when the cast was sent
 local lastSent -- newest snapshot, for casts whose id cannot be matched
 local lastChange = {} -- unit key -> when the client last reported its effects changing
+local lastFresh = {} -- unit key -> whether that report only added effects (true) or only renewed them (false)
 local credited = {} -- unit key -> the change (by its time) already put down to a cast
 local holders = {} -- unit key -> the cast it was put down to
 -- unit -> the changes at one moment that were held against your effects there
@@ -127,18 +155,90 @@ local function Drop(key, name)
     end
 end
 
---- How many live records a unit has, not counting one spell.
+--- How many live records of your own effects a unit has, not counting one spell.
 local function LiveCount(key, except, now)
     local set = records[key]
     local count = 0
     if set then
         for name, rec in pairs(set) do
-            if name ~= except and IsLive(rec, now) then
+            if name ~= except and not rec.theirs and IsLive(rec, now) then
                 count = count + 1
             end
         end
     end
     return count
+end
+
+--------------------------------------------------------------------------------
+-- Stacks
+--------------------------------------------------------------------------------
+
+--- How many times over an effect is on a unit once one more cast has landed.
+--- `before` is how many it was taken to be, 0 for none. `fresh` is what the
+--- report of the landing showed: true when it only added an effect, so there
+--- was none before, whatever the books said. False when it only renewed
+--- one, so it was there already: at least once, and from someone else if the
+--- books had nothing. Nil when the report does not say.
+---
+--- `sure` is false for a landing that is not counted on: the effect is taken
+--- to be there, and no more times over than it was. A count only ever grows
+--- by a landing that is counted on, because a count that runs ahead shows the
+--- red X on a skill that still has a stack to add.
+local function Count(before, fresh, most, sure)
+    if not sure then
+        return max(before, 1)
+    end
+    if fresh == true then
+        return 1
+    end
+    if before == 0 and fresh == false then
+        return min(most, 2)
+    end
+    return min(most, before + 1)
+end
+
+--- Counts a cast that landed on a unit into the record of its effect there:
+--- once for each cast, however many signs of its landing come in. `when` is
+--- the moment of the report it is counted by, if it is counted by one.
+---
+--- A report is counted on when it came in the frame the cast was announced
+--- in, or the one next to it: that is when the game shows a landing. One
+--- that came later within the cast's wait passes for the landing, as it has
+--- to where nothing better is known, but it is as likely something else that
+--- changed on the unit after a miss, so it adds no stack. Only for a skill
+--- whose landings are known to show late is it counted on like any other.
+local function Stack(cast, unit, rec, before, fresh, when)
+    local most = cast.most
+    if not most then
+        rec.stacks = nil
+    elseif not unit.stacked then
+        local sure = when == nil or cast.loose == true or (when - cast.time <= FRAME and cast.time - when <= FRAME)
+        -- A landing that is not counted on leaves the cast open to a better sign of it.
+        unit.stacked = sure or nil
+        if unit.first then
+            -- The better sign of a landing that was put down as the first
+            -- stack already: that one was this cast's, and it is its only one.
+            unit.first = nil
+            return
+        end
+        unit.first = (not sure and before == 0) or nil
+        rec.stacks = Count(before, fresh, most, sure)
+        rec.counted, rec.before, rec.sure = when, before, sure
+    end
+end
+
+--- What a report showed of a change is not to be read after all: another
+--- report of the same moment showed something else, and which of the two was
+--- the cast landing is not told. A count made from it is made again from the
+--- books alone.
+local function Blur(key, when)
+    lastFresh[key] = nil
+    local holder = credited[key] == when and holders[key]
+    local set = holder and holder.most and records[key]
+    local rec = set and set[holder.name]
+    if rec and rec.counted == when then
+        rec.stacks = Count(rec.before, nil, holder.most, rec.sure)
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -226,16 +326,19 @@ local function PutDown(unit, when)
 end
 
 --- The effects on a watched unit changed while a cast of yours was on its way
---- there: take the cast as having landed at that moment.
-local function Witness(cast, key, unit, when)
+--- there: take the cast as having landed at that moment. `fresh` is what the
+--- report showed of the change (see Count).
+local function Witness(cast, key, unit, when, fresh)
     credited[key] = when
     holders[key] = cast
     unit.signal = when
+    cast.shown = true
 
     local name = cast.name
     if cast.tracked then
         local rec = Live(key, name, when)
         local new = rec == nil
+        local before = rec and (rec.stacks or 1) or 0
         if new then
             rec = Start(key, name, when, cast.duration)
             rec.fresh = cast
@@ -252,6 +355,8 @@ local function Witness(cast, key, unit, when)
         rec.renewed = not new or nil
         rec.told = nil
         rec.moot = nil
+        rec.theirs = nil -- yours is on it now, whoever's it was
+        Stack(cast, unit, rec, before, fresh, when)
     end
     ns.Spells:Landed(name, when - cast.time)
     ns.Log("%s: the unit's effects changed %.2fs after the cast, so it landed", name, when - cast.time)
@@ -265,12 +370,18 @@ local function Judged(cast)
 end
 
 --- A cast went off.
---- spell = { name, info, tracked, area, duration, forced, wait, learning }
+--- spell = { name, info, tracked, area, duration, forced, wait, sharp, learning, most }
 ---   info      what Spells:Get gave for the spell
+---   most      how many times over its effect can be on one unit, for one
+---             that stacks
 ---   forced    tracked on your say-so where reports cannot be relied on to
 ---             show what it leaves, so it is assumed to land whatever is seen
 ---   wait      how long a unit is given to show the cast, when reports of its
 ---             changes are all there is to judge by
+---   sharp     the spell shows in the frame of its cast: a change that came
+---             longer than `wait` before the cast was announced is not its
+---   loose     the spell is known to show late: a change that comes a while
+---             after the cast is counted on as its landing all the same
 ---   learning  it has no icon, but is listened for all the same: that is how
 ---             a spell earns one, or earns back the one it lost
 function Tracker:Succeeded(snapshot, spell, now)
@@ -283,6 +394,8 @@ function Tracker:Succeeded(snapshot, spell, now)
         learning = (not spell.tracked and spell.learning) or nil,
         area = spell.area,
         duration = spell.duration,
+        most = spell.most,
+        loose = spell.loose,
         forced = spell.forced,
         hidden = snapshot.hidden,
         time = now,
@@ -318,6 +431,15 @@ function Tracker:Succeeded(snapshot, spell, now)
     if cast.trusted and spell.wait then
         -- Judged by reports alone: wait as long as this spell is known to take.
         cast.ends = now + spell.wait
+        if spell.sharp then
+            -- And one that shows in the frame of its cast is not looked for
+            -- any longer before the cast was announced than after it (and a
+            -- hair, so that a time that was added up does not fall outside).
+            cast.from = max(cast.from, now - spell.wait - SLACK)
+            if spell.tracked then
+                echoes[#echoes + 1] = { cast = cast, till = now + ECHO }
+            end
+        end
     end
 
     if not spell.tracked and not (cast.learning and cast.trusted) then
@@ -343,12 +465,14 @@ function Tracker:Succeeded(snapshot, spell, now)
             if rec then
                 if unit.engaged then
                     -- Recast on a unit that already has it: the timer starts over.
+                    local before = rec.stacks or 1
                     rec.applied = now
                     rec.duration = spell.duration
                     rec.expires = now + spell.duration
                     rec.endless = nil
                     rec.exact = nil
                     rec.pending = cast
+                    Stack(cast, unit, rec, before)
                 end
             elseif not spell.area or (unit.pre == nil and unit.engaged) then
                 -- Assume it lands. For an area spell we only assume when there
@@ -357,6 +481,7 @@ function Tracker:Succeeded(snapshot, spell, now)
                 rec.pending = cast
                 rec.fresh = cast
                 rec.sticky = spell.forced or nil
+                Stack(cast, unit, rec, 0)
             end
         end
     end
@@ -369,7 +494,7 @@ function Tracker:Succeeded(snapshot, spell, now)
         if unit.watched then
             local when = lastChange[key]
             if when and when >= cast.from and credited[key] ~= when then
-                Witness(cast, key, unit, when)
+                Witness(cast, key, unit, when, lastFresh[key])
             elseif when and when >= cast.from and Judged(cast) and holders[key] and not Judged(holders[key]) then
                 -- It went to a cast that is only credited when nobody else is
                 -- waiting, because this one had not been announced yet.
@@ -377,7 +502,7 @@ function Tracker:Succeeded(snapshot, spell, now)
                 if other and other.signal == when then
                     other.signal = nil
                 end
-                Witness(cast, key, unit, when)
+                Witness(cast, key, unit, when, lastFresh[key])
             elseif Judged(cast) and PutDown(Owner(key), now) then
                 -- A change on the unit this very frame was put down to an
                 -- effect of yours running out, before this cast was announced.
@@ -387,32 +512,172 @@ function Tracker:Succeeded(snapshot, spell, now)
     end
 end
 
+--- A cast of yours was credited with a change in the very frame someone in
+--- your group was heard casting the same spell at the same unit. Which of the
+--- two effects is on it now is not told. It stays yours in the books, with
+--- the shorter time of the two, and its ending is not waited for.
+local function Contested(cast, key, when)
+    for i = #guests, 1, -1 do
+        local guest = guests[i]
+        if guest.time == when and guest.name == cast.name and guest.units[key] then
+            local rec = Live(key, cast.name, when)
+            if rec and guest.duration < rec.duration then
+                rec.duration = guest.duration
+                rec.expires = when + guest.duration
+                rec.exact = nil
+            end
+            return
+        end
+    end
+end
+
+--- The effects on a unit changed in the very frame someone in your group was
+--- heard casting a spell of yours whose effect a unit carries only once,
+--- whoever casts it: their cast is taken to have landed there.
+local function Welcome(guest, key, when, fresh)
+    credited[key] = when
+    holders[key] = guest
+
+    local name = guest.name
+    local rec = Live(key, name, when)
+    local before = rec and (rec.stacks or 1) or 0
+    if not rec then
+        rec = Start(key, name, when, guest.duration)
+    end
+    -- A unit carries the effect only once, so theirs is the one on it now,
+    -- also where yours was: it is no longer one of the effects of yours that
+    -- are counted.
+    rec.theirs = true
+    rec.id = nil
+    rec.applied = when
+    rec.duration = guest.duration
+    rec.expires = when + guest.duration
+    rec.endless = nil
+    rec.weak = nil
+    rec.signal = true
+    -- How long their copy lasts is not known the way yours is, so its ending
+    -- is neither waited for nor held for or against the spell.
+    rec.exact = nil
+    rec.told = nil
+    rec.moot = nil
+    if guest.most then
+        rec.stacks = Count(before, fresh, guest.most, true) -- in the very frame of their cast
+        rec.counted, rec.before, rec.sure = when, before, true
+    else
+        rec.stacks = nil
+    end
+    ns.NoteOthers("landed")
+    ns.Log("%s: someone in your group cast it as the unit's effects changed, so theirs landed", name)
+end
+
 --- The client reported that the effects on a unit changed. It does not say
---- which effect or whose, so the newest cast still waiting on that unit gets
---- the credit. A spell that is taken to land anyway, or that has no icon and
---- is only being learned about, gets it when no other cast is waiting: it may
---- well leave nothing, and must not take the proof away from a cast that is
---- judged by it.
-function Tracker:Changed(key, when)
+--- which effect or whose. `fresh` is what it does show, where it shows it:
+--- true when the report only added effects, false when it only renewed some.
+---
+--- A cast of yours that was announced in this very frame gets the credit
+--- first: where the game reports a landing, it does so in the frame of the
+--- cast. Then a cast by someone in your group that was announced in this
+--- frame and could leave an effect you track. Then the newest cast of yours
+--- still waiting on the unit. A spell that is taken to land anyway, or that
+--- has no icon and is only being learned about, gets it when nobody else is
+--- waiting: it may well leave nothing, and must not take the proof away from
+--- a cast that is judged by it. A cast whose wait is over gets nothing, even
+--- if it has not been looked at since.
+function Tracker:Changed(key, when, fresh)
     if lastChange[key] == when then
-        return -- one change, reported once for each name the unit goes by
+        -- One change is reported once for each name the unit goes by, and
+        -- alike each time. A report of that moment that shows another kind of
+        -- change is of a second change.
+        if lastFresh[key] ~= fresh then
+            Blur(key, when)
+        end
+        return
     end
     lastChange[key] = when
-    local spare
+    lastFresh[key] = fresh
+    local newest, spare
     for i = #pending, 1, -1 do
         local cast = pending[i]
         local unit = cast.units[key]
-        if unit and unit.watched and not unit.signal and not unit.settled and when >= cast.from then
-            if Judged(cast) then
-                Witness(cast, key, unit, when)
+        if unit and unit.watched and not unit.signal and not unit.settled and when >= cast.from
+            and when <= cast.ends then
+            if not Judged(cast) then
+                spare = spare or cast
+            elseif cast.time == when then
+                Witness(cast, key, unit, when, fresh)
+                Contested(cast, key, when)
                 return
+            else
+                newest = newest or cast
             end
-            spare = spare or cast
         end
     end
-    if spare then
-        Witness(spare, key, spare.units[key], when)
+    for i = #guests, 1, -1 do
+        local guest = guests[i]
+        if guest.time == when and guest.units[key] then
+            Welcome(guest, key, when, fresh)
+            return
+        end
     end
+    local cast = newest or spare
+    if cast then
+        Witness(cast, key, cast.units[key], when, fresh)
+    end
+    -- Too late for a cast that is held to its frame, and showed nothing there?
+    for i = #echoes, 1, -1 do
+        local echo = echoes[i]
+        local late = echo.cast
+        local unit = late.units[key]
+        if unit and when > late.ends and when <= echo.till then
+            remove(echoes, i)
+            if not late.shown and not late.hit and not unit.settled then
+                ns.NoteLate(late, when - late.time, fresh)
+            end
+        end
+    end
+end
+
+--- Someone in your group cast a spell of yours whose effect a unit carries
+--- only once, whoever casts it. Nothing is taken on trust for a cast that is
+--- not yours: it only counts where a unit that is known to report its changes
+--- does so in this very frame. Returns whether there is such a unit to wait
+--- for.
+--- snapshot = { kind, units = { [unit key] = { watched, trusted } } }, as for
+--- Tracker:Sent; spell = { name, duration, most }.
+function Tracker:Joined(snapshot, spell, now)
+    local guest = {
+        name = spell.name,
+        kind = snapshot.kind or "debuff",
+        tracked = true, -- a change it was credited with is not up for the taking
+        duration = spell.duration,
+        most = spell.most,
+        time = now,
+        units = {},
+    }
+    local waiting = false
+    for key, was in pairs(snapshot.units) do
+        if was.watched and was.trusted then
+            guest.units[key] = true
+            waiting = true
+        end
+    end
+    if not waiting then
+        return false
+    end
+    guests[#guests + 1] = guest
+    return true
+end
+
+--- True while a cast by someone in your group is waiting for the report that
+--- would show it landing.
+function Tracker:HasGuests()
+    return #guests > 0
+end
+
+--- True while a change on a unit is still worth hearing of although no cast
+--- is waiting for it: see `echoes`.
+function Tracker:HasEchoes()
+    return #echoes > 0
 end
 
 --- True when a cast that is judged by reports was announced in this very
@@ -656,6 +921,7 @@ local function Confirm(cast, key, unit, gained, sample, now)
     local name = cast.name
     local landed = unit.signal or cast.time
     local rec = Live(key, name, now)
+    local before = rec and (rec.stacks or 1) or 0
     if not rec then
         rec = Start(key, name, landed, cast.duration)
         rec.sticky = cast.forced or nil
@@ -667,6 +933,8 @@ local function Confirm(cast, key, unit, gained, sample, now)
     rec.exact = nil
     rec.weak = nil
     rec.fresh = nil
+    rec.theirs = nil
+    Stack(cast, unit, rec, before)
     if type(gained) == "number" then
         if not rec.id or not sample.ids[rec.id] then
             rec.id = gained
@@ -809,6 +1077,7 @@ local function Finish(cast, now, engaged)
                         rec = Start(key, name, cast.time, cast.duration)
                         rec.weak = true
                         rec.sticky = cast.forced or nil
+                        Stack(cast, unit, rec, 0)
                         verdict = verdict == "unknown" and "assumed" or verdict
                     end
                 end
@@ -839,6 +1108,7 @@ local function Finish(cast, now, engaged)
                     local rec = Start(key, name, unit.signal, cast.duration)
                     rec.signal = true
                     rec.exact = true
+                    rec.stacks = cast.most and 1 or nil
                 end
             end
         end
@@ -861,16 +1131,19 @@ local function Lose(cast, key, unit)
     end
     local name = cast.name
     local rec = Live(key, name, cast.time)
+    -- The benefit of the doubt: there, and no more times over than it was.
     if not rec then
         rec = Start(key, name, cast.time, cast.duration)
         rec.fresh = cast
         rec.weak = true
+        rec.stacks = cast.most and 1 or nil
     else
         rec.applied = cast.time
         rec.duration = cast.duration
         rec.expires = cast.time + cast.duration
         rec.endless = nil
         rec.exact = nil
+        rec.stacks = cast.most and (rec.stacks or 1) or nil
     end
 end
 
@@ -913,7 +1186,8 @@ local function Reconcile(key, sample, now)
                 set[name] = nil
                 ns.Log("%s: the effect dropped off", name)
             end
-        elseif not rec.pending and not rec.sticky and now < rec.expires then
+        elseif not rec.pending and not rec.sticky and not rec.theirs and now < rec.expires then
+            -- (Another player's effect is not among the ones counted.)
             loose = loose or {}
             loose[#loose + 1] = name
         end
@@ -1012,8 +1286,19 @@ function Tracker:Update(now, seen, engaged, direct)
     for key, when in pairs(lastChange) do
         if now - when > CHANGE_TTL then
             lastChange[key] = nil
+            lastFresh[key] = nil
             credited[key] = nil
             holders[key] = nil
+        end
+    end
+    for g = #guests, 1, -1 do
+        if now - guests[g].time > GUEST_TTL then
+            remove(guests, g)
+        end
+    end
+    for e = #echoes, 1, -1 do
+        if now > echoes[e].till then
+            remove(echoes, e)
         end
     end
     for unit, note in pairs(endings) do
@@ -1028,7 +1313,9 @@ end
 --------------------------------------------------------------------------------
 
 --- An effect with this spell's name was read off the unit.
---- aura = { duration, expires, id }, any of which may be nil.
+--- aura = { duration, expires, id, stacks, theirs }, any of which may be nil.
+--- `stacks` is how many times over it is there, and `theirs` is true for one
+--- that another player put there.
 function Tracker:Observe(key, name, aura, now)
     local set = records[key]
     local rec = set and set[name]
@@ -1045,13 +1332,25 @@ function Tracker:Observe(key, name, aura, now)
     rec.expires = expires or (now + FOREVER)
     rec.endless = expires == nil or nil
     rec.exact = expires ~= nil or nil -- the end time is the game's own
-    rec.renewed = nil
+    -- Someone else can renew their copy unseen, so when it ends is not held
+    -- for or against the spell.
+    rec.renewed = aura.theirs or nil
     rec.applied = duration and expires and (expires - duration) or rec.applied
-    rec.id = aura.id or rec.id
+    if aura.theirs then
+        rec.id = nil -- not one of the effects of yours that are counted
+    else
+        rec.id = aura.id or rec.id
+    end
+    rec.theirs = aura.theirs or nil
+    if aura.stacks then
+        rec.stacks = max(1, aura.stacks)
+        rec.counted, rec.before, rec.sure = nil, nil, nil -- what was read stands
+    end
     rec.weak = nil
     rec.fresh = nil
     rec.pending = nil
-    -- Seen with our own eyes: a cast in flight has nothing left to prove.
+    -- Seen with our own eyes: a cast in flight has nothing left to prove,
+    -- and nothing left to add to the count.
     for i = 1, #pending do
         local cast = pending[i]
         local unit = cast.name == name and cast.units[key]
@@ -1071,19 +1370,23 @@ function Tracker:Absent(key, name)
 end
 
 --- Everything of yours of one kind ("debuff" or "buff") on the unit was read.
---- `found` maps effect name to { duration, expires, id }; `bars` is the set of
---- spell names worth keeping.
-function Tracker:Sync(key, found, bars, now, kind)
+--- `found` maps effect name to { duration, expires, id, stacks, theirs };
+--- `bars` is the set of spell names worth keeping. `everyone` is true when
+--- other players' effects were read as well, so that one of theirs that is
+--- not among `found` is known to be gone.
+function Tracker:Sync(key, found, bars, now, kind, everyone)
     for name, aura in pairs(found) do
         if bars[name] then
             self:Observe(key, name, aura, now)
-            ns.Spells:LearnExact(name, aura.duration, kind)
+            -- How long someone else's copy lasts says nothing of yours.
+            ns.Spells:LearnExact(name, not aura.theirs and aura.duration or nil, kind)
+            ns.Spells:LearnStacks(name, aura.stacks)
         end
     end
     local set = records[key]
     if set then
         for name, rec in pairs(set) do
-            if not found[name] and ns.Spells:IsExact(name, kind) then
+            if not found[name] and ns.Spells:IsExact(name, kind) and (everyone or not rec.theirs) then
                 -- A cast still in flight gets its moment to land. But if the
                 -- effect was already there when it was cast and is gone now,
                 -- the cast is what took it away: a spell that switches itself off.
@@ -1111,6 +1414,16 @@ function Tracker:Has(key, name, now)
     return Live(key, name, now) ~= nil
 end
 
+--- How many times over this unit has this spell's effect, as far as we know:
+--- 0 for not at all, and 1 for an effect that is there and is not counted.
+function Tracker:Stacks(key, name, now)
+    local rec = Live(key, name, now)
+    if not rec then
+        return 0
+    end
+    return rec.stacks or 1
+end
+
 --- Drops every record of one spell (it was just set to be ignored).
 function Tracker:Forget(name)
     for key, set in pairs(records) do
@@ -1121,15 +1434,36 @@ function Tracker:Forget(name)
     end
 end
 
+--- Drops every record of one spell's effect that is another player's (it was
+--- just set to count only when it is your own).
+function Tracker:ForgetTheirs(name)
+    for key, set in pairs(records) do
+        local rec = set[name]
+        if rec and rec.theirs then
+            set[name] = nil
+            if next(set) == nil then
+                records[key] = nil
+            end
+        end
+    end
+end
+
 --- Drops everything known about one unit (you died, and your buffs with you).
 function Tracker:ForgetUnit(key)
     records[key] = nil
     lastChange[key] = nil
+    lastFresh[key] = nil
     credited[key] = nil
     holders[key] = nil
     endings[Owner(key)] = nil -- kept under the unit, whichever book this is
     for i = 1, #pending do
         pending[i].units[key] = nil
+    end
+    for i = 1, #guests do
+        guests[i].units[key] = nil
+    end
+    for i = 1, #echoes do
+        echoes[i].cast.units[key] = nil
     end
 end
 
@@ -1140,12 +1474,19 @@ function Tracker:Reset()
     for i = #pending, 1, -1 do
         pending[i] = nil
     end
+    for i = #guests, 1, -1 do
+        guests[i] = nil
+    end
+    for i = #echoes, 1, -1 do
+        echoes[i] = nil
+    end
     for id in pairs(sent) do
         sent[id] = nil
     end
     lastSent = nil
     for key in pairs(lastChange) do
         lastChange[key] = nil
+        lastFresh[key] = nil
         credited[key] = nil
     end
     for key in pairs(holders) do
@@ -1156,8 +1497,9 @@ function Tracker:Reset()
     end
 end
 
---- Live records, for /se debug: { { key, name, left, how } ... }. `left` is nil
---- for an effect with no end time.
+--- Live records, for /se debug: { { key, name, left, how, stacks } ... }.
+--- `left` is nil for an effect with no end time, and `stacks` for one that is
+--- not counted.
 function Tracker:Describe(now)
     local list = {}
     for key, set in pairs(records) do
@@ -1166,6 +1508,8 @@ function Tracker:Describe(now)
                 local how
                 if rec.pending then
                     how = "just cast"
+                elseif rec.theirs then
+                    how = "another player's"
                 elseif rec.id then
                     how = "matched to the real effect"
                 elseif rec.weak then
@@ -1176,7 +1520,7 @@ function Tracker:Describe(now)
                     how = "confirmed"
                 end
                 list[#list + 1] = {
-                    key = key, name = name, how = how,
+                    key = key, name = name, how = how, stacks = rec.stacks,
                     left = not rec.endless and (rec.expires - now) or nil,
                 }
             end

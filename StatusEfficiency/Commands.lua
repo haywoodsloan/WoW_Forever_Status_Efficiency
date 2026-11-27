@@ -108,6 +108,7 @@ local HELP = {
     "icons on your action buttons show whether casting again is worth it.",
     "  A debuff: green check = no enemy it would hit has it, yellow half circle = some do, red X = all do.",
     "  A buff: green check = you do not have it, red X = you do.",
+    "  An effect that stacks: yellow half circle until the last stack is on, red X only then.",
     "  /se options - the settings window: when the icons appear, where they sit, how big they are, which icon",
     "    means what, and how each spell on your bars is treated",
     "  /se on | off   /se when <always | combat | group> - when the icons appear",
@@ -117,6 +118,8 @@ local HELP = {
     "  /se buff <spell> | debuff <spell> - track it as a buff on you, or as a debuff on enemies",
     "  /se aoe <spell> | single <spell> - judge a debuff against every enemy in the fight, or only your target",
     "  /se duration <spell> <seconds | auto>",
+    "  /se stacks <spell> <how many | auto> - how many times over a skill's effect goes on one unit",
+    "  /se anyone <spell> | mine <spell> - count another player's copy of its effect too, or only your own",
     "  /se corner <tl | top | tr | left | center | right | bl | bottom | br>   /se size <pixels | auto>",
     "  /se icon <green | yellow | red> <icon name | file ID | texture path | none | default>   /se icons lists the names",
     "  /se debug - what the game lets the addon see right now",
@@ -325,6 +328,51 @@ function commands.duration(rest)
     end)
 end
 
+function commands.stacks(rest)
+    local spell, value = Trim(rest):match("^(.-)%s+(%S+)$")
+    if not spell then
+        Print("Usage: /se stacks <spell> <how many | auto>")
+        return
+    end
+    local most = tonumber(value)
+    if value:lower() ~= "auto" and not (most and most >= 1 and most <= 100 and most == floor(most)) then
+        Print("Give the most stacks as a whole number from 1 to 100, with 1 for an effect that does not stack, or auto.")
+        return
+    end
+    WithSpell(spell, function(name)
+        if most and most > 1 then
+            Choice(name).stacks = most
+            Print(format("%s is now full at %d stacks: the yellow half circle below that, the red X at %d.",
+                name, most, most))
+        elseif most then
+            Choice(name).stacks = most
+            Print(name .. " now counts as an effect that does not stack.")
+        else
+            local choice = ns.db.spells[name]
+            if choice then
+                choice.stacks = nil
+                Spells:Tidy(name)
+            end
+            Print(name .. " goes by the game and its tooltip again for how often its effect stacks.")
+        end
+    end)
+end
+
+function commands.anyone(rest)
+    WithSpell(rest, function(name)
+        Choice(name).shared = true
+        Print(name .. ": another player's copy of its effect now counts like your own.")
+    end)
+end
+
+function commands.mine(rest)
+    WithSpell(rest, function(name)
+        Choice(name).shared = false
+        Tracker:ForgetTheirs(name)
+        Print(name .. ": only an effect you put there yourself counts now.")
+    end)
+end
+
 function commands.size(rest)
     local value = Trim(rest):lower()
     local pixels = tonumber(value)
@@ -491,6 +539,16 @@ local function Where(info, area, kind)
     return area and "a debuff on every enemy in the fight" or "a debuff on your target"
 end
 
+-- Where the most stacks of a spell comes from, for /se list. What was seen on
+-- a unit is the weakest of them: the effect may go higher than it has been
+-- seen to, and /se stacks says how high.
+local STACKS_FROM = {
+    you = "as you set it",
+    tooltip = "by its tooltip",
+    game = "by the game's own data",
+    seen = "the most seen on a unit so far",
+}
+
 function commands.list()
     local list = ns.BarSpells()
     if #list == 0 then
@@ -506,8 +564,14 @@ function commands.list()
         casts, hits = floor(casts + 0.5), floor(hits + 0.5)
         if tracked then
             local why = REASONS[kind][source] or format("a new effect of yours followed %d of %d casts", hits, casts)
-            print(format("  |cff40d040%s|r: %s, lasting %s. Tracked because %s.", info.name,
-                Where(info, area, kind), Span(duration), why))
+            local most = Spells:Stacking(info)
+            local stacking = most and format(", stacking up to %d times (%s)", most,
+                STACKS_FROM[Spells:StackingSource(info)] or "by what is known of it") or ""
+            -- Nobody else can put on you what a skill only ever puts on its caster.
+            local anyone = Spells:Shared(info) and not (kind == "buff" and info.selfOnly == true)
+            print(format("  |cff40d040%s|r: %s, lasting %s%s. Tracked because %s.%s", info.name,
+                Where(info, area, kind), Span(duration), stacking, why,
+                anyone and " Another player's copy counts too." or ""))
         elseif source == "ignored" then
             print(format("  |cff999999%s|r: no icon, you turned it off.", info.name))
         elseif source == "demoted" then
@@ -654,6 +718,21 @@ function commands.debug()
             kinds.came, kinds.went, kinds.both, kinds.unsaid))
         print(format("  An effect going while a cast was waiting to be judged, and not taken for it landing: %d.",
             journal.reports.spared or 0))
+        -- A stack is counted by this: the first cast adds the effect, each one after renews it.
+        print(format("  Of the ones arriving, only added: %d, only renewed: %d.", kinds.added or 0, kinds.renewed or 0))
+    end
+    local others = journal.others
+    if type(others) == "table" then
+        -- Another player's copy of an effect can only be followed in a fight
+        -- if the game says which spell they cast.
+        print(format("  Casts heard from your group: %d. With details hidden, the spell could be read for %d and "
+            .. "was kept secret for %d. Of a spell of yours: %d, seen to land: %d.", others.casts or 0,
+            others.named or 0, others.unnamed or 0, others.followed or 0, others.landed or 0))
+        -- How long theirs lasts is what their casts are given from then on.
+        print(format("  Another player's copy read for how long it lasts: %d, and with who put it there: %d.",
+            others.read or 0, others.sourced or 0))
+    else
+        print("  Casts heard from your group: none yet.")
     end
     local verdicts = journal.verdicts
     local landed = (verdicts.changed or 0) + (verdicts.seen or 0)
@@ -679,10 +758,10 @@ function commands.debug()
             print(format("    and %d more", #effects - 8))
             break
         end
-        local key, left = effects[i].key, effects[i].left
+        local key, left, stacks = effects[i].key, effects[i].left, effects[i].stacks
         local where = key == me and " on you" or (key:sub(-6) == "+buffs" and " on a friend" or "")
-        print(format("    %s%s, %s (%s)", effects[i].name, where, left and (Span(left) .. " left") or "no end time",
-            effects[i].how))
+        print(format("    %s%s%s, %s (%s)", effects[i].name, stacks and format(" x%d", stacks) or "", where,
+            left and (Span(left) .. " left") or "no end time", effects[i].how))
     end
 
     local options = ns.Options

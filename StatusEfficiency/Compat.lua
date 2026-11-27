@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.3.9"
+ns.VERSION = "0.4.0"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -30,6 +30,8 @@ end
 -- Replaced by Core.lua once it loads.
 function ns.Log() end
 function ns.Note() end
+function ns.NoteOthers() end
+function ns.NoteLate() end
 function ns.MarkDirty() end
 function ns.InSight()
     return true
@@ -191,6 +193,22 @@ local function IsSelf(unit)
     return guid ~= nil and guid == ReadableGUID("player")
 end
 
+ns.IsSelf = IsSelf
+
+--- Whether two unit tokens show the same unit: true, false, or nil when the
+--- game will not say.
+function ns.SameUnit(unit, other)
+    local same = Flag(UnitIsUnit, unit, other)
+    if same ~= nil then
+        return same
+    end
+    local guid, otherGuid = ReadableGUID(unit), ReadableGUID(other)
+    if guid and otherGuid then
+        return guid == otherGuid
+    end
+    return nil
+end
+
 function ns.Exists(unit)
     local exists = Flag(UnitExists, unit)
     if exists ~= nil then
@@ -277,6 +295,35 @@ for i = 1, 4 do
 end
 for i = 1, 40 do
     RAID_TOKENS[i] = "raid" .. i
+end
+ns.partyTokens, ns.raidTokens = PARTY_TOKENS, RAID_TOKENS
+
+--- True when your group is a raid: its members then go by raid names, and
+--- the ones in your own party of five by party names as well.
+function ns.InRaid()
+    return Flag(IsInRaid) == true
+end
+
+--- The name a group member's casts are heard under (see ns.WatchCasts) for
+--- the unit behind any token: a raid name in a raid, a party name otherwise.
+--- Nil for a unit that is not in your group, for you, and when the game will
+--- not say.
+function ns.GroupToken(unit)
+    if type(unit) ~= "string" then
+        return nil
+    end
+    local raid = ns.InRaid()
+    if unit:find(raid and "^raid%d+$" or "^party%d$") then
+        return not IsSelf(unit) and unit or nil
+    end
+    local tokens = raid and RAID_TOKENS or PARTY_TOKENS
+    for i = 1, #tokens do
+        local token = tokens[i]
+        if ns.SameUnit(unit, token) == true then
+            return not IsSelf(token) and token or nil
+        end
+    end
+    return nil
 end
 
 --- Whether a group member is close by. Nil when the game will not say.
@@ -444,9 +491,13 @@ end
 -- Auras
 --------------------------------------------------------------------------------
 
--- Only effects the player applied are looked at: "debuff" is the player's
--- debuffs on an enemy, "buff" the player's buffs on themselves or on a friend.
+-- The effects the player applied: "debuff" is the player's debuffs on an
+-- enemy, "buff" the player's buffs on themselves or on a friend.
 local FILTERS = { debuff = "HARMFUL|PLAYER", buff = "HELPFUL|PLAYER" }
+-- Everyone's effects of a kind. They are read as well for the sake of a spell
+-- whose effect a unit carries only once, whoever put it there: another
+-- player's copy then does what yours would.
+local BROAD = { debuff = "HARMFUL", buff = "HELPFUL" }
 local MAX_AURAS = 60 -- how far a unit's auras are walked when they are listed
 
 local function ReadIDList(list)
@@ -509,16 +560,37 @@ function ns.SampleAuras(unit, kind)
 end
 
 local function ReadAura(aura)
-    return aura.name, aura.duration, aura.expirationTime, aura.auraInstanceID
+    return aura.name, aura.duration, aura.expirationTime, aura.auraInstanceID, aura.applications
 end
 
---- Lists the player's own effects of one kind on a unit by name:
---- name -> { duration, expires, id }. Returns nil when the client will not show
---- them, which is most of combat. The second return is false when the list
---- came back but some of its entries would not give their name.
-function ns.ReadAuras(unit, kind)
+--- The unit that put an effect there, by the name the game gives it, where it
+--- gives one. It is asked for apart from the rest, so that a client which
+--- keeps it back still has the effect read.
+local function SourceOf(aura)
+    return PlainString(Field(aura, "sourceUnit"))
+end
+
+--- True when the effect `a` will be on the unit for longer than `b`. One with
+--- no end time outlasts every other.
+local function Outlasts(a, b)
+    local mine, theirs = a.expires, b.expires
+    if not mine or mine <= 0 then
+        return theirs ~= nil and theirs > 0
+    end
+    return theirs ~= nil and theirs > 0 and mine > theirs
+end
+
+--- Lists the effects of one kind on a unit by name: the player's own, or with
+--- `anyone` set those of every player (the player's among them).
+--- name -> { duration, expires, id, stacks, source }, where `stacks` is how
+--- many times over the effect is on the unit (0 for one that does not stack)
+--- and `source`, given only with `anyone`, is the unit that put it there.
+--- Returns nil when the client will not show them, which is most of combat.
+--- The second return is false when the list came back but some of its entries
+--- would not give their name.
+function ns.ReadAuras(unit, kind, anyone)
     local byIndex = C_UnitAuras and C_UnitAuras.GetAuraDataByIndex
-    local filter = FILTERS[kind]
+    local filter = (anyone and BROAD or FILTERS)[kind]
     if type(byIndex) ~= "function" or not filter then
         return nil
     end
@@ -538,13 +610,21 @@ function ns.ReadAuras(unit, kind)
         if type(aura) ~= "table" then
             return nil
         end
-        local ok2, name, duration, expires, id = pcall(ReadAura, aura)
+        local ok2, name, duration, expires, id, stacks = pcall(ReadAura, aura)
         if ok2 and not IsSecret(name) and type(name) == "string" then
-            found[name] = {
+            local entry = {
                 duration = PlainNumber(duration),
                 expires = PlainNumber(expires),
                 id = PlainNumber(id),
+                stacks = PlainNumber(stacks),
+                source = anyone and SourceOf(aura) or nil,
             }
+            -- Several players can each have put an effect of one name on the
+            -- unit: the one that will be there longest is the one that counts.
+            local other = anyone and found[name]
+            if not other or Outlasts(entry, other) then
+                found[name] = entry
+            end
         else
             complete = false -- an effect the client keeps secret even now
         end
@@ -552,42 +632,47 @@ function ns.ReadAuras(unit, kind)
     return found, complete
 end
 
---- Looks for one of the player's effects on a unit by name. Returns its details
---- when it is there and readable, false when the client answered with nothing
---- (absent, or hidden from addons), and nil when it would not answer at all.
-function ns.ReadAuraByName(unit, name, kind)
+--- Looks for an effect on a unit by name: one of the player's, or with
+--- `anyone` set one of any player's. Returns its details when it is there and
+--- readable, false when the client answered with nothing (absent, or hidden
+--- from addons), and nil when it would not answer at all.
+function ns.ReadAuraByName(unit, name, kind, anyone)
     local byName = C_UnitAuras and C_UnitAuras.GetAuraDataBySpellName
-    local filter = FILTERS[kind]
+    local filter = (anyone and BROAD or FILTERS)[kind]
     if type(byName) ~= "function" or not filter then
         return nil
     end
+    -- What asking after everyone's effects gave is kept apart in the report.
+    local asked = anyone and (name .. ", anyone's") or name
     local ok, aura = pcall(byName, unit, name, filter)
     if not ok then
         Refused("GetAuraDataBySpellName", aura)
-        NameRead(name, "refused")
+        NameRead(asked, "refused")
         return nil
     end
     if IsSecret(aura) then
-        NameRead(name, "refused")
+        NameRead(asked, "refused")
         return nil
     end
     if aura == nil then
-        NameRead(name, "nothing")
+        NameRead(asked, "nothing")
         return false
     end
     if type(aura) ~= "table" then
         return nil
     end
-    local ok2, found, duration, expires, id = pcall(ReadAura, aura)
+    local ok2, found, duration, expires, id, stacks = pcall(ReadAura, aura)
     if not ok2 or IsSecret(found) or found ~= name then
-        NameRead(name, "refused")
+        NameRead(asked, "refused")
         return nil
     end
-    NameRead(name, "found")
+    NameRead(asked, "found")
     return {
         duration = PlainNumber(duration),
         expires = PlainNumber(expires),
         id = PlainNumber(id),
+        stacks = PlainNumber(stacks),
+        source = anyone and SourceOf(aura) or nil,
     }
 end
 
@@ -720,6 +805,12 @@ end
 --- Details that say everything at once say nothing: a full update, no list
 --- at all, or all three lists, which is also what a client that answers
 --- "secret" for every field looks like.
+---
+--- A third value, `fresh`, tells an effect arriving on a unit that did not
+--- carry it from one being put on top of itself: true when the report only
+--- added effects, false when it renewed some and added none, nil when it did
+--- both or does not say. That is what a stack is counted by. The first cast
+--- of a stacking skill adds its effect, and each one after renews it.
 local function Told(details)
     if IsSecret(details) or type(details) ~= "table" then
         return nil
@@ -741,16 +832,22 @@ local function Told(details)
     if came == removed and (not came or (added and updated)) then
         return nil -- nothing listed, or everything
     end
-    return came, removed
+    local fresh = nil
+    if added and not updated and not removed then
+        fresh = true
+    elseif updated and not added then
+        fresh = false
+    end
+    return came, removed, fresh
 end
 
---- Calls onChange(token, shape, came, went) whenever the effects on the unit
---- behind `token` change. `shape` describes the details the client sent
---- along: "secret" when they are one secret value, a fuller description for
---- the first reports of a session, and "unread" after that. `came` and `went`
---- say what kind of change it was, where the details tell (see Told above),
---- and are both nil where they do not. Returns false when the client will
---- not allow the watch.
+--- Calls onChange(token, shape, came, went, fresh) whenever the effects on
+--- the unit behind `token` change. `shape` describes the details the client
+--- sent along: "secret" when they are one secret value, a fuller description
+--- for the first reports of a session, and "unread" after that. `came`,
+--- `went` and `fresh` say what kind of change it was, where the details tell
+--- (see Told above), and are all nil where they do not. Returns false when
+--- the client will not allow the watch.
 function ns.WatchAuras(token, onChange)
     if watchers[token] then
         return true
@@ -772,13 +869,49 @@ function ns.WatchAuras(token, onChange)
             local described, text = pcall(Shape, details)
             shape = described and text or "could not be described"
         end
-        local told, came, went = pcall(Told, details)
+        local told, came, went, fresh = pcall(Told, details)
         if not told then
-            came, went = nil, nil
+            came, went, fresh = nil, nil, nil
         end
-        onChange(token, shape, came, went)
+        onChange(token, shape, came, went, fresh)
     end)
     watchers[token] = frame
+    return true
+end
+
+--------------------------------------------------------------------------------
+-- Casts by the people in your group
+--
+-- An effect that a unit carries only once, whoever put it there, can be put
+-- there by someone else during a fight, when nothing on the unit can be read.
+-- What is left to go on is that member's cast being announced in the same
+-- moment as the unit reports a change. As with the change reports, one frame
+-- per unit token listens, so that whose cast it was never has to be read out
+-- of the event. Which spell it was does: the game's documentation lets a
+-- client keep that secret, and then nothing is known but that they cast.
+--------------------------------------------------------------------------------
+
+local castWatchers = {} -- unit token -> the frame listening for it
+
+--- Calls onCast(token, spellID) whenever the unit behind `token` finishes a
+--- cast. `spellID` is nil when the client keeps it secret. Returns false when
+--- the client will not allow the watch.
+function ns.WatchCasts(token, onCast)
+    if castWatchers[token] then
+        return true
+    end
+    local ok, frame = pcall(CreateFrame, "Frame")
+    if not ok or type(frame) ~= "table" then
+        return false
+    end
+    local registered, answer = pcall(frame.RegisterUnitEvent, frame, "UNIT_SPELLCAST_SUCCEEDED", token)
+    if not registered or answer == false then
+        return false
+    end
+    frame:SetScript("OnEvent", function(_, _, _, _, spellID)
+        onCast(token, PlainNumber(spellID))
+    end)
+    castWatchers[token] = frame
     return true
 end
 
@@ -787,6 +920,15 @@ end
 function ns.SpellAuraSecrecy(spellID)
     local answer = Call(C_Secrets and C_Secrets.GetSpellAuraSecrecy, spellID)
     return PlainNumber(answer)
+end
+
+--- How many times over a spell's effect can be on one unit, as the game's
+--- own data has it: 0 or 1 for an effect that does not stack. Nil when the
+--- client will not say, which its documentation allows for while effect
+--- details are hidden, and when it cannot be asked at all.
+function ns.SpellMaxStacks(spellID)
+    local most = Call(C_Spell and C_Spell.GetSpellMaxCumulativeAuraApplications, spellID)
+    return PlainNumber(most)
 end
 
 --- How far a spell reaches, in yards: little or nothing for one used at arm's

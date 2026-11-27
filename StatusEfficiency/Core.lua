@@ -3,13 +3,19 @@
 --
 -- A spell that puts a debuff on enemies:
 --   green check          none of the enemies the spell would hit has its effect
---   yellow half circle   some of them have it
---   red X                all of them have it, so casting again changes nothing
+--   yellow half circle   some of them have it, or it is there and can still
+--                        be stacked higher
+--   red X                all of them have it, as many times over as it goes,
+--                        so casting again changes nothing
 --   no icon              no enemy to judge, and no fight going on
 --
 -- A spell that puts a buff on you, or on the friend you have targeted:
 --   green check          the buff is not there
+--   yellow half circle   it is there and can still be stacked higher
 --   red X                the buff is there, so casting again changes nothing
+--
+-- An effect that a unit carries only once, whoever put it there, counts when
+-- it is another player's: a second warrior's shout does what yours would.
 --
 -- A spell that applies no status effect gets no icon. Two settings say when the
 -- icons appear at all: always, only while you are in combat, or while you or
@@ -92,9 +98,10 @@ local function Defaults()
         log = false,
         icons = {}, -- the icon chosen for each result; empty means the default
         custom = {}, -- your own texture for a result set to "custom"
-        spells = {}, -- your choices by spell name: { track, kind, aoe, duration }
+        spells = {}, -- your choices by spell name: { track, kind, aoe, duration, stacks, shared }
         -- What play has shown, by spell name: { exact, casts, hits, dropped, buff,
-        -- buffCasts, buffHits, buffDropped, duration, lag, timed, due, late, told }
+        -- buffCasts, buffHits, buffDropped, duration, lag, timed, prompt, tardy,
+        -- instant, due, late, told, stacks }
         learned = {},
     }
 end
@@ -224,6 +231,7 @@ end
 local entries = {} -- { frame, name, info, overlay, texture, state, art, size, corner, broken }
 local known = {} -- frame -> entry
 local barNames = {} -- spell name -> true, for every spell on a button
+local barInfo = {} -- spell name -> what Spells:Get gave for it
 
 ns.buttons = entries
 ns.barNames = barNames
@@ -523,6 +531,7 @@ local function ScanBars(now)
         FindButtons()
     end
     ns.Wipe(barNames)
+    ns.Wipe(barInfo)
     for i = 1, #entries do
         local entry = entries[i]
         local info
@@ -538,6 +547,7 @@ local function ScanBars(now)
         entry.info, entry.slot = info, slot
         if info then
             barNames[info.name] = true
+            barInfo[info.name] = info
         end
         Layout(entry)
     end
@@ -644,6 +654,11 @@ local MAIN_TOKENS = { "target", "softenemy" }
 
 local listening = {} -- unit token -> true when the client lets us listen for its changes
 local changes = {} -- unit token -> when its effects were reported changing, until that is passed on
+-- unit token -> what that report showed of the change: true when it only added
+-- effects, false when it only renewed some. Nothing when it did not say, or
+-- when two reports of one moment said different things.
+local arrivals = {}
+local departures = {} -- unit token -> when it last reported effects going and none coming
 local assigned = {} -- unit token -> when it was last handed to a different unit
 local everyone = -100 -- when every token was last handed out afresh
 
@@ -728,14 +743,19 @@ local function Journal()
             spared = 0, -- of those, the changes a cast was waiting on that unit to be judged by
             -- What kind of change the reports made with details hidden said
             -- they were: an effect added or renewed, one taken away, both at
-            -- once, or nothing said.
-            kinds = { came = 0, went = 0, both = 0, unsaid = 0 },
+            -- once, or nothing said. And of those, how many only added
+            -- effects and how many only renewed some: stacks are counted by
+            -- that.
+            kinds = { came = 0, went = 0, both = 0, unsaid = 0, added = 0, renewed = 0 },
         },
         payload = {}, -- what came with the reports, in words: description -> how often
         verdicts = {}, -- how casts made with details hidden came out, by verdict
         spells = {}, -- what the client says about the spells that were cast, with or without an icon
         casts = {}, -- the last casts of spells with an icon, one line each
         learning = {}, -- casts of spells without one, by name: { casts, changed }
+        -- Changes that came too late for a cast that is held to the moment it
+        -- was announced in, and that had shown nothing: one line each.
+        late = {},
         usable = {}, -- what the game answered about using each skill, by spell name
         notes = {},
         refusals = ns.refusals, -- the error each refused aura query raised
@@ -791,9 +811,13 @@ local function Reassigned(token)
     if token then
         assigned[token] = ns.Now()
         changes[token] = nil
+        arrivals[token] = nil
+        departures[token] = nil
     else
         everyone = ns.Now()
         ns.Wipe(changes)
+        ns.Wipe(arrivals)
+        ns.Wipe(departures)
     end
 end
 
@@ -840,13 +864,15 @@ end
 --- "secret" when they are a value an addon may not look at. `came` is true
 --- when the details show that an effect was added or renewed and `went` when
 --- they show that one was taken away. Both are nil when they do not say.
+--- `fresh` is true when they show that effects were only added and false
+--- when they were only renewed, which is what a stack is counted by.
 ---
 --- A cast is judged by a report that could be its effect arriving. One that
 --- only took effects away never is: the enemy died, an effect of its own or
 --- of another player's ran out, or one of yours did. Where the client does
 --- not say which it was, a report at the moment one of your effects was due
 --- to run out is put down to that, going by the timing alone.
-local function OnAuraChange(token, shape, came, went)
+local function OnAuraChange(token, shape, came, went, fresh)
     local now = ns.Now()
     local journal = Journal()
     local counts = journal.reports
@@ -880,6 +906,10 @@ local function OnAuraChange(token, shape, came, went)
         if kinds then
             local said = (came == nil and "unsaid") or (not came and "went") or (went and "both") or "came"
             kinds[said] = (kinds[said] or 0) + 1
+            if fresh ~= nil then
+                local how = fresh and "added" or "renewed"
+                kinds[how] = (kinds[how] or 0) + 1
+            end
         end
     else
         count.calm = count.calm + 1
@@ -889,6 +919,10 @@ local function OnAuraChange(token, shape, came, went)
     if came == false then
         -- Effects went and none came: whatever ended, no cast landed. If one
         -- of yours was due to run out just now, that is it.
+        departures[token] = now
+        if changes[token] == now and arrivals[token] == true then
+            arrivals[token] = nil -- the one that came may have taken the place of the one that went
+        end
         if unit and Tracker:Explained(unit, now, token, true) then
             counts.ended = (counts.ended or 0) + 1
             stateDirty = true -- the icon goes green now, not at the next look
@@ -914,14 +948,25 @@ local function OnAuraChange(token, shape, came, went)
         -- passed on all the same for what came.
         Tracker:Explained(unit, now, token, true)
     end
+    if fresh == true and departures[token] == now then
+        -- An effect went and one came, in two reports of one moment: a game
+        -- that swaps an effect for a new one when it is renewed looks like
+        -- this, so it is not taken for an effect that was not there before.
+        fresh = nil
+    end
+    if changes[token] == now and arrivals[token] ~= fresh then
+        arrivals[token] = nil -- two reports at one moment that differ: which was whose is not told
+    else
+        arrivals[token] = fresh
+    end
     changes[token] = now
-    if Tracker:HasPending() then
+    if Tracker:HasPending() or Tracker:HasGuests() then
         stateDirty = true
     end
 end
 
-local function AuraChanged(token, shape, came, went)
-    Guard(OnAuraChange, token, shape, came, went)
+local function AuraChanged(token, shape, came, went, fresh)
+    Guard(OnAuraChange, token, shape, came, went, fresh)
 end
 
 --- True when the unit has another name that has pointed at it for a while and
@@ -940,31 +985,36 @@ local function HasOlderName(token, key, when)
         and when - Since(plate) >= SETTLE
 end
 
---- Hands the reports that have come in to the tracker. With no cast waiting
---- there is nothing they could explain, unless a cast is about to be announced:
---- the recent ones are kept back for that, and the rest are dropped unread.
+--- Hands the reports that have come in to the tracker. With no cast waiting,
+--- of yours or of someone in your group, and none just over that is still
+--- listened for, there is nothing they could explain, unless a cast is about
+--- to be announced: the recent ones are kept back for that, and the rest are
+--- dropped unread.
 local function PassOnChanges(now)
     if next(changes) == nil then
         return
     end
-    if not Tracker:HasPending() then
+    if not Tracker:HasPending() and not Tracker:HasGuests() and not Tracker:HasEchoes() then
         for token, when in pairs(changes) do
             if now - when > RECENT then
                 changes[token] = nil
+                arrivals[token] = nil
             end
         end
         return
     end
     for token, when in pairs(changes) do
+        local fresh = arrivals[token]
         changes[token] = nil
+        arrivals[token] = nil
         local key = ns.Exists(token) and ns.UnitKey(token)
         if key then
             if token ~= "player" and when - Since(token) < SETTLE and HasOlderName(token, key, when) then
                 local counts = Journal().reports
                 counts.handover = counts.handover + 1
             else
-                Tracker:Changed(key, when)
-                Tracker:Changed(key .. "+buffs", when)
+                Tracker:Changed(key, when, fresh)
+                Tracker:Changed(key .. "+buffs", when, fresh)
             end
         end
     end
@@ -1003,15 +1053,24 @@ end
 --- whether a spell nothing else is known about gets an icon.
 local function NoteSpell(info, kind, source)
     local spells = Journal().spells
-    if not spells[info.name] then
-        spells[info.name] = {
+    local entry = spells[info.name]
+    if not entry then
+        entry = {
             id = info.id,
             kind = kind,
             why = source or "none",
             secrecy = ns.SpellAuraSecrecy(info.id) or "unknown", -- 0 never hidden, 1 always, 2 depends
             lasts = info.tooltipRead, -- the words its effect's length was read from
             passed = info.tooltipPassed, -- a time that was not taken for an effect's length
+            stacks = info.stacksRead, -- the words the most stacks were read from
+            own = info.ownRead, -- the words that show its effect to be each caster's own
         }
+        spells[info.name] = entry
+    end
+    if entry.gameStacks == nil then
+        -- What the game's own data says of its stacks: false for an effect
+        -- that goes on once, and nothing while the client keeps it back.
+        entry.gameStacks = Spells:GameStacks(info)
     end
 end
 
@@ -1101,6 +1160,27 @@ function ns.Note(cast, tally, delay, unheard)
     end
 end
 
+--- A change came on a unit shortly after a cast of yours that is held to the
+--- frame it was announced in, and that had shown nothing there. It is not
+--- taken for the cast landing. What is kept is when it came and what kind of
+--- change it was, so that it can be read afterwards whether the game ever
+--- shows a landing that late: these would then come at about the same delay
+--- each time, and add an effect or renew one as the cast would have.
+function ns.NoteLate(cast, delay, fresh)
+    local journal = Journal()
+    local late = journal.late
+    if type(late) ~= "table" then
+        late = {}
+        journal.late = late
+    end
+    late[#late + 1] = format("%s %s: nothing in the moment of the cast, then a change %.2fs after it%s",
+        Stamp(cast.time), cast.name, delay,
+        (fresh == true and " (an effect added)") or (fresh == false and " (an effect renewed)") or "")
+    if #late > REPORT_NOTES then
+        table.remove(late, 1)
+    end
+end
+
 listening.player = ns.WatchAuras("player", AuraChanged) or nil
 for i = 1, #MAIN_TOKENS do
     listening[MAIN_TOKENS[i]] = ns.WatchAuras(MAIN_TOKENS[i], AuraChanged) or nil
@@ -1181,6 +1261,36 @@ local primaryUnit, primaryKey
 local friendUnit, friendKey
 local playerKey
 
+--- True for a spell on the bars whose effect, of this kind, a unit carries
+--- only once whoever put it there: another player's copy then counts.
+local function AnyonesCounts(name, kind)
+    local info = barInfo[name]
+    if not info or not Spells:Shared(info) then
+        return false
+    end
+    local _, _, _, _, own = Spells:Tracking(info)
+    return own == kind
+end
+
+local rosterHeard = false -- the game tells when the people in your group change
+
+--- Another player's copy of a spell's effect was read off a unit. How long it
+--- lasts is kept for the casts of theirs that can only be heard (see "How
+--- long another player's copy lasts" in Spells.lua), with who put it there
+--- where the game says.
+local function NoteCopy(name, aura)
+    -- Who put it there is only kept where the game tells when the group
+    -- changes: a party name is handed on to whoever joins next.
+    local token = rosterHeard and aura.source and ns.GroupToken(aura.source)
+    local news = Spells:LearnCopy(name, aura.duration, token)
+    if news then
+        ns.NoteOthers("read")
+        if news == "member" then
+            ns.NoteOthers("sourced")
+        end
+    end
+end
+
 --- Looks at a unit once per pass: counts your effects of one kind on it and,
 --- while the client shows them, reads them by name. `note` is the part of the
 --- probe to fill in, if this look is one /se debug reports on.
@@ -1201,7 +1311,19 @@ local function Look(unit, now, calm, kind, note)
         if found then
             listed = true
             direct[key] = complete or nil
-            Tracker:Sync(key, found, barNames, now, kind)
+            -- Other players' effects as well, for the spells whose effect a
+            -- unit carries only once: theirs is then as good as yours.
+            local everyone = ns.ReadAuras(unit, kind, true)
+            if everyone then
+                for name, aura in pairs(everyone) do
+                    if not found[name] and AnyonesCounts(name, kind) then
+                        aura.theirs = true
+                        found[name] = aura
+                        NoteCopy(name, aura)
+                    end
+                end
+            end
+            Tracker:Sync(key, found, barNames, now, kind, everyone ~= nil)
         end
     end
     if note then
@@ -1241,13 +1363,27 @@ end
 
 --- Does this unit have the spell's effect? While details are hidden, an effect
 --- the client still shows by name is read directly and overrides the books.
-local function HasEffect(unit, key, name, now, calm, kind)
+--- With `anyone` set, another player's effect of that name counts as well.
+local function HasEffect(unit, key, name, now, calm, kind, anyone)
     if not calm then
         local readable = nameReadable[kind]
         local aura = ns.ReadAuraByName(unit, name, kind)
+        if anyone and not aura then
+            -- None of yours that can be seen. What is said of everyone's
+            -- stands then: someone else's copy, nothing, or no answer.
+            local theirs = ns.ReadAuraByName(unit, name, kind, true)
+            if theirs then
+                theirs.theirs = true
+                NoteCopy(name, theirs)
+            end
+            if theirs or aura == false then
+                aura = theirs
+            end
+        end
         if aura then
             Tracker:Observe(key, name, aura, now)
-            Spells:LearnExact(name, aura.duration, kind)
+            Spells:LearnExact(name, not aura.theirs and aura.duration or nil, kind)
+            Spells:LearnStacks(name, aura.stacks)
             readable[name] = combatEpoch
             if kind == "buff" then
                 probe.buffs.hidden.byName = true
@@ -1261,28 +1397,44 @@ local function HasEffect(unit, key, name, now, calm, kind)
     return Tracker:Has(key, name, now)
 end
 
-local function AreaState(name, now, calm)
+--- How much of a spell's effect a unit carries: "none", "all", or "some" for
+--- an effect that stacks and is not yet on it as many times as it goes
+--- (`most`), which is when casting again still changes something.
+local function Carries(unit, key, name, now, calm, kind, most, anyone)
+    if not HasEffect(unit, key, name, now, calm, kind, anyone) then
+        return "none"
+    end
+    if most and Tracker:Stacks(key, name, now) < most then
+        return "some"
+    end
+    return "all"
+end
+
+local function AreaState(name, now, calm, most, anyone)
     if fightSize == 0 then
         return false
     end
-    local have = 0
+    local full, bare = 0, 0
     for i = 1, fightSize do
         local enemy = fight[i]
-        if HasEffect(enemy.unit, enemy.key, name, now, calm, "debuff") then
-            have = have + 1
+        local carries = Carries(enemy.unit, enemy.key, name, now, calm, "debuff", most, anyone)
+        if carries == "all" then
+            full = full + 1
+        elseif carries == "none" then
+            bare = bare + 1
         end
     end
-    if have == 0 then
+    if bare == fightSize then
         return "none"
-    elseif have == fightSize then
+    elseif full == fightSize then
         return "all"
     end
     return "some"
 end
 
---- A buff is either there or not: judged on the friend you have targeted when
---- the spell can be cast on others, otherwise on you.
-local function BuffState(info, now, calm)
+--- A buff is judged on the friend you have targeted when the spell can be
+--- cast on others, otherwise on you.
+local function BuffState(info, now, calm, most, anyone)
     local unit, key = "player", playerKey
     if friendKey and CastOnFriends(info) then
         unit, key = friendUnit, friendKey
@@ -1290,7 +1442,7 @@ local function BuffState(info, now, calm)
     if seen[key] == nil then
         Look(unit, now, calm, "buff") -- the first pass after a buff spell turned up on the bars
     end
-    return HasEffect(unit, key, info.name, now, calm, "buff") and "all" or "none"
+    return Carries(unit, key, info.name, now, calm, "buff", most, anyone)
 end
 
 --- Says in chat, once, that a skill has lost its icon because its casts kept
@@ -1433,12 +1585,16 @@ local function Refresh(now)
                 TellDropped(name, kind, true, source ~= "you")
                 state = states[name]
                 if state == nil then
+                    -- How many times over its effect goes, when more than
+                    -- once, and whether another player's copy counts.
+                    local most = Spells:Stacking(info)
+                    local anyone = Spells:Shared(info)
                     if kind == "buff" then
-                        state = BuffState(info, now, calm)
+                        state = BuffState(info, now, calm, most, anyone)
                     elseif area then
-                        state = AreaState(name, now, calm)
+                        state = AreaState(name, now, calm, most, anyone)
                     elseif primaryKey then
-                        state = HasEffect(primaryUnit, primaryKey, name, now, calm, kind) and "all" or "none"
+                        state = Carries(primaryUnit, primaryKey, name, now, calm, kind, most, anyone)
                     else
                         state = false
                     end
@@ -1588,14 +1744,18 @@ local function Landed(unit, castID, spellID, mustBeSent)
         snapshot = Snapshot(info, area, now, true, kind)
     end
     snapshot.hidden = ns.AurasSecret()
+    local wait, sharp = Spells:Wait(info)
     Tracker:Succeeded(snapshot, {
         name = info.name,
         info = info,
         tracked = tracked,
         area = area,
         duration = duration,
+        most = Spells:Stacking(info),
         forced = source == "you" and Forced(info.name, kind),
-        wait = Spells:Wait(info),
+        wait = wait,
+        sharp = sharp,
+        loose = Spells:ShowsLate(info.name),
         -- A spell with no icon is listened for all the same. Only a debuff:
         -- reports say too little about your own effects to learn a buff from.
         learning = not tracked and kind == "debuff",
@@ -1634,6 +1794,169 @@ local function OnFailed(unit, castID, spellID)
     if info then
         Tracker:Unsend(nil, info.name)
     end
+end
+
+--------------------------------------------------------------------------------
+-- Casts by the people in your group
+--
+-- An effect that a unit carries only once, whoever put it there, is as good
+-- from another player as from you. Out of a fight it is simply read off the
+-- unit. In a fight nothing can be read, and what is left is this: someone in
+-- your party or raid is heard casting a spell that is on your bars too, and
+-- in that very frame a unit it could land on reports a change. Then theirs
+-- is taken to have landed there.
+--
+-- That needs the game to say which spell they cast. Its documentation lets a
+-- client keep that secret during a fight, and then their casts cannot be
+-- followed at all. What was heard is counted in the saved report, so that it
+-- can be read there what a real client does.
+--------------------------------------------------------------------------------
+
+--- What was heard of the casts of the people in your group, for the saved
+--- report: how many (`casts`), how many of them with effect details open
+--- (`calm`), and with details hidden how many came with a spell that could be
+--- read (`named`) and how many without (`unnamed`). Then how many were of a
+--- spell of yours that another player's copy counts for (`followed`), and how
+--- many of those were seen to land (`landed`). And what was read off units of
+--- other players' copies of such a spell: how often that told something new
+--- of how long theirs lasts (`read`), and how often the game said with it
+--- which group member had put it there (`sourced`).
+local function Others()
+    local journal = Journal()
+    local others = journal.others
+    if type(others) ~= "table" then
+        others = { casts = 0, calm = 0, named = 0, unnamed = 0, followed = 0, landed = 0, read = 0, sourced = 0 }
+        journal.others = others
+    end
+    return others
+end
+
+function ns.NoteOthers(what)
+    local others = Others()
+    others[what] = (others[what] or 0) + 1
+end
+
+--- The unit token we listen to that shows the same unit as `unit`, if any.
+local function Watched(unit)
+    for i = 1, #MAIN_TOKENS do
+        local token = MAIN_TOKENS[i]
+        if listening[token] and ns.SameUnit(unit, token) == true then
+            return token
+        end
+    end
+    local plate = ns.PlateTokenFor(unit)
+    if plate and listening[plate] then
+        return plate
+    end
+    return nil
+end
+
+--- The units a spell of yours cast by someone else could land on, with how
+--- each can be followed: every enemy in sight for an area spell, the enemy
+--- they have targeted for any other debuff, and you for a buff.
+local function GuestSnapshot(token, name, area, kind, now)
+    local snapshot = { name = name, kind = kind, time = now, units = {} }
+    if kind == "buff" then
+        snapshot.units[KeyOf("player", kind)] = Follow({}, "player")
+    elseif area then
+        local unit = PrimaryEnemy()
+        if unit then
+            snapshot.units[ns.UnitKey(unit)] = Follow({}, unit)
+        end
+        for i = 1, #plateTokens do
+            local plate = plateTokens[i]
+            if Attackable(plate) then
+                local key = ns.UnitKey(plate)
+                if not snapshot.units[key] then
+                    snapshot.units[key] = Follow({}, plate)
+                end
+            end
+        end
+    else
+        local unit = Watched(token .. "target")
+        if unit and Attackable(unit) then
+            snapshot.units[ns.UnitKey(unit)] = Follow({}, unit)
+        end
+    end
+    return snapshot
+end
+
+-- Spell id -> its name, for the spells other players were heard casting. A
+-- name is all that is asked of them: nearly all of them are no business of
+-- this addon's, and the ones that are sit on your bars under that name, at
+-- whatever rank, with everything else already known.
+local castNames = {}
+
+local function CastName(spellID)
+    local name = castNames[spellID]
+    if not name then
+        name = ns.SpellName(spellID)
+        castNames[spellID] = name -- nothing is kept for one the game cannot name yet
+    end
+    return name
+end
+
+--- Someone in your party or raid finished a cast. `spellID` is nil when the
+--- game keeps it secret.
+local function OnGroupCast(token, spellID)
+    if not ns.db.enabled then
+        return
+    end
+    if token:find("^party") and ns.InRaid() then
+        return -- in a raid they are heard under their raid name as well
+    end
+    if ns.IsSelf(token) then
+        return -- your own casts are followed on their own
+    end
+    local now = ns.Now()
+    local others = Others()
+    others.casts = others.casts + 1
+    if not ns.AurasSecret() then
+        others.calm = others.calm + 1
+    elseif spellID then
+        others.named = others.named + 1
+    else
+        others.unnamed = others.unnamed + 1
+    end
+    local name = spellID and CastName(spellID)
+    local info = name and barInfo[name]
+    if not info then
+        return -- a spell that could not be read, or one that is not on your bars
+    end
+    local tracked, area, duration, _, kind = Spells:Tracking(info)
+    if not tracked or not Spells:Shared(info) then
+        return
+    end
+    if kind == "buff" and info.selfOnly == true then
+        return -- theirs is on them, and never on you
+    end
+    local most = Spells:Stacking(info)
+    if spellID ~= info.id then
+        -- Another rank of it than yours, which may leave a shorter effect.
+        local rank = Spells:Get(spellID, now)
+        local theirs = rank and rank.tooltipDuration
+        if theirs and theirs < duration then
+            duration = theirs
+        end
+    end
+    -- Theirs may not last as long as yours does.
+    duration = Spells:CopyTime(info.name, duration, token, most ~= nil)
+    local snapshot = GuestSnapshot(token, info.name, area, kind, now)
+    if Tracker:Joined(snapshot, { name = info.name, duration = duration, most = most }, now) then
+        others.followed = others.followed + 1
+        stateDirty = true
+    end
+end
+
+local function GroupCast(token, spellID)
+    Guard(OnGroupCast, token, spellID)
+end
+
+for i = 1, #ns.partyTokens do
+    ns.WatchCasts(ns.partyTokens[i], GroupCast)
+end
+for i = 1, #ns.raidTokens do
+    ns.WatchCasts(ns.raidTokens[i], GroupCast)
 end
 
 --------------------------------------------------------------------------------
@@ -1789,6 +2112,12 @@ function handlers.PLAYER_TARGET_CHANGED()
     stateDirty = true
 end
 
+--- The people in your group changed, and with them whom each party or raid
+--- name stands for.
+function handlers.GROUP_ROSTER_UPDATE()
+    Spells:ForgetCopies()
+end
+
 function handlers.PLAYER_DEAD()
     Tracker:ForgetUnit(KeyOf("player", "buff")) -- your buffs died with you
     stateDirty = true
@@ -1848,7 +2177,10 @@ for event in pairs(handlers) do
         registered = pcall(frame.RegisterUnitEvent, frame, event, "player")
     end
     if not registered then
-        pcall(frame.RegisterEvent, frame, event)
+        registered = pcall(frame.RegisterEvent, frame, event)
+    end
+    if event == "GROUP_ROSTER_UPDATE" then
+        rosterHeard = registered
     end
 end
 

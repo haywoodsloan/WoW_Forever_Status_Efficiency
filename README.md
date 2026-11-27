@@ -7,8 +7,8 @@ status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 | Icon | A spell that leaves a debuff on enemies | A spell that leaves a buff on you |
 | --- | --- | --- |
 | Green check | None of the enemies it would hit has the debuff. Casting puts it on all of them. | You do not have the buff. |
-| Yellow half circle | Some of them have it and some do not. | Not used. |
-| Red X | All of them already have it. Casting again changes nothing. | You already have it. Casting again changes nothing. |
+| Yellow half circle | Some of them have it and some do not. Or it stacks, and is not yet on as many times over as it goes. | It stacks, and is not yet on you as many times over as it goes. |
+| Red X | All of them already have it, at full stacks. Casting again changes nothing. | You already have it, at full stacks. Casting again changes nothing. |
 
 No icon means there is nothing to say: the spell applies no status effect, or
 it is a debuff and there is no enemy to judge and no fight going on. Out of the
@@ -16,7 +16,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.3.9 is an early draft. It loads and draws its icons in the real
+Version 0.4.0 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -44,7 +44,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: v0.3.9".
+first line of the reply gives the version, "Status Efficiency: v0.4.0".
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -61,6 +61,17 @@ Spells that put a buff on you work the same way: a green check while you do
 not have the buff, a red X while you do. A buff you can also put on other
 people (a heal over time, a stamina buff) is judged on the friend you have
 targeted, and on you when your target is an enemy or nobody.
+
+A skill whose effect stacks, like Sunder Armor, shows the yellow half circle
+from its first stack to the one before the last: the effect is there, and
+casting again still adds to it. The red X comes with the last stack.
+
+An effect that a unit carries only once, whoever put it there, counts when it
+is another player's. With another warrior's Demoralizing Shout on the enemy
+your own shows the red X, and so does your Battle Shout while theirs is on
+you: casting yours would change nothing. Their Sunder Armor adds to the same
+stacks as yours. An effect that every caster has one of, like a bleed or a
+heal over time, only counts when it is yours.
 
 The icons appear when a fight starts, buff icons included, and stay on until it
 ends, whatever you have targeted: your target dying does not take them away. A
@@ -192,6 +203,9 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se aoe <spell>` | Judge a debuff against every enemy in the fight. |
 | `/se single <spell>` | Judge a debuff against your target only. |
 | `/se duration <spell> <seconds>` | Say how long the effect lasts. `auto` goes back to the addon's own figure. |
+| `/se stacks <spell> <how many>` | Say how many times over the effect can be on one unit: the red X shows at that many. `1` is an effect that does not stack, and `auto` goes back to what the game and the tooltip say. |
+| `/se anyone <spell>` | Another player's copy of the effect counts like your own. |
+| `/se mine <spell>` | Only an effect you put there yourself counts. |
 | `/se corner <where>` | Moves the icon: `tl`, `top`, `tr`, `left`, `center`, `right`, `bl`, `bottom`, `br`. |
 | `/se size <pixels>` | Icon size from 8 to 48. `auto` sizes it from the button again. |
 | `/se icons` | Lists the icon names and what each result uses now. |
@@ -242,6 +256,76 @@ enemies is a debuff, and one you cast on friends or only on yourself is a buff.
 Passive spells never get an icon. `/se list` shows the verdict for every spell
 on your bars.
 
+### Effects that stack
+
+How many times over an effect can be on one unit comes from three places, and
+the largest of them counts:
+
+- the game's own data for the spell, where the client gives it out. It may
+  keep it back during a fight, and is then asked again afterwards;
+- the spell's tooltip: "Can be applied up to 5 times", "Stacks up to 5 times",
+  "up to 5 stacks";
+- what has been read off a unit: an effect seen there three times over stacks
+  at least that far. This is the weakest of the three, because the effect may
+  go higher than it has been seen to.
+
+`/se stacks` overrules all of them. `/se list` shows the number for each spell
+and where it comes from.
+
+Out of a fight the stacks are read off the unit. In a fight the game hides
+them, so they are counted: one for each cast that is seen to land, yours or
+that of someone in your group (see the next section), up to the most the spell
+allows. What is read once the fight is over replaces the count.
+
+The count is kept on the low side on purpose, because a count that runs ahead
+shows the red X on a skill that still has a stack to add:
+
+- A cast only adds a stack when the enemy reports a change in the very moment
+  the cast is announced, which is when the game shows a landing. A change that
+  comes later, within the time the skill is still being waited for, passes for
+  the landing where nothing better is known, and the effect is taken to be
+  there. It adds no stack: it is as likely something else that changed on the
+  enemy after a miss.
+- Where the client shows that a report only added effects, the effect was not
+  there before, so the count starts at one whatever it was. Where it shows the
+  report only renewed effects and the addon had nothing for the enemy, someone
+  else put the first stack there: the count goes to two.
+- When the effect runs out, the count starts over.
+
+### Other players' effects
+
+Whether another player's copy counts is also read from the tooltip. An effect
+that does its work bit by bit ("damage over 21 sec", "every 3 sec") is each
+caster's own, and so is one that makes the enemy attack its caster. Anything
+else that lasts is taken to be on a unit only once, whoever cast it. A spell
+with no tooltip to read counts as your own. `/se anyone` and `/se mine` say
+otherwise for a spell, and `/se list` shows which it is.
+
+Out of a fight their copy is read off the unit like your own, with how long it
+has left. In a fight nothing on a unit can be read, and what is left is this:
+someone in your party or raid is heard casting a spell that is on your bars
+too (any rank of it), and in that very moment a unit it could land on reports
+a change. Then theirs is taken to have landed there. Nothing is taken on trust
+for a cast that is not yours: no change in that moment, no effect.
+
+If you and they cast the same spell in the same moment, your cast is judged
+first and the effect is put down as yours. Which of the two is on the unit is
+not told then, so it is given the shorter time of the two.
+
+How long theirs lasts is not how long yours does. A talent can make your
+shouts last half again as long as another warrior's, and a lower rank of a
+spell can leave a shorter effect. So their cast is given:
+
+- what that member's own copy was read to last, once it has been read off a
+  unit out of a fight with the game saying who put it there. This is kept
+  until the group changes;
+- otherwise two thirds of the time yours lasts (or of the time their rank of
+  the spell lasts, where that is less), and no more than the shortest copy of
+  anyone else's that was read. That is on the safe side: the red X can go a
+  little before their effect does, and does not stay on after it;
+- the whole time for an effect that stacks, which is one effect that every
+  caster renews.
+
 ### Who is looked at
 
 - A debuff aimed at one enemy is judged against your target (or the enemy the
@@ -275,8 +359,24 @@ client still allows, best first:
    first cast as much as for any other. A cast that misses changes nothing on
    the enemy, nothing is reported, and the button stays green. The addon waits
    up to three seconds for the report: the full three for a spell cast from a
-   distance, a second and a half for a skill used at arm's length, and less
-   once it has timed a few of that skill's landings.
+   distance, and a second and a half for a skill used at arm's length, which
+   comes down as that skill's landings are timed. A skill used at arm's length
+   is then held to what its landings have been seen to do:
+
+   - once five of them, and four in five, have shown within 0.15 seconds of
+     the cast, it is given a quarter of a second;
+   - once three of them, and nine in ten, have shown in the very moment the
+     cast was announced, it is held to that moment, give or take a twentieth
+     of a second. That is how build 71139 reported every skill used at arm's
+     length: 36 of the 40 casts in its record showed with no gap at all.
+
+   The shorter the wait, the less often something else that changes on the
+   enemy after a miss is taken for the cast landing. A landing that shows
+   later than the skill is held to counts against the hold, so a skill that
+   stops showing that fast gets its time back. What comes too late for a cast
+   held to its moment is not taken for that cast, and a line about it is kept
+   in the record (see below), so that it can be checked afterwards that no
+   landing was turned away.
 
    Only a change that could be the cast's effect arriving counts. The client
    this was checked against (build 71139) hides what is in a report but not
@@ -315,14 +415,25 @@ goes back to judging by reports the moment one arrives.
 It also keeps a short record of what your client really sent: how many changes
 were reported and through what, what came with them (described in words, such
 as "sealed table"; nothing is read out of it), what kind of change each said
-it was (an effect arriving, one going, both, or nothing said), how many were
+it was (an effect arriving, one going, both, or nothing said, and of the ones
+arriving how many only added effects and how many only renewed them), how many were
 put down to an effect of yours running out, how many only took effects away
 and how many of those came while a cast was waiting to be judged, which
 requests the game refused, how each of the last 40 casts was judged
 ("changed", "silent", and so on), how the casts of spells without an icon came
 out, and for each spell you cast which words of its tooltip were read as an
-effect's length and which time was passed over. `/se debug` prints the
-summary. The full
+effect's length and which time was passed over, which words say how often its
+effect stacks (`stacks`), what the game's own data gave for that (`gameStacks`:
+a number, `false` for an effect that goes on once, and nothing where the game
+would not say), and which words show the effect to be each caster's own
+(`own`). It also holds what was heard of the casts of the people in your
+group (`others`): how many, for how many of those made in a fight the game
+said which spell it was and for how many it kept that back, how many were of a
+spell of yours that another player's copy counts for, how many of those were
+seen to land, how often another player's copy was read for how long it lasts,
+and how often the game said with it who had put it there. And the last 20
+changes that came too late for a cast held to its moment (`late`). `/se debug`
+prints the summary. The full
 record is saved with the addon's settings at the next `/reload` or logout,
 under `report` in `WTF\Account\<account>\SavedVariables\StatusEfficiency.lua`,
 and is the thing to send with a bug report. It holds spell names, counts and
@@ -398,14 +509,51 @@ window gave the page.
     been read off a unit.
 - **A very slow landing can be taken for a miss.** An effect that shows up more
   than three seconds after its cast (a slow missile from far away) is not put
-  down to that cast, and the button stays green.
-- **Only your own effects count.** The same debuff or buff put there by another
-  player is not seen, so the button stays green.
+  down to that cast, and the button stays green. The same goes for a skill used
+  at arm's length that has always shown in the moment of its cast and for once
+  shows later: the record keeps a line about each such change (`late`).
+- **In a fight, another player's effect is only seen through their cast.**
+  The game hides what is on a unit, so their copy is followed by the cast that
+  put it there (see [Other players' effects](#other-players-effects)). That
+  leaves these gaps, and in each of them the button stays green or yellow
+  where a red X would be right, never the other way round:
+  - The game has to say which spell a group member cast. Its documentation
+    lets a client keep that back during a fight, and then their casts cannot
+    be followed at all. The record says what your client does, under `others`.
+  - Only the casts of people in your party or raid are heard, and only a cast
+    that the unit answers with a change in the same moment counts.
+  - An effect that was already on an enemy when the fight began, and that the
+    addon had no chance to read, is not known.
+  - Your own cast still finds some of it out: where the client shows that your
+    cast only renewed an effect, the effect was there already, and a stacking
+    one is counted as two.
+- **How long another player's effect lasts is a careful guess until it has
+  been read.** Theirs is given two thirds of the time yours lasts, so the red
+  X can turn green up to a third early when theirs lasts as long as yours.
+  Once their copy has been read off a unit out of a fight, with the game
+  saying who put it there, their casts are given what theirs really lasts.
+  Whether the game says who put an effect there is in the record too
+  (`others.sourced`).
+- **Effects that go by different names are not known to exclude each other.**
+  Two skills whose effects do not stack with one another (two different
+  shouts that raise the same thing, say) are each judged by their own name.
+- **Stacks are counted in a fight, not read.** The count can fall behind the
+  real number: a stack added by someone outside your group, or by a group
+  member whose cast the game kept secret, or by a cast of yours whose landing
+  was reported a moment later than usual, is not counted. The button then
+  shows the yellow half circle where the red X would be right. It is put right
+  when the effect is read out of a fight.
+- **A skill is held to the moment of its cast only after three landings.**
+  Until then its casts are waited for a little longer, and in that time
+  another effect arriving on the enemy after a miss can pass for the landing.
+  The first three landed casts of each skill after updating to 0.4.0 are
+  judged that way.
 - **Spell detection is a guess from the tooltip.** A spell whose tooltip
   gives a time gets an icon unless the words around that time say it is
   something other than an effect's length (see point 3 under
   [Which spells get an icon](#which-spells-get-an-icon)). Those words are read
-  in English only, and no list of wordings is complete, so a skill that leaves
+  in English only, as are the ones that say how often an effect stacks and
+  whether it is each caster's own. No list of wordings is complete, so a skill that leaves
   nothing behind can still start out with an icon. It does not keep it: once
   its first three casts have all left nothing, or six casts have been watched
   of which at most one left anything, the addon drops the icon by itself and
@@ -437,8 +585,8 @@ window gave the page.
   what you cast, so the buff that was switched off keeps its red X until the
   fight ends.
 - **Buffs on other people** are only judged on the friend you have targeted.
-  There is no yellow state for buffs: the addon does not look across your
-  party.
+  The addon does not look across your party, so a buff never shows yellow for
+  being on some of you and not on others.
 - **A buff that always shows a green check** because it is meant to be used
   only now and then (a defensive cooldown) can be hidden with
   `/se ignore <spell>`.
@@ -486,7 +634,8 @@ The addon is plain Lua 5.1, the dialect the game embeds, so the tests load it
 unchanged into a Lua 5.1 runtime where `tests/wow_mock.lua` stands in for the
 game. The mock imitates secret values (they throw when compared, indexed or
 used in arithmetic), the different ways a client might restrict aura queries
-in combat, and the reports a client sends when a unit's effects change. By
+in combat, the reports a client sends when a unit's effects change, and the
+casts of the people in your group, with the spell readable or kept secret. By
 default every aura query is refused in combat, as the documentation has it,
 and only those reports get through. What comes with a report is played two
 ways, and every scenario is run under both: the way build 71139 was seen to

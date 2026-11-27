@@ -42,6 +42,8 @@ local SHAPE_SEALED = "hidden, sealed table: full secret, added secret, updated s
 local REND, HEROIC, SHOUT, BLOODTHIRST, STOMP, MARK, MORTAL, FROSTBOLT, CORRUPTION, WITHER, CLAP =
     100, 101, 102, 104, 105, 106, 107, 108, 109, 110, 6343
 local BLOCK, HAWK, MONKEY, COMMAND, FORT, MEND, WARD, RAMPAGE, PROWL = 111, 112, 113, 114, 115, 116, 117, 118, 119
+-- Skills whose effect stacks, and ones that more than one player in a group has.
+local SUNDER, RAGING, RENEW, FRENZY, DEMO, ROAR = 130, 131, 132, 133, 1160, 12323
 
 local function World(options)
     local w = Mock.new(options)
@@ -161,6 +163,46 @@ local function World(options)
         name = "Rampage", harmful = true,
         description = "Strikes the target and enrages you, increasing your attack power by 100 for 12 sec.",
         effect = { buff = true, duration = 12 },
+    })
+
+    -- An effect that stacks, and that an enemy carries only once however many
+    -- warriors put it there.
+    w:addSpell(SUNDER, {
+        name = "Sunder Armor", harmful = true,
+        description = "Sunders the target's armor, reducing it by 180 per Sunder Armor and causes a high amount "
+            .. "of threat. Can be applied up to 5 times. Lasts 30 sec.",
+        effect = { duration = 30, shared = true, stacks = 5 },
+    })
+    w:addSpell(DEMO, {
+        -- One of the well known area debuffs, by its id.
+        name = "Demoralizing Shout", harmful = false, helpful = false,
+        description = "Reduces the melee attack power of all enemies within 10 yards by 86 for 45 sec.",
+        effect = { area = true, duration = 45, shared = true },
+    })
+    w:addSpell(ROAR, {
+        -- An area debuff that stacks. It borrows the id of a well known one.
+        name = "Searing Roar", harmful = false, helpful = false,
+        description = "Scorches every enemy around you, increasing the damage they take by 2% for 20 sec. "
+            .. "Stacks up to 2 times.",
+        effect = { area = true, duration = 20, shared = true, stacks = 2 },
+    })
+    w:addSpell(RAGING, {
+        -- A shout that every warrior in the party has, and that lands on all of them.
+        name = "Raging Shout", helpful = true,
+        description = "The warrior shouts, increasing the attack power of all party members within 20 yards "
+            .. "by 35. Lasts 3 min.",
+        effect = { buff = true, duration = 180, shared = true, party = true },
+    })
+    w:addSpell(RENEW, {
+        -- Healing over time: every caster's is their own.
+        name = "Renew", helpful = true,
+        description = "Heals the target for 300 over 15 sec.",
+        effect = { buff = true, duration = 15 },
+    })
+    w:addSpell(FRENZY, {
+        name = "Battle Frenzy", selfOnly = true,
+        description = "Increases your attack speed by 10% for 15 sec. Stacks up to 3 times.",
+        effect = { buff = true, duration = 15, stacks = 3 },
     })
     return w
 end
@@ -1899,30 +1941,31 @@ test("reports: a spell cast from a distance turns red when it lands, however lon
 end)
 
 test("reports: a spell used at arm's length is given less time once it has been timed", function()
+    -- A client on which a landing takes a moment to show.
     local w, ns, boar = Simple({ saved = Proven() })
     eq(Wait(ns, REND), 1.5, "before it has been timed")
     for _ = 1, 3 do
-        w:cast(REND)
+        w:cast(REND, { travel = 0.2 })
         w:advance(22)
     end
-    eq(Wait(ns, REND), 0.5, "it shows at once, so half a second is plenty")
+    check(Wait(ns, REND) >= 0.85 and Wait(ns, REND) <= 1.05, "twice what it took and half a second: " .. Wait(ns, REND))
 
     w:cast(REND, { miss = true })
-    w:advance(0.8)
-    w:applyAura(boar, "Sunder Armor", 30, false) -- something else, not a second after the miss
+    w:advance(1.2)
+    w:applyAura(boar, "Sunder Armor", 30, false) -- something else, a good second after the miss
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "is no longer taken for the Rend")
 
-    w:cast(REND, { travel = 0.3 }) -- a slow one
-    w:advance(0.5)
+    w:cast(REND, { travel = 0.6 }) -- a slow one
+    w:advance(0.8)
     eq(w:icon("ActionButton1"), "cross", "still in time")
     w:advance(22)
-    check(Wait(ns, REND) >= 1.1 and Wait(ns, REND) <= 1.2, "and the wait grows to fit what was seen: " .. Wait(ns, REND))
+    check(Wait(ns, REND) >= 1.6 and Wait(ns, REND) <= 1.9, "and the wait grows to fit what was seen: " .. Wait(ns, REND))
     for _ = 1, 6 do
-        w:cast(REND)
+        w:cast(REND, { travel = 0.2 })
         w:advance(22)
     end
-    check(Wait(ns, REND) < 0.7, "then shrinks again as casts show at once: " .. Wait(ns, REND))
+    check(Wait(ns, REND) < 1.3, "then shrinks again as casts show sooner: " .. Wait(ns, REND))
     Clean(w)
 end)
 
@@ -1957,6 +2000,308 @@ test("reports: a change after the wait is over is not put down to the cast", fun
     w:applyAura(boar, "Sunder Armor", 30, false)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+--- True when a spell is held to the frame of its cast (see Spells:Wait).
+local function Sharp(ns, spellID)
+    local _, sharp = ns.Spells:Wait(ns.Spells:Get(spellID, ns.Now()))
+    return sharp == true
+end
+
+test("reports: a skill whose casts show in the very frame they are announced is held to that frame", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    for _ = 1, 2 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    eq(Wait(ns, REND), 1.5, "two casts that showed in their frame: not held to it yet")
+    check(not Sharp(ns, REND))
+    w:cast(REND)
+    w:advance(22)
+    eq(Wait(ns, REND), 0.05, "three")
+    check(Sharp(ns, REND))
+    for _ = 1, 7 do
+        w:cast(REND)
+        w:advance(22)
+    end
+
+    -- What used to pass for a hit: something else changing on the boar a
+    -- moment after a miss.
+    w:cast(REND, { miss = true })
+    w:advance(0.1)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "a tenth of a second after the miss is no longer taken for the Rend")
+
+    -- Nor is something that changed while the cast was on its way to the
+    -- server, before it was announced.
+    w:advance(2)
+    w.effects[#w.effects + 1] = { at = w.clock + 0.1, run = function()
+        w:applyAura(boar, "Thorns", 30, false)
+    end }
+    w:cast(REND, { miss = true, castTime = 0.3 })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "nor is two tenths before the cast was announced")
+    eq(ns.db.learned.Rend.instant, 10)
+    eq(ns.db.learned.Rend.prompt, 10, "neither was counted as a landing")
+
+    -- A landing reported a frame apart from its cast is still in time, on
+    -- either side of it.
+    w:advance(2)
+    w:cast(REND, { travel = 0.05 })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "a frame after")
+    w:advance(22)
+    check(Sharp(ns, REND), "ten in eleven in the frame itself")
+    w:cast(REND, { early = 0.05 })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "a frame before")
+    w:advance(22)
+    eq(ns.db.learned.Rend.instant, 10, "neither of those was in the frame itself")
+    eq(ns.db.learned.Rend.prompt, 12)
+    check(not Sharp(ns, REND), "ten in twelve: it does not keep to its frame after all")
+    eq(Wait(ns, REND), 0.25, "and is given a quarter of a second again")
+    Clean(w)
+end)
+
+test("reports: what came too late for a skill held to its frame is kept in the saved report", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    for _ = 1, 3 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    check(Sharp(ns, REND))
+    local late = ns.db.report.late
+    eq(#late, 0, "nothing while every cast shows in its frame")
+
+    w:cast(REND, { miss = true })
+    w:advance(0.4)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(#late, 1)
+    check(late[1]:find("Rend: nothing in the moment of the cast, then a change 0.40s after it", 1, true), late[1])
+    check((late[1]:find("(an effect added)", 1, true) ~= nil) == KindsTold(), "what kind of change it was, where that is told: "
+        .. late[1])
+
+    -- Not a change that comes when the cast is long over.
+    w:advance(2)
+    w:cast(REND, { miss = true })
+    w:advance(0.8)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    eq(#late, 1, "more than half a second after it")
+
+    -- Nor one after a cast that did show in its frame.
+    w:advance(2)
+    w:cast(REND)
+    w:advance(0.2)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    eq(#late, 1, "the cast had landed")
+
+    -- Only the last twenty are kept.
+    for _ = 1, 22 do
+        w:advance(22)
+        w:cast(REND)
+        w:advance(22)
+        w:cast(REND, { miss = true })
+        w:advance(0.2)
+        w:applyAura(boar, "Thorns", 30, false)
+        w:advance(0.3)
+    end
+    eq(#late, 20)
+    check(late[20]:find("then a change 0.20s after it", 1, true), late[20])
+    check(Sharp(ns, REND), "and none of it is held against the skill")
+    local landings = ns.db.learned.Rend.prompt + ns.db.learned.Rend.tardy
+    check(landings > 10 and landings <= 20, "the tally of its landings is halved past twenty, so old ones fade: "
+        .. landings)
+    Clean(w)
+end)
+
+test("reports: only the first change after a cast held to its frame is kept, and only one on its own target", function()
+    local saved = Proven()
+    -- Heroic Strike has no icon, and has been seen to go with a change on the
+    -- enemy in the frame of its cast: it is held to that frame like Rend.
+    saved.learned = { ["Heroic Strike"] = { prompt = 5, tardy = 0, instant = 5, lag = 0, timed = 3 } }
+    local w = World({ saved = saved })
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, HEROIC)
+    w:addButton("ActionButton3", 3, SUNDER)
+    local ns = w:load(saved)
+    local boar, wolf = w:addMob("Boar"), w:addMob("Wolf")
+    w:showPlate(boar)
+    w:showPlate(wolf)
+    w:target(boar)
+    w:advance(0.3)
+    for _ = 1, 3 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    check(Sharp(ns, REND))
+    check(Sharp(ns, HEROIC))
+    local late = ns.db.report.late
+    eq(#late, 0)
+    -- The icons are looked at every frame here, so that each change reaches
+    -- the books by itself, in the order it came.
+    ns.db.interval = 0.01
+
+    -- A change on another enemy says nothing of the cast, and does not use up
+    -- the one line it can leave. Then two changes on the boar: one line.
+    w:cast(REND, { miss = true })
+    w:advance(0.2)
+    w:applyAura(wolf, "Thorns", 30, false)
+    w:advance(0.1)
+    eq(#late, 0, "a change on the wolf")
+    check(ns.Tracker:HasEchoes(), "the boar is still listened to")
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.1)
+    w:applyAura(boar, "Curse of Recklessness", 120, false)
+    w:advance(0.3)
+    eq(#late, 1, "the first change on the boar after the cast, and that one only")
+    check(late[1]:find("Rend: nothing in the moment of the cast, then a change 0.30s after it", 1, true), late[1])
+
+    -- A skill with no icon is not kept an eye on that way: most of them leave
+    -- nothing, and every change after one would be noted.
+    w:advance(2)
+    w:cast(HEROIC)
+    w:advance(0.2)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    eq(#late, 1, "Heroic Strike has no icon")
+
+    -- A change inside the wait is not late, whichever cast it goes to. Rend
+    -- misses, and Sunder Armor, used a moment after it, lands a moment later.
+    w:advance(2)
+    w:cast(REND, { miss = true })
+    w:advance(0.02, 0.02)
+    w:cast(SUNDER, { travel = 0.02 })
+    w:advance(0.02, 0.02)
+    w:advance(0.3)
+    eq(w:icon("ActionButton3"), "partial", "the change went to Sunder Armor")
+    eq(w:icon("ActionButton1"), "check")
+    eq(#late, 1, "and came four hundredths after Rend: inside its wait, so not too late for it")
+
+    -- A cast is listened for a little longer than its wait, and no longer.
+    w:advance(2)
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    check(ns.Tracker:HasEchoes(), "three tenths of a second after the miss")
+    w:advance(0.7)
+    check(not ns.Tracker:HasEchoes(), "and not a second after it")
+
+    -- Nor is a change that comes after that kept, even where the icons are
+    -- looked at so seldom that the cast has not been cleared away by then.
+    w:advance(2)
+    ns.db.interval = 5
+    w:cast(REND, { miss = true })
+    w:advance(0.9)
+    check(ns.Tracker:HasEchoes(), "nothing has looked since")
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(6)
+    eq(#late, 1, "nine tenths of a second after the cast")
+    check(not ns.Tracker:HasEchoes())
+    Clean(w)
+end)
+
+test("reports: a skill whose casts keep showing a moment after they are announced is given a quarter of a second", function()
+    -- A client on which a landing is reported a frame after its cast.
+    local w, ns, boar = Simple({ saved = Proven() })
+    for _ = 1, 4 do
+        w:cast(REND, { travel = 0.05 })
+        w:advance(22)
+    end
+    check(Wait(ns, REND) >= 0.5 and Wait(ns, REND) <= 0.7, "four casts that showed at once: not held to it yet: "
+        .. Wait(ns, REND))
+    w:cast(REND, { travel = 0.05 })
+    w:advance(22)
+    eq(Wait(ns, REND), 0.25, "five")
+    eq(ns.db.learned.Rend.instant, 0, "none of them in the frame of its cast")
+    check(not Sharp(ns, REND))
+
+    -- Something else changing on the boar less than half a second after a miss.
+    w:cast(REND, { miss = true })
+    w:advance(0.4)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "is no longer taken for the Rend")
+
+    -- A cast that shows a few frames late is still in time.
+    w:advance(2)
+    w:cast(REND, { travel = 0.1 })
+    w:advance(0.4)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(22)
+    eq(Wait(ns, REND), 0.25, "and still counts as showing at once")
+    eq(ns.db.learned.Rend.prompt, 6)
+    eq(ns.db.learned.Rend.tardy, 0)
+
+    -- A change while the cast was on its way to the server still counts for
+    -- it: only a skill that keeps to its frame is held to that before the
+    -- cast as well.
+    w.effects[#w.effects + 1] = { at = w.clock + 0.1, run = function()
+        w:applyAura(boar, "Thorns", 30, false)
+    end }
+    w:cast(REND, { miss = true, castTime = 0.3 })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "this is the limit of what can be told")
+    Clean(w)
+end)
+
+test("reports: a skill that sometimes shows late is not held to showing at once", function()
+    for _, travel in ipairs({ 0, 0.05 }) do
+        local w, ns = Simple({ saved = Proven() })
+        local opts = travel > 0 and { travel = travel } or nil
+        for i = 1, 7 do
+            w:cast(REND, (i == 3 or i == 6) and { travel = 0.3 } or opts)
+            w:advance(22)
+        end
+        eq(ns.db.learned.Rend.prompt, 5)
+        eq(ns.db.learned.Rend.tardy, 2)
+        eq(ns.db.learned.Rend.instant, travel == 0 and 5 or 0)
+        check(Wait(ns, REND) >= 0.5, "five at once and two late: it keeps the time its slowest took: " .. Wait(ns, REND))
+        check(not Sharp(ns, REND))
+        for _ = 1, 3 do
+            w:cast(REND, opts)
+            w:advance(22)
+        end
+        eq(Wait(ns, REND), 0.25, "eight in ten at once")
+        check(not Sharp(ns, REND), "which is not often enough to hold it to the frame of its cast")
+        Clean(w)
+    end
+
+    -- A spell cast from a distance is never held to it, however often it has
+    -- shown at once.
+    local far = Bar({ saved = Proven() }, FROSTBOLT)
+    local boar = far:addMob("Boar")
+    far:target(boar)
+    far:advance(0.3)
+    for _ = 1, 8 do
+        far:cast(FROSTBOLT)
+        far:advance(10)
+    end
+    eq(Wait(far.ns, FROSTBOLT), 3)
+    check(not Sharp(far.ns, FROSTBOLT))
+    Clean(far)
+end)
+
+test("reports: a change that comes when the wait is over counts for nothing, even before the cast is looked at again", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    for _ = 1, 5 do
+        w:cast(REND, { travel = 0.05 })
+        w:advance(22)
+    end
+    eq(Wait(ns, REND), 0.25)
+    w:cast(REND, { miss = true })
+    -- One long frame: the addon does not get to look at the cast between the
+    -- end of its wait and the change.
+    w.effects[#w.effects + 1] = { at = w.clock + 0.3, run = function()
+        w:applyAura(boar, "Thorns", 30, false)
+    end }
+    w:advance(0.3, 0.3)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the wait was over when it came")
     Clean(w)
 end)
 
@@ -2933,14 +3278,23 @@ test("buffs: an attack that leaves its effect on you is judged on you once that 
     Clean(w)
 end)
 
-test("buffs: only a buff you put there yourself counts", function()
-    local w = Bar(nil, FORT)
-    w:applyBuff("Fortitude", 1800, false) -- from a passing priest
+test("buffs: another player's buff counts when it is one you carry only once, and not when it is each caster's own", function()
+    local w, ns = Bar(nil, FORT, RENEW)
+    w:applyBuff("Fortitude", 3600, false) -- from a passing priest, who has a talent for it
+    w:applyBuff("Renew", 15, false) -- and their healing over time, which yours would add to
     w:advance(0.5)
-    eq(w:icon("ActionButton1"), "check", "theirs, not yours")
+    eq(w:icon("ActionButton1"), "cross", "their Fortitude does what yours would")
+    eq(w:icon("ActionButton2"), "check", "their Renew is theirs, and yours is still worth casting")
+    eq(ns.db.learned.Fortitude.buff, true, "the buff carries the spell's name, whoever cast it")
+    eq(ns.db.learned.Fortitude.duration, nil, "how long theirs lasts says nothing of yours")
+    eq(ns.db.learned.Renew, nil, "and nothing is learned from an effect that does not count")
+    w:cast(RENEW)
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "cross", "your own")
     w:cast(FORT)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "cross")
+    eq(ns.db.learned.Fortitude.duration, 1800, "yours is what its length is learned from")
     Clean(w)
 end)
 
@@ -4247,6 +4601,1719 @@ test("fight: /se debug says what your group is doing", function()
     w:slash("debug")
     debug = w:drain()
     check(debug:find("Your group: someone in it is in combat, but nobody close by.", 1, true), "far: " .. debug)
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Stacks
+--
+-- An effect that stacks is worth casting again until the last stack is on: the
+-- half circle until then, the red X only then. Out of a fight the stacks are
+-- read off the unit. In a fight they are counted, one for each cast that is
+-- seen to land.
+--------------------------------------------------------------------------------
+
+--- A world with Sunder Armor and Rend on the first two buttons, a boar
+--- targeted with its nameplate showing, and reports known to arrive.
+local function Sundering(options)
+    options = options or {}
+    options.saved = options.saved or Proven()
+    local w, ns = Bar(options, SUNDER, REND)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    return w, ns, boar
+end
+
+--- How many times over the addon takes a spell's effect to be on your target.
+local function Stacks(ns, name)
+    return ns.Tracker:Stacks(ns.KeyOf("target", "debuff"), name, ns.Now())
+end
+
+--- What the addon has on its books for an effect by this name, as /se debug
+--- lists it: { key, name, how, stacks, left }.
+local function Booked(ns, name)
+    for _, effect in ipairs(ns.Tracker:Describe(ns.Now())) do
+        if effect.name == name then
+            return effect
+        end
+    end
+    return nil
+end
+
+-- How Sunder Armor behaves, for an effect put on a unit by hand.
+local SUNDERED = { shared = true, stacks = 5 }
+
+--- A world with the given spells on the first buttons, a boar targeted with
+--- its nameplate showing, a second warrior in the party who has the boar
+--- targeted too, and reports known to arrive.
+local function Party(options, ...)
+    options = options or {}
+    options.saved = options.saved or Proven()
+    local w, ns = Bar(options, ...)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    local warrior = w:addPartyMember("Warrior", { target = boar })
+    w:advance(0.3)
+    return w, ns, boar, warrior
+end
+
+--- Starts the fight without leaving anything on the boar.
+local function Open(w)
+    w:cast(REND, { miss = true })
+    w:advance(2)
+end
+
+test("stacks: a skill whose effect stacks shows the half circle until the last stack is on", function()
+    local w, ns = Sundering()
+    eq(w:icon("ActionButton1"), "check", "no Sunder Armor on the boar yet")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial", "one of five: another one still does something")
+    eq(w:icon("ActionButton2"), "check", "Rend has nothing to do with it")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    w:cast(SUNDER, { miss = true })
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 2, "a cast that missed adds no stack")
+    for stack = 3, 4 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+        eq(w:icon("ActionButton1"), "partial", stack .. " of five")
+    end
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "five of five: nothing left to add")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "and one more leaves it there")
+    eq(Stacks(ns, "Sunder Armor"), 5, "never more than it goes")
+    w:advance(27)
+    eq(w:icon("ActionButton1"), "cross", "28 seconds after the last one")
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check", "the stacks ran out together")
+    eq(Stacks(ns, "Sunder Armor"), 0)
+
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial", "and the count starts over")
+    eq(Stacks(ns, "Sunder Armor"), 1)
+    Clean(w)
+end)
+
+test("stacks: out of a fight the stacks are read off the enemy, and counted on from there", function()
+    local w, ns, boar = Sundering()
+    w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "one stack")
+    eq((ns.db.learned["Sunder Armor"] or {}).stacks, nil, "once on a unit is no sign of an effect that stacks")
+    w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
+    w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
+    w:advance(0.3)
+    eq(Stacks(ns, "Sunder Armor"), 3, "read, not counted: nothing was cast")
+    eq(w:icon("ActionButton1"), "partial")
+    eq(ns.db.learned["Sunder Armor"].stacks, 3, "three times over is, and is kept as the most it was seen to go")
+
+    w:cast(SUNDER) -- the fight starts: from here on a stack is a cast that landed
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 4)
+    eq(w:icon("ActionButton1"), "partial")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "five, three of them read and two counted")
+
+    -- After the fight what is read replaces what was counted.
+    w:leaveCombat()
+    w:removeAura(boar, "Sunder Armor")
+    w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
+    w:advance(0.3)
+    eq(Stacks(ns, "Sunder Armor"), 1)
+    eq(w:icon("ActionButton1"), "partial")
+    Clean(w)
+end)
+
+test("stacks: a landing that only renewed the effect found it there, and one that added it found none", function()
+    local w, ns, boar = Sundering()
+    w:cast(REND)
+    w:advance(1)
+    -- Another warrior's Sunder Armor, three times over, in the middle of the
+    -- fight. Nothing tells the addon whose effect it was that changed.
+    for _ = 1, 3 do
+        w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, SUNDERED)
+        w:advance(1)
+    end
+    eq(w:icon("ActionButton1"), "check", "nothing is known of theirs")
+
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial")
+    if KindsTold() then
+        eq(Stacks(ns, "Sunder Armor"), 2, "the report renewed an effect and added none: it was there, so two at least")
+    else
+        eq(Stacks(ns, "Sunder Armor"), 1, "nothing to tell it from a first stack")
+    end
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial", "counted low rather than high: five are on it, and it could be fewer")
+
+    -- The effect is taken off the boar, which only shows as an effect going.
+    -- The next cast puts it on afresh.
+    w:removeAura(boar, "Sunder Armor")
+    w:advance(1)
+    w:cast(SUNDER)
+    w:advance(1.5)
+    if KindsTold() then
+        eq(Stacks(ns, "Sunder Armor"), 1, "the report only added an effect: there was none, whatever the books said")
+    else
+        check(Stacks(ns, "Sunder Armor") > 1, "nothing to tell it from one more stack")
+    end
+    eq(w:icon("ActionButton1"), "partial")
+    Clean(w)
+end)
+
+test("stacks: a buff that stacks is counted the same way", function()
+    local w, ns = Bar({ saved = Proven() }, FRENZY, BLOCK)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(FRENZY)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "one of three, read off you")
+    w:cast(BLOCK)
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "cross", "a buff that does not stack is there or not")
+
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:enterCombat()
+    w:advance(0.3)
+    w:cast(FRENZY)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "two of three, counted in the fight")
+    w:cast(FRENZY)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "three of three")
+    w:advance(16)
+    eq(w:icon("ActionButton1"), "check", "and gone")
+    Clean(w)
+end)
+
+test("stacks, area: the red X only when every enemy carries every stack", function()
+    local w, ns = Bar({ saved = Proven() }, ROAR)
+    local mobs = {}
+    for i = 1, 2 do
+        mobs[i] = w:addMob("Kobold " .. i)
+        w:showPlate(mobs[i])
+    end
+    w:target(mobs[1])
+    w:advance(0.5)
+    w:cast(ROAR, { hits = mobs })
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial", "one of two on each of them")
+    w:cast(ROAR, { hits = { mobs[1] } })
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial", "full on one, and one short on the other")
+    w:cast(ROAR, { hits = { mobs[2] } })
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "full on both")
+    Clean(w)
+end)
+
+test("stacks: a client that does not say how many times an effect is on a unit leaves it at what was counted", function()
+    local w, ns, boar = Sundering({ noApplications = true })
+    for _ = 1, 3 do
+        w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, SUNDERED)
+    end
+    w:advance(0.3)
+    eq(Stacks(ns, "Sunder Armor"), 1, "there, and nothing says how often")
+    eq(w:icon("ActionButton1"), "partial")
+    w:cast(SUNDER, { quiet = true })
+    w:advance(0.5)
+    eq(Stacks(ns, "Sunder Armor"), 2, "a cast seen to land is still counted")
+    Clean(w)
+end)
+
+test("stacks: how often an effect stacks is read from the tooltip by the words around the number", function()
+    local w, ns = Bar(nil, REND)
+    local read = ns.Spells.ParseStacks
+    local cases = {
+        { "Sunders the target's armor. Can be applied up to 5 times. Lasts 30 sec.", 5, "can be applied up to 5 times" },
+        { "Burns the enemy for 10 Fire damage. Stacks up to 5 times. Lasts 12 sec.", 5 },
+        { "Reduces armor by 5% for 20 sec, stacking up to 3 times.", 3 },
+        { "Increases your attack speed by 10% for 15 sec. This effect stacks up to 3 times.", 3 },
+        { "Increases damage taken by 2%. Up to 4 stacks.", 4, "up to 4 stacks" },
+        { "Stuns the target for 4 sec. Max 2 stacks.", 2 },
+        { "Poisons the target. Maximum of 5 applications.", 5 },
+        { "Increases damage by 3. Stacks to 10.", 10 },
+        { "|cffffffffRends|r the target. Can be applied|nup to 5 times.", 5 },
+        -- Numbers that count something else.
+        { "Strikes the target up to 3 times for 20 damage.", nil },
+        { "Fires 5 times in 1.5 sec.", nil },
+        { "Applies a slow for 8 sec. Hits 3 times.", nil },
+        { "Reduces the melee attack power of all enemies within 10 yards by 86 for 45 sec.", nil },
+        { "Can be applied up to 1 times.", nil }, -- once is not stacking
+        { "Stacks up to 2.5 times.", nil },
+        { "", nil },
+    }
+    for i = 1, #cases do
+        local text, most, words = cases[i][1], cases[i][2], cases[i][3]
+        local got, from = read(text)
+        eq(got, most, "stacks in \"" .. text .. "\"")
+        if words then
+            eq(from, words, "the words they were read from")
+        end
+    end
+    eq(read(nil), nil, "no text at all")
+
+    -- And whose effect it is: one that works bit by bit is each caster's own.
+    local own = ns.Spells.ParseOwn
+    eq(own("Wounds the target causing them to bleed for 66 damage over 18 sec."), "over 18 sec")
+    eq(own("Poisons the enemy for 13 Nature damage every 3 sec for 12 sec."), "every 3 sec")
+    eq(own("Deals 5 damage per sec for 10 sec."), "per sec")
+    eq(own("Causes damage over time."), "damage over")
+    eq(own("Heals the target for 300 over 15 sec."), "over 15 sec")
+    eq(own("A mocking attack that forces the target to focus attacks on you for 6 sec."), "attacks on you")
+    eq(own("Taunts the target to attack you."), "attack you")
+    eq(own("Reduces the melee attack power of all enemies within 10 yards by 86 for 45 sec."), nil)
+    eq(own("Sunders the target's armor, reducing it by 180 per Sunder Armor. Can be applied up to 5 times."), nil)
+    eq(own("Increases the attack power of all party members by 35. Lasts 3 min."), nil)
+    eq(own("Knocks the enemy over 9 yards away and stuns it for 2 sec."), nil, "a distance is not a time")
+    eq(own(""), nil)
+    eq(own(nil), nil)
+    Clean(w)
+end)
+
+-- A skill whose tooltip says nothing of how often its effect stacks, though
+-- the game's own data has it at five times.
+local CORRODE = 134
+
+--- A world with Corrode and Rend on the first two buttons, a boar targeted
+--- with its nameplate showing, and reports known to arrive. `fighting` has
+--- you in combat before the addon loads, as after a /reload in a fight.
+local function Corroding(options, fighting)
+    options = options or {}
+    options.saved = options.saved or Proven()
+    local w = World(options)
+    w:addSpell(CORRODE, {
+        name = "Corrode", harmful = true, cumulative = 5,
+        description = "Eats into the target's armor, reducing it by 90. Lasts 30 sec.",
+        effect = { duration = 30, shared = true, stacks = 5 },
+    })
+    w:addButton("ActionButton1", 1, CORRODE)
+    w:addButton("ActionButton2", 2, REND)
+    if fighting then
+        w:enterCombat()
+    end
+    local ns = w:load(options.saved)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    return w, ns, boar
+end
+
+test("stacks: the game itself is asked how often an effect stacks, for a tooltip that does not say", function()
+    local w, ns = Corroding()
+    eq(ns.Spells.ParseStacks("Eats into the target's armor, reducing it by 90. Lasts 30 sec."), nil,
+        "nothing in the tooltip says it stacks")
+    eq(w:icon("ActionButton1"), "check")
+    for stack = 1, 4 do
+        w:cast(CORRODE)
+        w:advance(1.5)
+        eq(w:icon("ActionButton1"), "partial", stack .. " of the five the game's own data gives it")
+    end
+    w:cast(CORRODE)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "five of five")
+    eq(Stacks(ns, "Corrode"), 5)
+
+    local asked = w.maxStackCalls
+    check(asked >= 1, "the game was asked")
+    w:cast(REND)
+    w:advance(5)
+    eq(w.maxStackCalls, asked, "and having answered for a skill, it is not asked about it again")
+    eq(w:icon("ActionButton2"), "cross", "Rend goes on once, and that is all of it")
+
+    w:drain()
+    w:slash("list")
+    local list = w:drain()
+    check(list:find("Corrode|r: a debuff on your target, lasting 30s, stacking up to 5 times (by the game's own data). "
+        .. "Tracked because", 1, true), list)
+    check(not list:match("Rend|r:[^\n]*stacking"), "Rend is not said to stack: " .. list)
+    local spells = ns.db.report.spells
+    eq(spells["Corrode"].gameStacks, 5, "what the game said is kept for troubleshooting")
+    eq(spells["Corrode"].stacks, nil, "next to what the tooltip said, which was nothing")
+    eq(spells["Rend"].gameStacks, false, "as is its saying that an effect goes on once")
+    Clean(w)
+end)
+
+test("stacks: the larger of what the game says and what the tooltip says is how often an effect stacks", function()
+    local w, ns = World({ saved = Proven() }), nil
+    -- The tooltip has it higher than the game's data: a talent, say.
+    w:addSpell(CORRODE, {
+        name = "Corrode", harmful = true, cumulative = 3,
+        description = "Eats into the target's armor, reducing it by 90. Stacks up to 5 times. Lasts 30 sec.",
+        effect = { duration = 30, shared = true, stacks = 5 },
+    })
+    -- And the other way round.
+    w:addSpell(CORRODE + 1, {
+        name = "Gnaw", harmful = true, cumulative = 4,
+        description = "Gnaws at the target, reducing its armor by 20. Stacks up to 2 times. Lasts 30 sec.",
+        effect = { duration = 30, shared = true, stacks = 4 },
+    })
+    -- Numbers that are no count of stacks are not taken for one.
+    w:addSpell(CORRODE + 2, {
+        name = "Scratch", harmful = true, cumulative = 1,
+        description = "Scratches the target, reducing its armor by 5. Lasts 30 sec.",
+        effect = { duration = 30 },
+    })
+    w:addSpell(CORRODE + 3, {
+        name = "Maul", harmful = true, cumulative = 255,
+        description = "Mauls the target, reducing its armor by 50. Lasts 30 sec.",
+        effect = { duration = 30 },
+    })
+    for i = 0, 3 do
+        w:addButton("ActionButton" .. (i + 1), i + 1, CORRODE + i)
+    end
+    ns = w:load(Proven())
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    local Spells = ns.Spells
+    local function Most(id)
+        return Spells:Stacking(Spells:Get(id, ns.Now()))
+    end
+    eq(Most(CORRODE), 5, "the tooltip's five over the game's three")
+    eq(Spells:StackingSource(Spells:Get(CORRODE, ns.Now())), "tooltip")
+    eq(Most(CORRODE + 1), 4, "the game's four over the tooltip's two")
+    eq(Spells:StackingSource(Spells:Get(CORRODE + 1, ns.Now())), "game")
+    eq(Most(CORRODE + 2), nil, "once is not stacking")
+    eq(Spells:StackingSource(Spells:Get(CORRODE + 2, ns.Now())), nil)
+    eq(Most(CORRODE + 3), nil, "and 255 is no count of stacks")
+    eq(Spells:Get(CORRODE + 3, ns.Now()).gameStacks, false)
+
+    -- What you said goes before both, and what was read off a unit only
+    -- counts where it is more than either.
+    w:slash("stacks Gnaw 3")
+    eq(Most(CORRODE + 1), 3)
+    eq(Spells:StackingSource(Spells:Get(CORRODE + 1, ns.Now())), "you")
+    w:slash("stacks Gnaw auto")
+    eq(Most(CORRODE + 1), 4)
+    Spells:LearnStacks("Gnaw", 3)
+    eq(Most(CORRODE + 1), 4, "three were seen, and the game has it at four")
+    Spells:LearnStacks("Gnaw", 6)
+    eq(Most(CORRODE + 1), 6, "six were seen: more than anything said of it")
+    eq(Spells:StackingSource(Spells:Get(CORRODE + 1, ns.Now())), "seen")
+    Spells:LearnStacks("Gnaw", 2)
+    eq(Most(CORRODE + 1), 6, "seeing it fewer times over later takes nothing back")
+    w:drain()
+    w:slash("list")
+    local list = w:drain()
+    check(list:find("Gnaw|r: a debuff on your target, lasting 30s, stacking up to 6 times (the most seen on a unit so far). ",
+        1, true), list)
+    check(list:find("Corrode|r: a debuff on your target, lasting 30s, stacking up to 5 times (by its tooltip). ",
+        1, true), list)
+    w:slash("stacks Corrode 2")
+    w:drain()
+    w:slash("list")
+    list = w:drain()
+    check(list:find("Corrode|r: a debuff on your target, lasting 30s, stacking up to 2 times (as you set it). ",
+        1, true), list)
+    Clean(w)
+end)
+
+test("stacks: a client that keeps how often an effect stacks to itself in a fight is asked again after it", function()
+    -- The addon loads in the middle of a fight, as after a /reload there.
+    local w, ns, boar = Corroding({ maxStacks = "secret" }, true)
+    local info = ns.Spells:Get(CORRODE, ns.Now())
+    eq(info.gameStacks, nil, "asked, and not answered")
+    local asked = w.maxStackCalls
+    check(asked >= 1, "it was asked")
+    w:cast(CORRODE)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "nothing says it stacks yet: there, and that is all that is known")
+    eq(ns.db.report.spells["Corrode"].gameStacks, nil, "nothing to keep of it yet")
+    w:cast(CORRODE)
+    w:advance(1.5)
+    check(w.maxStackCalls > asked, "asked again while the answer is owed")
+    eq(info.gameStacks, nil)
+
+    w:leaveCombat()
+    w:advance(0.5)
+    eq(info.gameStacks, 5, "out of the fight the game answers")
+    eq(w:icon("ActionButton1"), "partial", "two of five, read off the boar")
+    eq(Stacks(ns, "Corrode"), 2)
+    asked = w.maxStackCalls
+    w:advance(5)
+    eq(w.maxStackCalls, asked, "and is asked no more")
+
+    w:cast(CORRODE)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial", "three of five, counted in the next fight")
+    eq(Stacks(ns, "Corrode"), 3)
+    eq(ns.db.report.spells["Corrode"].gameStacks, 5, "the answer is kept once it has come")
+    Clean(w)
+end)
+
+test("stacks: an answer from the game that is no number is no answer", function()
+    local w, ns = Corroding({ maxStacks = "words" })
+    local Spells = ns.Spells
+    eq(Spells:Stacking(Spells:Get(CORRODE, ns.Now())), nil, "\"5\" is not five")
+    eq(Spells:Get(CORRODE, ns.Now()).gameStacks, false)
+    w:cast(CORRODE)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("stacks: a client that cannot be asked how often an effect stacks leaves it to the tooltip and to what is seen", function()
+    local w, ns, boar = Corroding({ maxStacks = "none" })
+    local Spells = ns.Spells
+    local info = Spells:Get(CORRODE, ns.Now())
+    eq(info.gameStacks, false, "nothing to ask: settled the first time, out of a fight")
+    eq(Spells:Stacking(info), nil)
+    eq(Spells:Stacking(Spells:Get(SUNDER, ns.Now())), 5, "a tooltip that says so is still read")
+    w:cast(CORRODE)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "nothing says it stacks")
+    eq(ns.db.report.spells["Corrode"].gameStacks, false)
+
+    -- Out of the fight it is seen twice over on the boar: it stacks, then,
+    -- and that often at the least.
+    w:cast(CORRODE)
+    w:advance(1.5)
+    w:leaveCombat()
+    w:advance(0.5)
+    eq(Spells:Stacking(info), 2)
+    eq(Spells:StackingSource(info), "seen")
+    w:applyAura(boar, "Corrode", 30, true, nil, nil, { shared = true, stacks = 5 })
+    w:advance(0.5)
+    eq(Spells:Stacking(info), 3, "and a third time")
+    eq(w:icon("ActionButton1"), "cross", "as far as it has been seen to go")
+    w:slash("stacks Corrode 5")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "until you say how far it goes")
+    Clean(w)
+end)
+
+test("stacks: a cast is counted once, however many signs of its landing come in", function()
+    -- A client that lets your effects on the enemy be counted in a fight: the
+    -- cast shows in the count as well as in the report.
+    local w, ns = Sundering({ combatAuras = "ids" })
+    w:cast(REND)
+    w:advance(1)
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 1, "seen twice over, and one stack all the same")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 2)
+    Clean(w)
+end)
+
+test("stacks: a client that swaps an effect for a new one each time it is renewed is counted all the same", function()
+    local w, ns = Sundering({ refreshReplaces = true })
+    for stack = 1, 4 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+        eq(Stacks(ns, "Sunder Armor"), stack, "an effect going and one coming in the same report is no first stack")
+        eq(w:icon("ActionButton1"), "partial")
+    end
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("stacks: a renewal reported as one effect going and one coming, in two reports, is no first stack either", function()
+    for _, how in ipairs({ "twice", "new first" }) do
+        for order = 1, 2 do
+            local w, ns = Sundering({ refreshReplaces = how })
+            for stack = 1, 5 do
+                -- The cast is announced before the reports, or after them.
+                w:cast(SUNDER, order == 2 and { early = 0 } or nil)
+                w:advance(1.5)
+                eq(Stacks(ns, "Sunder Armor"), stack, how .. ", order " .. order)
+            end
+            eq(w:icon("ActionButton1"), "cross")
+            Clean(w)
+        end
+    end
+end)
+
+test("stacks: another effect going as the first stack goes on does not make it more than one", function()
+    for order = 1, 2 do
+        local w, ns, boar = Sundering()
+        w:applyAura(boar, "Curse of Recklessness", 120, false)
+        w:advance(0.3)
+        w:cast(REND)
+        w:advance(1)
+        -- The curse is taken off in the very frame Sunder Armor lands.
+        if order == 1 then
+            w:cast(SUNDER)
+            w:removeAura(boar, "Curse of Recklessness")
+        else
+            w:removeAura(boar, "Curse of Recklessness")
+            w:cast(SUNDER)
+        end
+        w:advance(1.5)
+        eq(Stacks(ns, "Sunder Armor"), 1, "order " .. order)
+        eq(w:icon("ActionButton1"), "partial")
+        Clean(w)
+    end
+end)
+
+test("stacks: something else changing on the enemy a moment after a miss adds no stack", function()
+    local w, ns, boar = Sundering()
+    for _ = 1, 2 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    eq(Stacks(ns, "Sunder Armor"), 2)
+    -- A miss, and three tenths of a second later another player's effect
+    -- arrives. Sunder Armor has not been cast often enough yet to be held to
+    -- the moment of its cast, so the change still passes for it landing.
+    w:cast(SUNDER, { miss = true })
+    w:advance(0.3)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(1.2)
+    local casts = ns.db.report.casts
+    check(casts[#casts]:find("Sunder Armor", 1, true) and casts[#casts]:find("changed, 0.30s after the cast", 1, true),
+        casts[#casts])
+    eq(Stacks(ns, "Sunder Armor"), 2, "but a stack is only counted for a landing in the moment of the cast")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 3, "like this one")
+    Clean(w)
+end)
+
+test("stacks: a skill whose landings mostly show in the frame of its cast is not one that shows late", function()
+    local w, ns, boar = Sundering()
+    -- Two landings in the frame of the cast and one a moment after it: three
+    -- landings, and not enough of them in the frame to hold the skill to it.
+    for cast = 1, 3 do
+        w:cast(SUNDER, cast == 3 and { travel = 0.1 } or nil)
+        w:advance(1.5)
+    end
+    check(not Sharp(ns, SUNDER))
+    check(not ns.Spells:ShowsLate("Sunder Armor"), "two in three showed in the frame")
+    local before = Stacks(ns, "Sunder Armor")
+    -- A miss, and something else changing on the boar three tenths later.
+    w:cast(SUNDER, { miss = true })
+    w:advance(0.3)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(1.2)
+    eq(Stacks(ns, "Sunder Armor"), before, "which adds no stack: this skill's landings are not known to show late")
+    Clean(w)
+end)
+
+test("stacks: where the game shows a landing late, stacks are counted once the skill is known for it", function()
+    local w, ns = Sundering()
+    for cast = 1, 3 do
+        w:cast(SUNDER, { travel = 0.1 })
+        w:advance(1.5)
+        eq(Stacks(ns, "Sunder Armor"), 1, "there, and not counted on yet: cast " .. cast)
+        eq(w:icon("ActionButton1"), "partial")
+    end
+    -- Three landings, none of them in the moment of its cast: that is how
+    -- this skill shows here, and from now on each one counts.
+    for stack = 2, 3 do
+        w:cast(SUNDER, { travel = 0.1 })
+        w:advance(1.5)
+        eq(Stacks(ns, "Sunder Armor"), stack)
+    end
+    eq(w:icon("ActionButton1"), "partial", "five on it and three counted: low rather than high")
+    for _ = 1, 2 do
+        w:cast(SUNDER, { travel = 0.1 })
+        w:advance(1.5)
+    end
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("stacks: two reports in one moment that differ are not read for what kind of landing it was", function()
+    for order = 1, 4 do
+        local w, ns, boar, warrior = Party(nil, SUNDER, REND)
+        w:cast(SUNDER)
+        w:advance(1.5)
+        w:cast(SUNDER)
+        w:advance(1.5)
+        eq(Stacks(ns, "Sunder Armor"), 2)
+        -- Your third Sunder Armor renews the effect, and in that same moment
+        -- the other warrior's Rend arrives on the boar.
+        if order == 1 then
+            w:cast(SUNDER)
+            w:partyCast(warrior, REND)
+        elseif order == 2 then
+            w:partyCast(warrior, REND, { first = "effect" })
+            w:cast(SUNDER)
+        elseif order == 3 then
+            -- Both reports are in before your cast is announced.
+            w:partyCast(warrior, REND, { first = "effect" })
+            w:cast(SUNDER, { early = 0 })
+        else
+            -- The same, with the two reports handed to the tracker one after
+            -- the other, as they are when something else is announced between them.
+            local key, now = ns.KeyOf("target", "debuff"), ns.Now()
+            ns.Tracker:Changed(key, now, true)
+            ns.Tracker:Changed(key, now, false)
+            w:cast(SUNDER, { miss = true }) -- nothing more is reported: those two are all there is
+        end
+        w:advance(1.5)
+        eq(Stacks(ns, "Sunder Armor"), 3, "three, whichever report came first: order " .. order)
+        Clean(w)
+    end
+end)
+
+test("stacks: where nothing is reported, each cast that is taken to land is taken to add its stack", function()
+    -- A client that never says when a unit's effects change, and is known for it.
+    local quiet = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, ns = Sundering({ auraEvents = false, saved = quiet })
+    for stack = 1, 4 do
+        w:cast(SUNDER)
+        w:advance(2.5)
+        eq(Stacks(ns, "Sunder Armor"), stack)
+        eq(w:icon("ActionButton1"), "partial")
+    end
+    w:cast(SUNDER)
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "cross", "five casts, with nothing to say that one of them missed")
+    Clean(w)
+end)
+
+test("stacks: a first cast that is taken to land and then seen to is one stack", function()
+    -- A client that was written off for saying nothing, and says something
+    -- after all: the cast is taken on trust, and the report of its landing
+    -- comes in on top of that.
+    local quiet = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, ns = Sundering({ saved = quiet })
+    w:cast(SUNDER)
+    eq(Stacks(ns, "Sunder Armor"), 1, "taken on trust")
+    w:advance(2.5)
+    eq(Stacks(ns, "Sunder Armor"), 1, "and seen: one cast all the same")
+    w:cast(SUNDER)
+    w:advance(2.5)
+    eq(Stacks(ns, "Sunder Armor"), 2)
+    Clean(w)
+end)
+
+test("stacks: a landing that showed late and is then counted among your effects adds its stack, once", function()
+    -- A client that lets your effects on the enemy be counted in a fight, and
+    -- that puts a new effect in the place of one that is renewed.
+    local w, ns = Sundering({ combatAuras = "ids", refreshReplaces = true })
+    w:cast(REND)
+    w:advance(1)
+    w:cast(SUNDER, { travel = 0.2 })
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 1, "the late report put the first stack down, and the count shows that same one")
+    w:cast(SUNDER, { travel = 0.2 })
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 2, "too late to be counted on by the report alone, but a new effect of yours "
+        .. "is there: that is a landing")
+    w:cast(SUNDER, { miss = true })
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 2, "and a miss is still a miss")
+    Clean(w)
+end)
+
+test("stacks: a landing reported a frame after its cast is counted on, and a change well before it is not", function()
+    local w, ns = Sundering()
+    w:cast(SUNDER)
+    w:advance(1.5)
+    w:cast(SUNDER, { travel = 0.02 })
+    w:advance(0.02, 0.02)
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 2, "two hundredths of a second after the cast was announced")
+
+    -- The boar's effects change two tenths of a second before the cast is
+    -- announced. That passes for the cast landing, as it has to, but it is
+    -- too far from it to add a stack.
+    w:cast(SUNDER, { early = 0.2 })
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "partial")
+    eq(Stacks(ns, "Sunder Armor"), 2)
+    local casts = ns.db.report.casts
+    check(casts[#casts]:find("Sunder Armor", 1, true) and casts[#casts]:find("changed", 1, true), casts[#casts])
+    Clean(w)
+end)
+
+test("stacks: a skill you said does not stack keeps no count", function()
+    local w, ns = Sundering()
+    for _ = 1, 2 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    eq(Booked(ns, "Sunder Armor").stacks, 2)
+    w:slash("stacks Sunder Armor 1")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "there, and that is all it can be")
+    eq(Booked(ns, "Sunder Armor").stacks, nil, "nothing is counted for it")
+    w:slash("stacks Sunder Armor auto")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "and when it stacks again the count starts low")
+    eq(Stacks(ns, "Sunder Armor"), 1)
+    Clean(w)
+end)
+
+test("stacks: an enemy that goes out of sight during the wait is given no stack on trust", function()
+    local w, ns = Bar({ saved = Proven() }, SUNDER)
+    local boar = w:addMob("Boar") -- no nameplate: once it is not the target, nothing reports on it
+    local wolf = w:addMob("Wolf")
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 1)
+    w:cast(SUNDER, { travel = 0.5 })
+    w:target(wolf)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the wolf is clean")
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial")
+    eq(Stacks(ns, "Sunder Armor"), 1, "there, and no more times over than it was seen to be")
+
+    -- The same for one that had none: it is taken to be there, once.
+    local fox = w:addMob("Fox")
+    w:target(fox)
+    w:advance(0.3)
+    w:cast(SUNDER, { travel = 0.5 })
+    w:target(wolf)
+    w:advance(1)
+    w:target(fox)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial")
+    eq(Stacks(ns, "Sunder Armor"), 1)
+    Clean(w)
+end)
+
+test("stacks: what a report shows of a landing is read for a buff on you as well", function()
+    local w, ns = Bar({ saved = Proven() }, FRENZY, BLOCK)
+    local function Frenzied()
+        return ns.Tracker:Stacks(ns.KeyOf("player", "buff"), "Battle Frenzy", ns.Now())
+    end
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:enterCombat()
+    w:advance(0.3)
+    w:cast(FRENZY)
+    w:advance(0.5)
+    w:cast(FRENZY)
+    w:advance(0.5)
+    eq(Frenzied(), 2)
+    -- The books lose it while it is still on you.
+    w:slash("ignore Battle Frenzy")
+    w:slash("auto Battle Frenzy")
+    w:advance(0.3)
+    eq(Frenzied(), 0)
+    w:cast(FRENZY)
+    w:advance(0.5)
+    if KindsTold() then
+        eq(Frenzied(), 2, "the report renewed an effect and added none: it was there, so two at least")
+    else
+        eq(Frenzied(), 1, "nothing to tell it from a first stack")
+    end
+    Clean(w)
+end)
+
+test("stacks: a report that both added an effect and renewed one is not read as either", function()
+    local w, ns, boar = Sundering()
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(1)
+    -- Someone's Thorns is renewed on the boar in the very frame your first
+    -- Sunder Armor lands, and one report tells of both.
+    boar.owed = "updated"
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(Stacks(ns, "Sunder Armor"), 1, "nothing on the books, and nothing to say it was there: a first stack")
+    eq(w:icon("ActionButton1"), "partial")
+    Clean(w)
+end)
+
+test("stacks: what was read off a unit stands, whatever is reported of that moment afterwards", function()
+    local w, ns = Sundering()
+    w:cast(SUNDER)
+    w:advance(0.05)
+    local key, now = ns.KeyOf("target", "debuff"), ns.Now()
+    eq(Stacks(ns, "Sunder Armor"), 1, "counted from the report of its landing")
+    -- It is read off the boar, four times over, and then a second report of
+    -- the moment it landed comes in that shows another kind of change.
+    ns.Tracker:Observe(key, "Sunder Armor", { duration = 30, expires = now + 30, stacks = 4 }, now)
+    eq(Stacks(ns, "Sunder Armor"), 4)
+    ns.Tracker:Changed(key, now - 0.05, nil)
+    ns.Tracker:Changed(key, now - 0.05, true)
+    ns.Tracker:Changed(key, now - 0.05, false)
+    eq(Stacks(ns, "Sunder Armor"), 4, "no count is made again from a report once the effect has been read")
+    Clean(w)
+end)
+
+test("stacks: what the game said of each change, and what was read from the tooltips, is saved for troubleshooting", function()
+    local w, ns = Sundering()
+    w:cast(REND)
+    w:advance(1)
+    for _ = 1, 3 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    local kinds = ns.db.report.reports.kinds
+    if KindsTold() then
+        -- Each change is reported twice: by your target, and by its nameplate.
+        eq(kinds.added, 4, "Rend, and the first Sunder Armor")
+        eq(kinds.renewed, 4, "the second and the third")
+    else
+        eq(kinds.added, 0)
+        eq(kinds.renewed, 0)
+    end
+    local spells = ns.db.report.spells
+    eq(spells["Sunder Armor"].stacks, "can be applied up to 5 times", "the words its stacks were read from")
+    eq(spells["Sunder Armor"].own, nil, "nothing says its effect is each caster's own")
+    eq(spells.Rend.own, "over 21 sec", "the words that make Rend each caster's own")
+    eq(spells.Rend.stacks, nil)
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find(KindsTold() and "Of the ones arriving, only added: 4, only renewed: 4." or
+        "Of the ones arriving, only added: 0, only renewed: 0.", 1, true), debug)
+    check(debug:find("Sunder Armor x3, ", 1, true), debug)
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Other players' effects
+--
+-- An effect that a unit carries only once, whoever put it there, counts when
+-- it is another player's: a second warrior's Demoralizing Shout does what
+-- yours would. Out of a fight it is read off the unit. In a fight it can only
+-- be followed through that player's cast, where the game says what they cast.
+--------------------------------------------------------------------------------
+
+test("others: another player's debuff counts when it is one an enemy carries only once", function()
+    local w, ns, boar = Party(nil, DEMO, REND, SUNDER)
+    eq(w:icon("ActionButton1"), "check")
+    w:applyAura(boar, "Demoralizing Shout", 60, false) -- another warrior's, with a talent that makes it last longer
+    w:applyAura(boar, "Rend", 21, false) -- and their Rend
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "their shout does what yours would")
+    eq(w:icon("ActionButton2"), "check", "their bleed is theirs: yours would add to it")
+    eq(ns.db.learned["Demoralizing Shout"].exact, true, "the effect carries the spell's name, whoever cast it")
+    eq(ns.db.learned["Demoralizing Shout"].duration, nil, "how long theirs lasts says nothing of yours")
+    eq(ns.db.learned.Rend, nil, "and nothing is learned from an effect that does not count")
+
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "gone again")
+
+    for _ = 1, 5 do
+        w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
+    end
+    w:advance(0.3)
+    eq(w:icon("ActionButton3"), "cross", "five stacks, none of them yours")
+
+    w:slash("debug")
+    check(w:drain():find("Sunder Armor x5, 30s left (another player's)", 1, true), "/se debug says whose it is")
+    Clean(w)
+end)
+
+test("others: your own effect is the one that counts while both are there", function()
+    -- A client on which every player's Demoralizing Shout is an effect of its
+    -- own on the enemy, though only one of them does anything.
+    local w, ns, boar = Party(nil, DEMO)
+    w:applyAura(boar, "Demoralizing Shout", 45, false)
+    w:advance(10)
+    w:applyAura(boar, "Demoralizing Shout", 45, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(ns.db.learned["Demoralizing Shout"].duration, 45, "yours is what its length is learned from")
+    w:advance(36)
+    eq(w:icon("ActionButton1"), "cross", "theirs has run out and yours has not")
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("others: in a fight, a group member's cast of a skill you both have is followed by what the enemy reports", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    Open(w)
+    eq(w:icon("ActionButton1"), "check")
+
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "their shout landed on the boar")
+    w:partyCast(warrior, REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "their Rend is theirs: yours is still worth casting")
+    w:advance(29)
+    eq(w:icon("ActionButton1"), "cross", "theirs is given two thirds of the time yours lasts")
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check")
+
+    w:partyCast(warrior, DEMO, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "nothing changed on the boar, so theirs left nothing: no cast of theirs is taken on trust")
+
+    w:partyCast(warrior, DEMO, { first = "effect" })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the change may be reported just before the cast, in the same moment")
+
+    local others = ns.db.report.others
+    eq(others.casts, 4, "every cast of theirs that was heard")
+    eq(others.named, 4, "with a spell that could be read, during the fight")
+    eq(others.unnamed, 0)
+    eq(others.calm, 0)
+    eq(others.followed, 3, "the shouts: a spell of yours that another player's copy counts for")
+    eq(others.landed, 2)
+    Clean(w)
+end)
+
+test("others: a group member's shout is not given the time yours lasts, which a talent may have made longer", function()
+    -- Yours lasts 45 seconds. Theirs, without the talent, lasts 30.
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    warrior.lasts = { ["Demoralizing Shout"] = 30 }
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(29.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "theirs has run out, and the cross does not stay on after it")
+
+    -- An effect that stacks is one effect that every caster adds to and
+    -- renews, so theirs keeps the whole time.
+    w, ns, boar, warrior = Party(nil, SUNDER, REND)
+    Open(w)
+    w:partyCast(warrior, SUNDER)
+    w:advance(0.3)
+    local left = Booked(ns, "Sunder Armor").left
+    check(left > 29 and left < 30, "all of its 30 seconds: " .. tostring(left))
+    Clean(w)
+end)
+
+test("others: once a member's own copy has been read, their casts are given what theirs lasts", function()
+    for _, lasts in ipairs({ 45, 20 }) do
+        local w, ns, boar, warrior = Party(nil, DEMO, REND)
+        warrior.lasts = { ["Demoralizing Shout"] = lasts }
+        -- Before the fight their shout is on the boar, and the game says who put it there.
+        w:partyCast(warrior, DEMO)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross")
+        local others = ns.db.report.others
+        eq(others.read, 1, "how long theirs lasts was read once")
+        eq(others.sourced, 1, "with who put it there")
+        w:removeAura(boar, "Demoralizing Shout")
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check")
+
+        Open(w)
+        w:partyCast(warrior, DEMO)
+        w:advance(lasts - 0.5)
+        eq(w:icon("ActionButton1"), "cross", "theirs lasts " .. lasts .. " seconds, and that is what it is given")
+        w:advance(1)
+        eq(w:icon("ActionButton1"), "check")
+        w:slash("debug")
+        check(w:drain():find("Another player's copy read for how long it lasts: 1, and with who put it there: 1.", 1,
+            true), "/se debug says what was read")
+        Clean(w)
+    end
+
+    -- A member whose copies were read to last different times is given the
+    -- shortest of them, whichever was read last.
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    for _, lasts in ipairs({ 20, 45 }) do
+        w:partyCast(warrior, DEMO, { lasts = lasts })
+        w:advance(0.3)
+        w:removeAura(boar, "Demoralizing Shout")
+        w:advance(0.3)
+    end
+    eq(ns.db.report.others.sourced, 1, "the longer one told nothing new")
+    Open(w)
+    w:partyCast(warrior, DEMO, { lasts = 20 })
+    w:advance(20.5)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("others: a copy that nobody is named for can make their casts shorter, and never longer", function()
+    local w, ns, boar, warrior = Party({ noSource = true }, DEMO, REND)
+    w:partyCast(warrior, DEMO) -- theirs lasts 45 seconds, as yours does
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "read off the boar while nothing is hidden")
+    eq(ns.db.report.others.read, 1)
+    eq(ns.db.report.others.sourced, 0, "the game did not say whose it was")
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(29.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "it may have been someone else's: two thirds of yours is all theirs is given")
+
+    -- One that was read to last less than that is as long as any of theirs is given.
+    w:leaveCombat()
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    w:partyCast(warrior, DEMO, { lasts = 20 })
+    w:advance(0.3)
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    eq(ns.db.report.others.read, 2)
+    -- A longer one read after it changes nothing: the shortest stands.
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    eq(ns.db.report.others.read, 2, "which told nothing new")
+    w:enterCombat()
+    w:partyCast(warrior, DEMO, { lasts = 20 })
+    w:advance(19.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "twenty seconds, like the shortest that was read")
+
+    -- Someone joins the group: whoever that copy was from may be gone.
+    w:addPartyMember("Healer")
+    w:advance(2)
+    w:partyCast(warrior, DEMO)
+    w:advance(29.5)
+    eq(w:icon("ActionButton1"), "cross", "two thirds of yours again")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("others: what was read of a member is forgotten when the group changes", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    w:partyCast(warrior, DEMO) -- theirs lasts 45 seconds
+    w:advance(0.3)
+    w:removeAura(boar, "Demoralizing Shout")
+    w:removePartyMember(warrior)
+    local fighter = w:addPartyMember("Fighter", { target = boar, lasts = { ["Demoralizing Shout"] = 30 } })
+    eq(fighter.token, "party1", "the name the one who left went by")
+    w:advance(0.3)
+    Open(w)
+    w:partyCast(fighter, DEMO)
+    w:advance(29.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "what the first one's lasted says nothing of this one's")
+    Clean(w)
+
+    -- A client that does not tell when the group changes: then nothing is
+    -- kept of who put a copy there, since a name may have changed hands.
+    w, ns, boar, warrior = Party({ unknownEvents = { GROUP_ROSTER_UPDATE = true } }, DEMO, REND)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(ns.db.report.others.read, 1)
+    eq(ns.db.report.others.sourced, 0)
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(30.5)
+    eq(w:icon("ActionButton1"), "check", "two thirds of yours, though theirs was read to last as long")
+    Clean(w)
+end)
+
+test("others: in a raid, a copy named by a member's party name is put down to the raid name their casts are heard under", function()
+    local w, ns = Bar({ saved = Proven(), raid = true }, DEMO, REND)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    local warrior = w:addPartyMember("Warrior", { target = boar, subgroup = true })
+    w:advance(0.3)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(boar.auras[1].source, warrior)
+    eq(ns.db.report.others.sourced, 1)
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(44.5)
+    eq(w:icon("ActionButton1"), "cross", "theirs was read to last 45 seconds")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check")
+
+    -- Your own copy, read under everyone's effects, is not another player's.
+    eq(ns.GroupToken("raid1"), nil, "raid1 is you")
+    eq(ns.GroupToken("player"), nil)
+    eq(ns.GroupToken("party1"), "raid2")
+    eq(ns.GroupToken("raid2"), "raid2")
+    eq(ns.GroupToken("target"), nil, "the boar is in nobody's group")
+    Clean(w)
+end)
+
+test("others: a group member's lower rank of a spell goes by its name, and is given no longer than that rank lasts", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    local LOWER = 11551
+    w:addSpell(LOWER, {
+        name = "Demoralizing Shout", harmful = false, helpful = false,
+        description = "Reduces the melee attack power of all enemies within 10 yards by 30 for 21 sec.",
+        effect = { area = true, duration = 14, shared = true },
+    })
+    Open(w)
+    w:partyCast(warrior, LOWER)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "their shout, whatever rank of it they have")
+    w:advance(13.2)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "two thirds of the 21 seconds their rank lasts for you, not of your 45")
+    Clean(w)
+end)
+
+test("others: their shout taking the place of yours is theirs from then on", function()
+    -- A client that lets your effects on the enemy be counted in a fight.
+    local w, ns, boar, warrior = Party({ combatAuras = "ids" }, DEMO, REND)
+    w:cast(DEMO)
+    w:advance(1)
+    w:cast(REND)
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(w:icon("ActionButton2"), "cross")
+    w:partyCast(warrior, DEMO)
+    w:advance(0.5)
+    eq(#boar.auras, 2, "the boar carries the shout once")
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Booked(ns, "Demoralizing Shout").how, "another player's")
+    local left = Booked(ns, "Demoralizing Shout").left
+    check(left > 29 and left < 30, "and it is given what theirs is, from their cast: " .. tostring(left))
+    eq(w:icon("ActionButton2"), "cross", "one effect of yours fewer on the boar is the shout, and not Rend")
+    w:advance(8)
+    eq(w:icon("ActionButton2"), "cross", "Rend has two seconds left")
+    w:advance(3)
+    eq(w:icon("ActionButton2"), "check")
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("others: a change that comes in another moment than their cast is not put down to it", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO, { travel = 0.2 })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "so much changes on an enemy in a group that only the very moment counts")
+    eq(ns.db.report.others.landed, 0)
+
+    -- And a change in the moment of their cast is theirs, not that of a cast
+    -- of yours that has been waiting.
+    w:advance(30)
+    w:cast(REND, { miss = true })
+    w:advance(0.2)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "their shout")
+    eq(w:icon("ActionButton2"), "check", "your Rend missed, and their shout does not pass for it")
+    Clean(w)
+end)
+
+test("others: where the game keeps a group member's spell secret, their copy shows once your own cast renews it", function()
+    local w, ns, boar, warrior = Party({ groupCasts = "secret" }, DEMO, REND)
+    w:partyCast(warrior, REND) -- before the fight their spells can be read
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "which spell they cast could not be read")
+    local others = ns.db.report.others
+    eq(others.casts, 2)
+    eq(others.calm, 1, "the one before the fight")
+    eq(others.unnamed, 1, "and the saved report says what the game kept back")
+    eq(others.named, 0)
+    eq(others.followed, 0)
+
+    w:cast(DEMO)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "your own cast is followed as ever")
+    Clean(w)
+
+    -- A client that sends nothing for anyone but you.
+    w, ns, boar, warrior = Party({ groupCasts = "none" }, DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(ns.db.report.others, nil, "nothing was heard")
+    w:slash("debug")
+    check(w:drain():find("Casts heard from your group: none yet.", 1, true))
+    Clean(w)
+end)
+
+test("others: another warrior's Sunder Armor adds to the stacks", function()
+    local w, ns, boar, warrior = Party(nil, SUNDER, REND)
+    local wolf = w:addMob("Wolf")
+    w:showPlate(wolf)
+    w:cast(SUNDER)
+    w:advance(1.5)
+    w:partyCast(warrior, SUNDER)
+    w:advance(0.5)
+    w:partyCast(warrior, SUNDER)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "three of five: one of yours and two of theirs")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    w:partyCast(warrior, SUNDER, { miss = true })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "four of five: their last one missed")
+    w:partyCast(warrior, SUNDER)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "five between the two of you")
+
+    -- They turn to the wolf. What they cast there is no longer on the boar.
+    warrior.target = wolf
+    w:partyCast(warrior, SUNDER)
+    w:advance(0.5)
+    w:target(wolf)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "one of five on the wolf, and it is theirs")
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("Sunder Armor x1, ", 1, true) and debug:find("(another player's)", 1, true), debug)
+    check(debug:find("Casts heard from your group: 5. With details hidden, the spell could be read for 5 and was "
+        .. "kept secret for 0. Of a spell of yours: 5, seen to land: 4.", 1, true), debug)
+    Clean(w)
+end)
+
+test("others: one report for two casts in the same moment goes to yours", function()
+    local w, ns, boar, warrior = Party(nil, SUNDER, REND)
+    w:cast(SUNDER)
+    w:partyCast(warrior, SUNDER)
+    w:advance(1.5)
+    eq(ns.Tracker:Stacks(ns.KeyOf("target", "debuff"), "Sunder Armor", ns.Now()), 1,
+        "counted low rather than high: two are on it")
+    eq(w:icon("ActionButton1"), "partial")
+    Clean(w)
+end)
+
+test("others: a second warrior's shout on you in a fight", function()
+    local w, ns, boar, warrior = Party(nil, RAGING, BLOCK, REND)
+    eq(w:icon("ActionButton1"), "check")
+    Open(w)
+    w:partyCast(warrior, RAGING)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "their shout is on you, and yours would add nothing")
+
+    -- A skill that only ever lands on its caster cannot have come from them,
+    -- whatever changes on you in the moment they use it.
+    w:partyCast(warrior, BLOCK)
+    w:applyBuff("Mark of the Wild", 1800, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "their Shield Block is on them")
+    Clean(w)
+end)
+
+test("others: in a raid a member's cast is heard once, and your own is not taken for someone else's", function()
+    local w, ns = Bar({ saved = Proven(), raid = true }, SUNDER, REND)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    local warrior = w:addPartyMember("Warrior", { target = boar, subgroup = true })
+    eq(warrior.token, "raid2", "raid1 is you")
+    eq(warrior.partyToken, "party1", "and they are in your own party of five as well")
+    w:advance(0.3)
+    Open(w)
+    w:partyCast(warrior, SUNDER)
+    w:advance(0.5)
+    eq(w.groupCastsSent, 2, "the game announces it under both of their names")
+    eq(ns.db.report.others.casts, 1, "one cast")
+    eq(ns.Tracker:Stacks(ns.KeyOf("target", "debuff"), "Sunder Armor", ns.Now()), 1, "and one stack")
+
+    -- Your own casts are announced under your raid name too.
+    w:partyCast(w.player, SUNDER, { miss = true })
+    w:advance(0.5)
+    eq(ns.db.report.others.casts, 1, "which is nobody else's cast")
+    Clean(w)
+end)
+
+test("others: a client that only lists your own effects leaves another player's where it was put", function()
+    local w, ns, boar, warrior = Party({ othersHidden = true }, DEMO, REND)
+    w:applyAura(boar, "Demoralizing Shout", 45, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "theirs cannot be read")
+    w:cast(DEMO, { quiet = true })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "yours can")
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+
+    -- One of theirs that was followed through their cast in a fight stays in
+    -- the books after it, until its time is up: nothing says it has gone.
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    w:leaveCombat()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "it cannot be read, and is not taken to be gone for that")
+    Clean(w)
+
+    -- Where theirs can be read, the books follow what is read.
+    w, ns, boar, warrior = Party(nil, DEMO, REND)
+    w:cast(DEMO, { quiet = true })
+    w:advance(46)
+    eq(w:icon("ActionButton1"), "check", "yours was read by its name, and has run out")
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    w:removeAura(boar, "Demoralizing Shout")
+    w:leaveCombat()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "read, and gone")
+    Clean(w)
+end)
+
+test("others: an effect the client still shows by name in a fight is read whoever put it there", function()
+    local w, ns, boar, warrior = Party({ byName = { ["Demoralizing Shout"] = true, Rend = true }, groupCasts = "none" },
+        DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:partyCast(warrior, REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "their shout, read by its name")
+    eq(w:icon("ActionButton2"), "check", "their Rend is not asked after: only yours counts")
+    eq(ns.db.learned["Demoralizing Shout"].duration, nil, "how long theirs lasts says nothing of yours")
+    eq(ns.db.report.others.read, 1, "it is kept for their casts, though")
+    eq(ns.db.report.others.sourced, 1, "with who put it there")
+    local reads = ns.db.report.nameReads
+    check(reads["Demoralizing Shout, anyone's"].found > 0, "what asking after everyone's gave is kept apart")
+    eq(reads["Demoralizing Shout"].found, 0)
+    eq(reads["Rend, anyone's"], nil)
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "and seen to go")
+    Clean(w)
+end)
+
+test("others: your own cast landing where theirs was makes the effect yours again", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(5)
+    eq(Booked(ns, "Demoralizing Shout").how, "another player's")
+    w:cast(DEMO)
+    w:advance(1.5)
+    local booked = Booked(ns, "Demoralizing Shout")
+    eq(booked.how, "the unit's effects changed when it was cast", "yours is on it now, whoever's it was")
+    check(booked.left > 43 and booked.left < 44, "for as long as yours lasts: " .. booked.left)
+    Clean(w)
+end)
+
+test("others: you and a group member shouting in the same moment leaves the shorter time of the two", function()
+    for order = 1, 2 do
+        local w, ns, boar, warrior = Party(nil, DEMO, REND)
+        Open(w)
+        if order == 1 then
+            w:cast(DEMO)
+            w:partyCast(warrior, DEMO)
+        else
+            w:partyCast(warrior, DEMO, { first = "effect" })
+            w:cast(DEMO)
+        end
+        w:advance(1.5)
+        eq(w:icon("ActionButton1"), "cross")
+        local booked = Booked(ns, "Demoralizing Shout")
+        -- Your cast is judged first by a change in its own frame: it landed.
+        eq(booked.how, "the unit's effects changed when it was cast", "order " .. order)
+        local casts = ns.db.report.casts
+        check(casts[#casts]:find("Demoralizing Shout", 1, true) and casts[#casts]:find("changed, 0.00s after the cast",
+            1, true), casts[#casts])
+        -- Which of the two shouts is on the boar now is not told, and theirs
+        -- may not last as long as yours.
+        check(booked.left > 28 and booked.left < 29, "order " .. order .. ": " .. booked.left)
+        w:advance(27)
+        eq(w:icon("ActionButton1"), "cross")
+        w:advance(2)
+        eq(w:icon("ActionButton1"), "check", "thirty seconds after the two casts")
+        w:advance(2)
+        eq(ns.db.learned["Demoralizing Shout"].late, nil, "and that nothing was reported just then is not held "
+            .. "against the spell: it was not known to end then")
+        Clean(w)
+    end
+
+    -- A moment apart, each is judged by the change in its own frame, and the
+    -- later one is the one on the boar.
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.1)
+    w:cast(DEMO)
+    w:advance(1.5)
+    local booked = Booked(ns, "Demoralizing Shout")
+    eq(booked.how, "the unit's effects changed when it was cast")
+    check(booked.left > 43 and booked.left < 44, "yours, for all of its time: " .. booked.left)
+    Clean(w)
+
+    -- Theirs is known to last longer than yours: yours is still the shorter
+    -- of the two, and the one the books go by.
+    w, ns, boar, warrior = Party(nil, DEMO, REND)
+    warrior.lasts = { ["Demoralizing Shout"] = 60 }
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    w:removeAura(boar, "Demoralizing Shout")
+    w:advance(0.3)
+    Open(w)
+    w:cast(DEMO)
+    w:partyCast(warrior, DEMO)
+    w:advance(1.5)
+    booked = Booked(ns, "Demoralizing Shout")
+    check(booked.left > 43 and booked.left < 44, "45 seconds of yours, not 60 of theirs: " .. booked.left)
+    Clean(w)
+
+    -- And a different skill of theirs in the same moment takes nothing from yours.
+    w, ns, boar, warrior = Party(nil, DEMO, SUNDER)
+    Open(w)
+    w:cast(DEMO)
+    w:partyCast(warrior, SUNDER)
+    w:advance(1.5)
+    booked = Booked(ns, "Demoralizing Shout")
+    eq(booked.how, "the unit's effects changed when it was cast")
+    check(booked.left > 43 and booked.left < 44, "their Sunder Armor is not your shout: " .. booked.left)
+    Clean(w)
+end)
+
+test("others: when another player's copy runs out is not held against the spell", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO) -- theirs lasts 45 seconds, and is given 30
+    w:advance(29.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check")
+    local learned = ns.db.learned["Demoralizing Shout"] or {}
+    eq(learned.late, nil, "nothing was reported when the books had it ending, and nothing was owed")
+    eq(learned.due, nil)
+    Clean(w)
+end)
+
+test("others: an effect of another kind that happens to share a skill's name is not taken for its copy", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND, BLOCK)
+    -- Someone's buff on you, by the name of your debuff, lasting ten seconds.
+    w:applyAura(w.player, "Demoralizing Shout", 10, false, nil, true)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "the boar has no Demoralizing Shout")
+    local others = ns.db.report.others
+    eq(others and others.read or 0, 0, "and that buff says nothing of how long the debuff lasts")
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(12)
+    eq(w:icon("ActionButton1"), "cross", "their shout is still given two thirds of yours")
+    Clean(w)
+end)
+
+test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read for", function()
+    local w, ns, boar = Party(nil, SUNDER, REND)
+    w:drain()
+    w:slash("list")
+    local list = w:drain()
+    check(list:find("Sunder Armor|r: a debuff on your target, lasting 30s, stacking up to 5 times (by its tooltip). "
+        .. "Tracked because", 1, true), list)
+    check(list:find("mentions a duration. Another player's copy counts too.", 1, true), list)
+    check(list:find("Rend|r: a debuff on your target, lasting 21s. Tracked because it can be cast on enemies and "
+        .. "its tooltip mentions a duration.\n", 1, true) or list:match("Rend|r:[^\n]*mentions a duration%.$"),
+        "Rend is your own, and does not stack: " .. list)
+
+    w:slash("stacks Sunder Armor 3")
+    check(w:drain():find("Sunder Armor is now full at 3 stacks: the yellow half circle below that, the red X at 3.",
+        1, true))
+    eq(ns.db.spells["Sunder Armor"].stacks, 3)
+    for _ = 1, 3 do
+        w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, { shared = true, stacks = 5 })
+    end
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "three is all of it now")
+    w:slash("stacks sunder armor auto")
+    check(w:drain():find("Sunder Armor goes by the game and its tooltip again for how often its effect stacks.",
+        1, true))
+    eq(ns.db.spells["Sunder Armor"], nil, "nothing is left of the choice")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "three of five")
+    w:slash("stacks Sunder Armor 1")
+    check(w:drain():find("Sunder Armor now counts as an effect that does not stack.", 1, true))
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "there, and that is all it can be")
+    w:slash("list")
+    list = w:drain()
+    check(list:find("Sunder Armor|r: a debuff on your target, lasting 30s. Tracked because", 1, true),
+        "and /se list no longer says it stacks: " .. list)
+    w:slash("stacks Rend 4")
+    w:applyAura(boar, "Rend", 21, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "partial", "a skill whose tooltip says nothing of stacks can be given some")
+
+    w:slash("stacks Sunder Armor lots")
+    check(w:drain():find("Give the most stacks as a whole number from 1 to 100", 1, true))
+    w:slash("stacks Sunder Armor 2.5")
+    check(w:drain():find("Give the most stacks as a whole number", 1, true))
+    w:slash("stacks Sunder Armor 0")
+    check(w:drain():find("Give the most stacks as a whole number", 1, true))
+    w:slash("stacks")
+    check(w:drain():find("Usage: /se stacks <spell> <how many | auto>", 1, true))
+    eq(ns.db.spells["Sunder Armor"].stacks, 1, "none of which changed anything")
+
+    -- Whose effect counts.
+    w:removeAura(boar, "Rend")
+    w:applyAura(boar, "Rend", 21, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "another warrior's Rend does not count by itself")
+    w:slash("anyone Rend")
+    check(w:drain():find("Rend: another player's copy of its effect now counts like your own.", 1, true))
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "partial", "now it does: one of the four stacks it was given")
+    w:slash("mine Rend")
+    check(w:drain():find("Rend: only an effect you put there yourself counts now.", 1, true))
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "and now it does not again")
+    w:slash("mine Sunder Armor")
+    w:drain()
+    eq(ns.db.spells["Sunder Armor"].shared, false)
+    w:removeAura(boar, "Sunder Armor")
+    w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the other way round: theirs no longer counts for Sunder Armor")
+    w:slash("auto Sunder Armor")
+    w:drain()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "back to what the tooltip says: theirs counts, one of five")
+
+    w:slash("help")
+    local help = w:drain()
+    check(help:find("/se stacks <spell> <how many | auto>", 1, true), help)
+    check(help:find("/se anyone <spell> | mine <spell>", 1, true), help)
+    Clean(w)
+end)
+
+test("/se mine in the middle of a fight drops another player's effect from the books", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "their shout")
+    eq(w:icon("ActionButton2"), "cross", "your Rend")
+    w:slash("mine Demoralizing Shout")
+    w:drain()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "theirs no longer counts, and nothing can be read to say so")
+    eq(w:icon("ActionButton2"), "cross", "what is yours stays")
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "and their next one is not followed")
+    w:cast(DEMO)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "your own is")
+    w:slash("mine Demoralizing Shout")
+    w:drain()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "and saying it again takes nothing of yours away")
+    Clean(w)
+end)
+
+test("others: two other players' copies of one effect: the one that lasts longest counts", function()
+    for order = 1, 2 do
+        local w, ns, boar = Party(nil, DEMO)
+        local first, second = order == 1 and 12 or 40, order == 1 and 40 or 12
+        w:applyAura(boar, "Demoralizing Shout", first, false, nil, nil, { caster = "one warrior" })
+        w:applyAura(boar, "Demoralizing Shout", second, false, nil, nil, { caster = "another" })
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross")
+        local left
+        for _, effect in ipairs(ns.Tracker:Describe(ns.Now())) do
+            left = effect.left
+        end
+        check(left and left > 39 and left < 40, "it is the longer one that is followed: " .. tostring(left))
+        Clean(w)
+    end
+end)
+
+test("others: when another player's copy ends says nothing about your spell", function()
+    local w, ns, boar = Party(nil, DEMO, REND)
+    w:applyAura(boar, "Demoralizing Shout", 20, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    Open(w)
+    w:advance(20)
+    eq(w:icon("ActionButton1"), "check", "theirs ran out when the game said it would")
+    eq(ns.db.learned["Demoralizing Shout"].due, nil, "which is not put down as your spell's effect ending on time")
+
+    -- They renew it unseen, so it does not end when it was read to.
+    w:leaveCombat()
+    w:applyAura(boar, "Demoralizing Shout", 20, false)
+    w:advance(0.3)
+    Open(w)
+    boar.auras[1].expirationTime = boar.auras[1].expirationTime + 30
+    w:advance(22)
+    eq(ns.db.learned["Demoralizing Shout"].late, nil, "nor as one that went unreported")
+    Clean(w)
+end)
+
+test("others: where the game reports no changes, a group member's cast is not taken to have landed, though yours is", function()
+    local doubt = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, ns, boar, warrior = Party({ saved = doubt, auraEvents = "calm" }, DEMO, REND)
+    Open(w)
+    w:partyCast(warrior, DEMO)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "nothing is taken on trust for a cast that is not yours")
+    eq(ns.db.report.others.followed, 0, "there was no unit to wait for")
+    w:cast(DEMO)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "your own is taken to land where nothing can be seen")
+    Clean(w)
+end)
+
+test("others: a change that went to a group member's cast is not taken back by a cast of yours announced after it", function()
+    local w, ns, boar, warrior = Party(nil, DEMO, REND)
+    Open(w)
+    -- Rend is sent, their shout lands a moment later, and then Rend is
+    -- announced, and has missed.
+    w.effects[#w.effects + 1] = { at = w.clock + 0.1, run = function()
+        w:partyCast(warrior, DEMO)
+    end }
+    w:cast(REND, { miss = true, castTime = 0.2 })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "their shout")
+    eq(w:icon("ActionButton2"), "check", "which does not pass for your Rend")
+    Clean(w)
+end)
+
+test("others: a skill with no tooltip to read counts as your own until you say otherwise", function()
+    local w = World()
+    w:addSpell(900, { name = "Mystery Mark", harmful = true })
+    w:addButton("ActionButton1", 1, 900)
+    local ns = w:load()
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    w:slash("track Mystery Mark")
+    w:applyAura(boar, "Mystery Mark", 30, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "another player's, and nothing says a unit carries it only once")
+    w:slash("anyone Mystery Mark")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    w:drain()
+    Clean(w)
+end)
+
+test("others: an effect of yours that is not on the books is still told from another player's when casts are counted", function()
+    -- A client that lets your effects on the enemy be counted in a fight. The
+    -- boar carries your Rend, a bleed of yours that no skill on the bars
+    -- stands for, and another warrior's shout.
+    local w, ns, boar = Party({ combatAuras = "ids" }, DEMO, REND, MARK)
+    w:applyAura(boar, "Demoralizing Shout", 45, false)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(1)
+    w:applyAura(boar, "Deep Wounds", 12, true)
+    w:advance(1)
+    w:cast(MARK, { miss = true })
+    w:advance(3.5)
+    local casts = ns.db.report.casts
+    check(casts[#casts]:find("Hunter's Mark", 1, true) and casts[#casts]:find("unclear", 1, true),
+        "two effects of yours and one on the books: the count cannot say the Mark missed. " .. casts[#casts])
     Clean(w)
 end)
 
