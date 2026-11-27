@@ -73,7 +73,7 @@ local function WithSpell(text, fn)
     end
     fn(name)
     ns.MarkBarsDirty()
-    ns.Options.RefreshAll() -- the Spells tab shows the same choices
+    ns.Options.RefreshAll() -- the Skills tab shows the same choices
 end
 
 --- How a spell on the bars is treated right now: tracked, area, duration,
@@ -418,7 +418,10 @@ end
 
 commands.position = commands.corner
 
-local TAB_WORDS = { spells = "spells", spell = "spells", appearance = "appearance", look = "appearance", icons = "appearance" }
+local TAB_WORDS = {
+    display = "display", appearance = "display", look = "display", icons = "icons", icon = "icons",
+    spells = "spells", spell = "spells", skills = "spells", skill = "spells",
+}
 
 function commands.options(rest)
     local tab = TAB_WORDS[Trim(rest or ""):lower()]
@@ -581,7 +584,7 @@ function commands.list()
             quiet = quiet + 1
         end
     end
-    local ADD = " /se track <spell> adds one, and /se buff <spell> adds one as a buff on you. The Spells tab of /se options does the same with clicks."
+    local ADD = " /se track <spell> adds one, and /se buff <spell> adds one as a buff on you. The Skills tab of /se options does the same with clicks."
     if quiet == 1 then
         print("  1 other spell does not look like a status effect." .. ADD)
     elseif quiet > 1 then

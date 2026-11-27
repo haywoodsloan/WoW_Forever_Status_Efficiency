@@ -113,6 +113,7 @@
 --   noLines        true: frames have no CreateLine.
 --   noSounds       true: PlaySound and SOUNDKIT do not exist.
 --   noSpellTexture true: C_Spell.GetSpellTexture does not exist.
+--   noActionTexture true: GetActionTexture does not exist.
 --   usableAPI      how the client says whether an action can be used: nil for
 --                  C_ActionBar.IsUsableAction and IsActionInRange, "globals" for
 --                  the old plain functions that answer 1 and nil, "secret" when
@@ -765,6 +766,19 @@ function Mock.new(options)
         return action.kind, action.id, action.subType or "spell"
     end
 
+    --- The picture an action slot shows: that of the spell it casts.
+    if not options.noActionTexture then
+        function env.GetActionTexture(slot)
+            local action = world.actions[slot]
+            local id = action and (action.kind == "macro" and world.macros[slot] or action.id)
+            local data = id and world.spells[id]
+            if not data then
+                return nil
+            end
+            return data.icon or (130000 + data.id)
+        end
+    end
+
     function env.GetMacroSpell(index)
         return world.macros[index]
     end
@@ -993,7 +1007,7 @@ function Mock.new(options)
     -- Font objects, with their height in points.
     local FONTS = {
         GameFontNormal = 12, GameFontNormalLarge = 16, GameFontNormalSmall = 10,
-        GameFontHighlight = 12, GameFontHighlightSmall = 10, GameFontHighlightHuge = 20,
+        GameFontHighlight = 12, GameFontHighlightSmall = 10, GameFontHighlightHuge = 20, GameFontHighlightLarge = 16,
         GameFontDisable = 12, GameFontDisableSmall = 10,
     }
     if options.missingFonts then
@@ -1610,6 +1624,15 @@ function Mock.new(options)
     local EditBox = setmetatable({}, { __index = Frame })
     EditBox.__index = EditBox
     function EditBox:SetAutoFocus() end
+    function EditBox:SetEnabled(enabled)
+        self.disabled = not enabled
+        if self.disabled and self.focus then
+            self:ClearFocus()
+        end
+    end
+    function EditBox:IsEnabled()
+        return not self.disabled
+    end
     function EditBox:SetFontObject(font)
         if type(font) ~= "table" then
             error("SetFontObject: not a font object", 2)

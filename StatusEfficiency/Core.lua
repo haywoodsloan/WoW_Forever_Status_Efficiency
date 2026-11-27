@@ -570,6 +570,18 @@ function ns.BarSpells()
     return list
 end
 
+--- The action slot a spell sits in: the first of them, or nil for a spell that
+--- is on no bar. The settings panel asks, for the picture on that slot.
+function ns.BarSlot(name)
+    for i = 1, #entries do
+        local entry = entries[i]
+        if entry.slot and entry.info and entry.info.name == name then
+            return entry.slot
+        end
+    end
+    return nil
+end
+
 --------------------------------------------------------------------------------
 -- Who a spell is judged on
 --------------------------------------------------------------------------------

@@ -1063,6 +1063,16 @@ function ns.SpellIcon(spellID)
     return nil
 end
 
+--- The picture an action slot shows, likewise. It stands in for a spell's own
+--- picture where the client has none to give for the spell.
+function ns.SlotIcon(slot)
+    local icon = Call(GetActionTexture, slot)
+    if (type(icon) == "number" and icon > 0) or (type(icon) == "string" and icon ~= "") then
+        return icon
+    end
+    return nil
+end
+
 --- The spell that is really cast when this one is used: talents and forms can
 --- swap one spell for another without changing what sits on the bar.
 function ns.OverrideSpell(spellID)

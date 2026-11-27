@@ -117,10 +117,18 @@ Open **Options > AddOns > Status Efficiency**, or type `/se options` for the sam
 panel in a window of its own. The window can be dragged by its title bar and
 opens where you left it. Changes apply straight away and are saved per account.
 
-The **Appearance** tab:
+The panel has three tabs. Every setting is a row of its own: what it is called
+on the left, its control on the right, and under the control a line that says
+what the setting is doing now. Hover a row's name or its control for more.
+**Defaults**, at the top right, puts the tab that is open back to how it
+started, and asks first.
+
+The **Display** tab is about whether the icons show, and where:
 
 - **Show status icons** turns the icons on and off, like `/se on` and `/se off`.
-- **When the icons appear**, beside it:
+  While they are off the next two rows are greyed out, since neither changes
+  anything then.
+- **When to show them**:
   - **Always**: whenever there is something to judge, which is a buff at any
     time and a debuff whenever there is an enemy to check, and all through a
     fight.
@@ -133,51 +141,67 @@ The **Appearance** tab:
   Versions up to 0.3.8 had **When targeting an enemy** where the last choice is
   now. A setting saved as that becomes **When you or your group are in combat**:
   an enemy you target before a fight no longer brings the icons up.
-- **On which skills**, under it: **On every skill**, or **Only when the skill
-  is usable** (the default), which leaves a skill bare while you cannot use it:
-  too close or too far, in the wrong stance and the like. Being short of rage,
-  mana or energy does not count, and neither does a cooldown.
-- **Preview.** Three pretend buttons, one for each result, drawn as large as
-  your action buttons with the icon where and as big as it is on the bars.
-  Click one of the nine spots on any of them to move the icon: the four
-  corners, the four edges, or the middle. While this tab is open and you are
-  out of combat, your real action buttons show sample icons as well.
-- **Icon size.** A slider from 8 to 48. **Auto** sizes the icon from the button
-  it sits on, at about a third of the button's width, which is 16 on a standard
+- **On which skills**: **Every skill**, or **Only skills you can use right now**
+  (the default), which leaves a skill bare while you cannot use it: too close
+  or too far, in the wrong stance and the like. Being short of rage, mana or
+  energy does not count, and neither does a cooldown.
+- **Position.** Nine squares laid out like a button: the four corners, the four
+  edges and the middle. Click one to put the icon there.
+- **Size.** A slider from 8 to 48. **Auto** sizes the icon from the button it
+  sits on, at about a third of the button's width, which is 16 on a standard
   button.
+- **Preview.** Three pretend buttons, one for each result, wearing skills from
+  your own bars and drawn as large as your action buttons, with the icon where
+  and as big as it is on the bars. While this tab or the Icons tab is open and
+  you are out of combat, your real action buttons show sample icons as well.
+
+The **Icons** tab is about which icon stands for which result:
+
 - **Icon set.** Four ready-made sets that change all three icons in one click.
-- **The icon for each result.** Each of the three results (worth casting,
-  partly worth casting, no need to cast) can use any of 21 icons: the addon's
+  The set in use is framed, and named beside the four.
+- **One icon for each result.** The three results (worth casting, partly worth
+  casting, no need to cast) are listed with the icon each uses now and what it
+  means. Click a result, then one of the 21 icons under the three: the addon's
   own ten on the first line, the game's ready check marks and raid markers on
   the second. The tile with a stroke through it means no icon at all for that
-  result. The panel says so when two results end up with the same icon. Buffs
-  and debuffs share the icons.
-- **Your own texture.** The tile marked `...` opens a box. Type a file ID such
-  as `136243`, or a path such as `Interface\Icons\Spell_Nature_Slow`, and press
-  Enter. Empty the box and press Enter to go back.
-- **Reset appearance** asks first, then puts the position, size and icons back
-  to the defaults. It leaves your spell choices alone.
+  result. A result says so when it ends up with the same icon as an earlier
+  one. Buffs and debuffs share the icons.
+- **Your own texture.** The tile marked `...` opens a box under the icons. Type
+  a file ID such as `136243`, or a path such as
+  `Interface\Icons\Spell_Nature_Slow`, and press Enter. Empty the box and press
+  Enter to go back.
 
-The **Spells** tab has one row for every spell on your action bars. Under each
-spell's name is what the addon's choice rests on: hover the name for the full
-sentence.
+The **Skills** tab lists every skill on your action bars, those with an icon
+first, each with its own picture and a few words on how it is treated. Click
+one, and the pane beside the list shows everything about it:
 
-- **Show an icon**: Auto (the addon decides), Always, or Never.
-- **Judged on**: your target, all enemies in the fight, or you (a buff).
+- **Show an icon**: Auto (the addon decides), Always, or Never. The line under
+  it says what the addon's choice rests on. For a skill without an icon the
+  rest of the pane is greyed out.
+- **Lands on**: your target, all enemies in the fight, or you (a buff).
 - **Lasts**: how long the effect lasts. Type a number of seconds to change it,
   or empty the box to let the addon work it out again.
-- **Stacks**: how many times over the effect can be on one unit, with a dash
-  for an effect that goes on once. Until it is on that many times the icon is
-  the yellow half circle. Type a number to change it, `1` for an effect that
-  does not stack, or empty the box to let the addon work it out again. The
+- **Stacks up to**: how many times over the effect can be on one unit, with a
+  dash for an effect that goes on once. A unit only counts as having the effect
+  once it is on that many times. Type a number to change it, `1` for an effect
+  that does not stack, or empty the box to let the addon work it out again. The
   same as `/se stacks`.
-- **Shared**: ticked when a unit carries the effect only once, whoever casts
-  it, so that another player's copy counts like your own. Untick it for an
-  effect that every caster has one of, like a bleed. The same as `/se anyone`
-  and `/se mine`. A buff that only ever goes on its caster has no tick.
+- **Other players**: **Their copy counts too** is ticked when a unit carries
+  the effect only once, whoever casts it, so that another player's copy counts
+  like your own. Untick it for an effect that every caster has one of, like a
+  bleed. The same as `/se anyone` and `/se mine`. It is greyed out for a buff
+  that only ever goes on its caster.
+- **Reset this skill** forgets your own choices for the skill, so that the
+  addon works it out by itself again. What it learned about the skill in play
+  stays. **Defaults** on this tab does the same for every skill at once.
 
-Hover a box or the tick to see where what it shows comes from. Pressing Enter
-in a box you did not change leaves the addon's figure the addon's own.
+Beside each box, and under the tick, is where what it shows comes from: the
+skill's tooltip, the game, what was seen in play, or you. Pressing Enter in a
+box you did not change leaves the addon's figure the addon's own.
+
+A skill is shown with its own picture, the one on its action button. Where the
+game gives none for the spell, the panel takes the picture of the action slot
+the skill sits in, and shows a question mark only while the game has neither.
 
 The panel uses the game's own buttons, tick boxes and slider where they work.
 It looks after the rest by itself:
@@ -203,7 +227,7 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | Command | What it does |
 | --- | --- |
 | `/se` | Lists the commands. The first line gives the version of the addon. |
-| `/se options` | Opens or closes the settings window. `/se options spells` opens it on the Spells tab. |
+| `/se options` | Opens or closes the settings window. `/se options display`, `/se options icons` and `/se options skills` open it on that tab. |
 | `/se on`, `/se off` | Turns the icons on or off. |
 | `/se when <always\|combat\|group>` | When the icons appear: always, only while you are in combat, or while you or someone in your group close by is in combat (the default). `party` and `raid` work for `group`. |
 | `/se usable <on\|off>` | `on` (the default) shows an icon only on a skill you can use right now. `off` shows it on every skill. |
@@ -459,8 +483,8 @@ how often that turned to someone fighting close by, someone fighting but nobody
 close by, nobody fighting, or the game not saying. Next to it, under `panel`, is
 what the settings panel
 found out about this client: which of the game's controls it kept, which fonts
-it had to replace, which labels were a tight fit, and how much room the Options
-window gave the page.
+it had to replace, which labels were a tight fit, how much room the Options
+window gave the page, and which skills the game had no picture for.
 
 ## Known limitations
 

@@ -20,19 +20,19 @@ Icons.STATES = {
     {
         key = "none",
         title = "Worth casting",
-        detail = "Nothing it would land on has the effect yet.",
+        detail = "Nothing it would land on has the full effect yet.",
         default = "check",
     },
     {
         key = "some",
         title = "Partly worth casting",
-        detail = "Some enemies have the effect, or it can still stack higher.",
+        detail = "Some of what it would land on already has the full effect.",
         default = "partial",
     },
     {
         key = "all",
         title = "No need to cast",
-        detail = "Everything it would land on already has the effect.",
+        detail = "Everything it would land on already has the full effect.",
         default = "cross",
     },
 }

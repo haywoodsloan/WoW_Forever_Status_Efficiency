@@ -290,8 +290,10 @@ local OPTIONAL_READS = {
     IsUsableAction = true, IsActionInRange = true, C_Texture = true, UnitIsVisible = true,
     -- Fonts, which the settings panel looks for before it borrows one.
     GameFontNormal = true, GameFontNormalLarge = true, GameFontNormalSmall = true, GameFontHighlight = true,
-    GameFontHighlightSmall = true, GameFontHighlightHuge = true, GameFontDisable = true,
-    GameFontDisableSmall = true,
+    GameFontHighlightSmall = true, GameFontHighlightHuge = true, GameFontHighlightLarge = true,
+    GameFontDisable = true, GameFontDisableSmall = true,
+    -- The picture on an action slot, which stands in for a spell's own picture.
+    GetActionTexture = true,
 }
 
 --- Fails the scenario if the addon wrote a global of its own, or read one that
@@ -7013,6 +7015,20 @@ local function panel(name, fn)
     end)
 end
 
+--- The tile for an icon, on offer for one of the three results: brings up the
+--- Icons tab and picks the result first, as the mouse would.
+local function Swatch(w, view, result, choice)
+    if view.tab ~= "icons" then
+        w:click(view.tabs.icons)
+    end
+    if view.picked ~= result then
+        w:click(view.results[result])
+    end
+    return view.tiles[choice]
+end
+
+local QUESTION = "Interface\\Icons\\INV_Misc_QuestionMark"
+
 --- One step down (-1) or up (1) with the buttons at the ends of the size slider.
 local function Step(w, view, direction)
     local slider = view.size.slider
@@ -7029,9 +7045,15 @@ test("settings: the panel is added to the game's Options window", function()
     eq(w.settings.addons[1].name, "Status Efficiency")
     local canvas = w:openSettings()
     check(canvas.view ~= nil, "the panel is built when it is first shown")
-    eq(canvas.view.tab, "appearance", "and opens on the Appearance tab")
-    eq(canvas.view.pages.appearance:IsVisible(), true)
+    eq(canvas.view.tab, "display", "and opens on the Display tab")
+    eq(canvas.view.pages.display:IsVisible(), true)
+    eq(canvas.view.pages.icons:IsVisible(), false)
     eq(canvas.view.pages.spells:IsVisible(), false)
+    local tabs = 0
+    for _ in pairs(canvas.view.tabs) do
+        tabs = tabs + 1
+    end
+    eq(tabs, 3, "three tabs: Display, Icons and Spells")
     Clean(w)
 end)
 
@@ -7042,8 +7064,10 @@ panel("the game's own controls are used where the client has them", function(opt
     eq(view.enable.native == true, native, "the tick box")
     eq(view.size.slider.native == true, native, "the size slider")
     eq(view.size.auto.native == true, native, "the Auto tick box")
-    eq(view.reset.native == true, native, "the reset button")
+    eq(view.defaults.native == true, native, "the Defaults button")
     eq(view.confirm.yes.native == true, native, "the buttons that confirm it")
+    eq(view.pane.shared.native == true, native, "the tick box for another player's copy")
+    eq(view.pane.reset.native == true, native, "the button that resets one spell")
     w:slash("options")
     local window = w.env.StatusEfficiencyOptions
     eq(window.close.template == "UIPanelCloseButtonNoScripts", native, "the window's close button")
@@ -7065,7 +7089,7 @@ test("/se plain makes the panel draw its own controls from the next reload", fun
     local view = w:openSettings().view
     eq(view.enable.native, nil, "no game tick box")
     eq(view.size.slider.native, nil, "no game slider")
-    eq(view.reset.native, nil, "no game button")
+    eq(view.defaults.native, nil, "no game button")
     w:click(view.enable.frame)
     eq(w.ns.db.enabled, false, "and it all still works")
     w:drain()
@@ -7101,16 +7125,15 @@ end)
 
 test("settings: a client short of a font, an atlas, lines or sounds still gets the whole panel", function()
     local w, ns = Simple({
-        missingFonts = { GameFontHighlightHuge = true }, noAtlas = true, noLines = true, noSounds = true,
-        noSpellTexture = true,
+        missingFonts = { GameFontHighlightHuge = true, GameFontHighlightLarge = true }, noAtlas = true, noLines = true,
+        noSounds = true, noSpellTexture = true, noActionTexture = true,
     })
     local view = w:openSettings().view
     check(view ~= nil, "the panel is built")
-    w:click(view.swatches.all.hidden)
+    w:click(Swatch(w, view, "all", "hidden"))
     eq(ns.db.icons.all, "hidden", "the tile for no icon works without its stroke")
     w:click(view.tabs.spells)
-    eq(view.spells.rows[1].icon.path, "Interface\\Icons\\INV_Misc_QuestionMark",
-        "a spell whose picture cannot be asked for gets a question mark")
+    eq(view.spells.rows[1].icon.path, QUESTION, "a spell whose picture cannot be asked for gets a question mark")
     w:slash("options")
     check(w.env.StatusEfficiencyOptions:IsShown())
     Clean(w)
@@ -7162,7 +7185,9 @@ test("settings: a control of the game's that fails its test is replaced without 
         eq(view.size.slider.native == true, fault[3] ~= "slider", "the slider, with a " .. what)
         eq(view.enable.native == true, fault[3] ~= "tick", "the tick box, with a " .. what)
         eq(view.size.auto.native == true, fault[3] ~= "tick", "the Auto tick box, with a " .. what)
-        eq(view.reset.native == true, fault[3] ~= "button", "the reset button, with a " .. what)
+        eq(view.pane.shared.native == true, fault[3] ~= "tick", "the tick box on the Skills tab, with a " .. what)
+        eq(view.defaults.native == true, fault[3] ~= "button", "the Defaults button, with a " .. what)
+        eq(view.pane.reset.native == true, fault[3] ~= "button", "the button that resets a spell, with a " .. what)
         eq(Made(w, fault[1]), 1, "one that failed is not tried again for the next control, with a " .. what)
 
         -- Everything still works.
@@ -7171,9 +7196,9 @@ test("settings: a control of the game's that fails its test is replaced without 
         w:click(view.enable.frame)
         eq(ns.db.enabled, false, "the tick box works, with a " .. what)
         w:click(view.enable.frame)
-        w:click(view.reset)
+        w:click(view.defaults)
         w:click(view.confirm.yes)
-        eq(ns.db.size, 0, "the reset button works, with a " .. what)
+        eq(ns.db.size, 0, "the Defaults button works, with a " .. what)
 
         -- The window of its own goes the same way, and nothing is said in chat.
         w:slash("options")
@@ -7256,7 +7281,7 @@ test("settings: if the panel breaks while it is built with the game's controls, 
     local view = canvas.view
     check(view ~= nil, "there is a panel all the same")
     eq(w:drain(), "", "and nothing is said about it")
-    eq(view.reset.native, nil, "its buttons are the addon's own")
+    eq(view.defaults.native, nil, "its buttons are the addon's own")
     eq(view.enable.native, nil, "and so is the rest, so that it is all of a piece")
     eq(view.size.slider.native, nil)
     eq(#ns.Options.views, 1, "the half-built copy is not kept")
@@ -7269,9 +7294,9 @@ test("settings: if the panel breaks while it is built with the game's controls, 
     end
     eq(hidden, 1, "and the half-built one is put away")
 
-    w:click(view.previews.none.zones.RIGHT)
+    w:click(view.zones.RIGHT)
     eq(ns.db.corner, "RIGHT", "it works")
-    w:click(view.reset)
+    w:click(view.defaults)
     w:click(view.confirm.yes)
     eq(ns.db.corner, "TOPLEFT")
 
@@ -7280,7 +7305,7 @@ test("settings: if the panel breaks while it is built with the game's controls, 
     w:slash("options")
     local window = w.env.StatusEfficiencyOptions
     check(window:IsShown(), "the window of its own opens")
-    eq(window.view.reset.native, nil)
+    eq(window.view.defaults.native, nil)
     eq(window.close.template, nil)
     eq(Made(w, BUTTON), made, "the game's button is not made again")
     eq(w:drain(), "")
@@ -7298,21 +7323,46 @@ test("settings: if the panel breaks while it is built with the game's controls, 
     window = w.env.StatusEfficiencyOptions
     check(window:IsShown(), "the window opens")
     eq(w:drain(), "")
-    eq(window.view.reset.native, nil)
+    eq(window.view.defaults.native, nil)
     eq(#w.env.UISpecialFrames, 1, "Escape closes it, and only it")
     eq(#ns.Options.views, 1)
     w:click(window.close)
     eq(window:IsShown(), false)
-    eq(w:openSettings().view.reset.native, nil, "and the Options window follows suit")
+    eq(w:openSettings().view.defaults.native, nil, "and the Options window follows suit")
     Clean(w)
 end)
 
-test("settings: in the game's standard font no label is drawn smaller", function()
-    local w = Bar(nil, REND, HEROIC, SHOUT, CLAP, MARK, HAWK)
-    local view = w:openSettings().view
-    w:click(view.swatches.some.check) -- two results share an icon, so the note at the far end is up
-    w:click(view.tabs.spells)
+--- Brings everything the panel can say on screen at least once, in both
+--- copies: all three tabs, the note for two results on one icon, the box for a
+--- texture of your own, each spell in the pane, and the question before a reset.
+local function Tour(w)
+    local canvas = w:openSettings()
     w:slash("options")
+    local window = w.env.StatusEfficiencyOptions
+    if not window:IsShown() then
+        w:slash("options")
+    end
+    for _, view in ipairs({ canvas.view, window.view }) do
+        w:click(view.tabs.display)
+        w:click(view.defaults)
+        w:click(view.confirm.no)
+        w:click(Swatch(w, view, "some", "check")) -- two results share an icon, so the note about it is up
+        w:click(Swatch(w, view, "all", "custom"))
+        w:click(view.defaults)
+        w:click(view.confirm.no)
+        w:click(view.tabs.spells)
+        for _, info in ipairs(view.spells.items) do
+            view.Select(info.name)
+        end
+        w:click(view.defaults)
+        w:click(view.confirm.no)
+    end
+    return canvas.view, window.view
+end
+
+test("settings: in the game's standard font no label is drawn smaller", function()
+    local w = Bar(nil, REND, HEROIC, SHOUT, CLAP, MARK, HAWK, SUNDER, DEMO)
+    local view = Tour(w)
     local fitted = 0
     for _, label in ipairs(Labels(w)) do
         if label.fitRoom then
@@ -7321,9 +7371,9 @@ test("settings: in the game's standard font no label is drawn smaller", function
             check(not label.fitCut, "\"" .. tostring(label.text) .. "\" is whole")
         end
     end
-    check(fitted > 100, "the panel's labels are measured: " .. fitted)
+    check(fitted > 150, "the panel's labels are measured: " .. fitted)
     for _, preview in pairs(view.previews) do
-        eq(preview.caption.textScale or 1, 1, "the captions under the preview")
+        eq(preview.caption.textScale or 1, 1, "the captions beside the preview")
     end
     eq(next(w.ns.Options.notes.fonts), nil, "no font had to be replaced")
     Clean(w)
@@ -7348,38 +7398,42 @@ local function Fits(w, what)
     return smaller
 end
 
-test("settings: in a wider font labels are drawn smaller, and none outgrows its room", function()
-    for _, wider in ipairs({ 1.15, 1.4, 2.5 }) do
+test("settings: the rooms are large enough for letters a third wider than the standard font's", function()
+    -- The game's own font was measured a fifth wider than the pretend client's
+    -- letters, and up to two fifths on a short word. Nothing may have to give
+    -- for that: no label is drawn smaller, and none is cut short.
+    for _, wider in ipairs({ 1.2, 1.35 }) do
         local what = "letters " .. wider .. " times as wide"
-        local w, ns = Bar({ fontWidth = wider }, REND, HEROIC, SHOUT, CLAP, MARK, HAWK)
-        local view = w:openSettings().view
-        w:click(view.swatches.some.check)
-        w:click(view.tabs.spells)
-        w:slash("options")
+        local w = Bar({ fontWidth = wider }, REND, HEROIC, SHOUT, CLAP, MARK, HAWK, SUNDER, DEMO)
+        Tour(w)
+        eq(Fits(w, what), 0, "labels that had to shrink, with " .. what)
+        for _, label in ipairs(Labels(w)) do
+            check(not label.fitCut, "\"" .. tostring(label.text) .. "\" is whole, with " .. what)
+        end
+        Clean(w)
+    end
+end)
+
+test("settings: in a far wider font labels are drawn smaller, and none outgrows its room", function()
+    for _, wider in ipairs({ 1.8, 2.5 }) do
+        local what = "letters " .. wider .. " times as wide"
+        local w, ns = Bar({ fontWidth = wider }, REND, HEROIC, SHOUT, CLAP, MARK, HAWK, SUNDER, DEMO)
+        local view = Tour(w)
         check(Fits(w, what) > 0, "some labels had to shrink, with " .. what)
 
-        -- The three captions under the pretend buttons keep clear of each other.
-        local keys = { "none", "some", "all" }
-        for i = 1, 2 do
-            local left, right = view.previews[keys[i]].caption, view.previews[keys[i + 1]].caption
-            check((left:GetStringWidth() + right:GetStringWidth()) / 2 + 4 <= 92.01,
-                "captions " .. i .. " and " .. (i + 1) .. " keep a gap, with " .. what)
+        -- What a result is called ends before the note at the far end of its line.
+        w:click(view.tabs.icons)
+        for _, key in ipairs({ "none", "some", "all" }) do
+            local name, clash, row = view.names[key], view.clashes[key], view.results[key]
+            local ends = 48 + name:GetStringWidth()
+            local starts = clash:IsShown() and row.width - 8 - clash:GetStringWidth() or row.width
+            check(ends <= starts + 0.5, "the name of " .. key .. " ends before the note, with " .. what)
         end
-
-        -- A sentence beside a heading gives way to the note at the far end.
-        w:click(view.tabs.appearance)
-        local page = view.pages.appearance
-        for _, key in ipairs(keys) do
-            local name, detail, clash = view.names[key], view.details[key], view.clashes[key]
-            local ends = 38 + name:GetStringWidth() + 10 + detail:GetStringWidth()
-            local starts = clash:IsShown() and 624 - clash:GetStringWidth() or 624
-            check(ends <= starts + 0.5, "the sentence for " .. key .. " ends before the note, with " .. what)
-        end
-        check(page:IsVisible())
 
         -- A click on a tick box's words still lands on the box, and no further.
-        local reach = -view.enable.frame.hitInsets[2] - 6
-        near(reach, view.enable.label:GetStringWidth(), "how far the tick box reaches, with " .. what)
+        local auto = view.size.auto
+        local reach = -auto.frame.hitInsets[2] - 6
+        near(reach, auto.label:GetStringWidth(), "how far the tick box reaches, with " .. what)
 
         -- What had to give is noted for later.
         w:closeSettings()
@@ -7389,7 +7443,7 @@ test("settings: in a wider font labels are drawn smaller, and none outgrows its 
 end)
 
 test("settings: a client whose labels cannot be drawn smaller still gets the whole panel", function()
-    local w, ns = Bar({ fontWidth = 1.4, noTextScale = true }, REND, HEROIC, SHOUT)
+    local w, ns = Bar({ fontWidth = 2.5, noTextScale = true }, REND, HEROIC, SHOUT)
     local view = w:openSettings().view
     check(view ~= nil, "the panel is built")
     for _, label in ipairs(Labels(w)) do
@@ -7397,18 +7451,18 @@ test("settings: a client whose labels cannot be drawn smaller still gets the who
     end
     w:click(view.tabs.spells)
     eq(view.spells.intro.maxLines, 2, "what wraps is still kept to the lines it has room for")
-    local why = view.spells.rows[1].why
-    eq(why:GetText(), "tooltip mentions a duration")
-    check(why:GetUnboundedStringWidth() > 148, "the reason under a spell's name is too long for its line in this font")
-    check(why.fitCut and why:GetStringWidth() <= 148 and why.wordWrap == false,
+    local name = view.pane.showArea.label
+    eq(name:GetText(), "Show an icon")
+    check(name:GetUnboundedStringWidth() > 112, "what a row is called is too long for its room in this font")
+    check(name.fitCut and name:GetStringWidth() <= 112 and name.wordWrap == false,
         "and what has one line is cut short where its room ends, so that it never runs into what comes after it")
     for _, label in ipairs(Labels(w)) do
         if label.fitRoom and not label.fitLines then
             check(label:GetStringWidth() <= label.fitRoom + 0.5, "\"" .. tostring(label.text) .. "\" keeps to its room")
         end
     end
-    w:click(view.tabs.appearance)
-    w:click(view.previews.none.zones.RIGHT)
+    w:click(view.tabs.display)
+    w:click(view.zones.RIGHT)
     eq(ns.db.corner, "RIGHT")
     Clean(w)
 end)
@@ -7416,18 +7470,25 @@ end)
 test("settings: a font this client lacks is replaced by its nearest neighbour", function()
     local w, ns = Simple({ missingFonts = { GameFontHighlightSmall = true, GameFontDisableSmall = true } })
     local view = w:openSettings().view
-    eq(view.appear.buttons.always.label.font, "GameFontNormalSmall", "the font of a choice")
-    eq(view.sampleNote.font, "GameFontNormalSmall", "the font of a note")
-    eq(view.inputs.none.font, "GameFontNormalSmall", "the font of a box to type in")
+    eq(view.sizeNote.font, "GameFontNormalSmall", "the font of a line under a control")
+    eq(view.footer.font, "GameFontNormalSmall", "the font of the line at the foot of the panel")
+    eq(view.input.font, "GameFontNormalSmall", "the font of a box to type in")
     eq(ns.Options.notes.fonts.GameFontHighlightSmall, "GameFontNormalSmall", "it is noted")
     w:click(view.appear.buttons.combat)
     eq(ns.db.appear, "combat")
     Clean(w)
 
+    -- The large white font of the headings has a gold neighbour of the same size.
+    w, ns = Simple({ missingFonts = { GameFontHighlightLarge = true } })
+    view = w:openSettings().view
+    eq(ns.Options.notes.fonts.GameFontHighlightLarge, "GameFontNormalLarge")
+    Clean(w)
+
     -- Not one of the fonts: the game's everyday typeface, by its file.
     local all = {}
     for _, font in ipairs({ "GameFontNormal", "GameFontNormalLarge", "GameFontNormalSmall", "GameFontHighlight",
-        "GameFontHighlightSmall", "GameFontHighlightHuge", "GameFontDisable", "GameFontDisableSmall" }) do
+        "GameFontHighlightSmall", "GameFontHighlightHuge", "GameFontHighlightLarge", "GameFontDisable",
+        "GameFontDisableSmall" }) do
         all[font] = true
     end
     w, ns = Simple({ missingFonts = all, noTemplates = true })
@@ -7435,10 +7496,10 @@ test("settings: a font this client lacks is replaced by its nearest neighbour", 
     view = w:openSettings().view
     check(view ~= nil, "the panel is built without a single font to borrow")
     eq(w:drain(), "")
-    eq(view.sampleNote.fontFile, "Fonts\\FRIZQT__.TTF")
-    eq(view.sampleNote.fontHeight, 10, "small text stays small")
+    eq(view.footer.fontFile, "Fonts\\FRIZQT__.TTF")
+    eq(view.footer.fontHeight, 10, "small text stays small")
     eq(view.tabs.spells.label.fontHeight, 12)
-    eq(view.inputs.none.fontFile, "Fonts\\FRIZQT__.TTF", "boxes to type in too")
+    eq(view.input.fontFile, "Fonts\\FRIZQT__.TTF", "boxes to type in too")
     eq(ns.Options.notes.fonts.GameFontNormal, "none")
     w:click(view.tabs.spells)
     eq(view.spells.rows[1].name:GetText(), "Battle Shout")
@@ -7464,7 +7525,7 @@ test("settings: on a smaller page of the Options window the whole panel is drawn
     check(640 * canvas.host.scale <= 500 and 600 * canvas.host.scale <= 450, "all of it is on the page")
     near(canvas.view.previews.none.button.width, 60,
         "the pretend buttons grow in the panel's units, so that they stay life-size on screen")
-    w:click(canvas.view.previews.none.zones.RIGHT)
+    w:click(canvas.view.zones.RIGHT)
     eq(ns.db.corner, "RIGHT")
 
     -- The Options window settles on another size while the panel is up.
@@ -7527,7 +7588,8 @@ panel("the tick box turns the icons off and on, like /se off and /se on", functi
     end
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil, "no icons, not even samples")
-    check(view.sampleNote:GetText():find("turned off", 1, true), "and the panel says why")
+    check(view.footer:GetText():find("turned off", 1, true), "and the panel says why")
+    check(view.off:GetText():find("stay bare", 1, true), "beside the tick box too")
 
     w:slash("on")
     eq(view.enable.ticked, true, "/se on ticks it again")
@@ -7578,7 +7640,9 @@ panel("picking when the icons appear", function(options)
     w:unhover(view.appear.buttons.combat)
 
     w:click(view.enable.frame)
-    near(view.appear.frame:GetAlpha(), 0.4, "dimmed while the icons are off")
+    near(view.appear.frame:GetAlpha(), 0.35, "dimmed while the icons are off")
+    w:click(view.appear.buttons.always)
+    eq(ns.db.appear, "group", "and a click on a choice changes nothing then")
     w:click(view.enable.frame)
     near(view.appear.frame:GetAlpha(), 1)
 
@@ -7598,22 +7662,26 @@ panel("picking on which skills the icons appear", function(options)
     local window = w.env.StatusEfficiencyOptions.view
     eq(view.usable.picked, "usable", "only on usable skills to begin with")
     eq(view.usable.buttons.usable.picked, true)
+    eq(view.usable.buttons.always.label:GetText(), "Every skill")
+    eq(view.usable.buttons.usable.label:GetText(), "Only skills you can use right now")
+    check(view.usableNote:GetText():find("short of rage", 1, true), "what does not count is said under the two")
 
     w:click(view.usable.buttons.always)
     eq(ns.db.usableOnly, false)
     eq(view.usable.picked, "always")
+    eq(view.usableNote:GetText(), "", "nothing to add to every skill")
     eq(window.usable.picked, "always", "the other copy follows")
     w:slash("usable on")
     eq(view.usable.picked, "usable", "/se usable moves it too")
 
     local title, lines = w:hover(view.usable.buttons.usable)
-    eq(title, "Only when the skill is usable")
+    eq(title, "Only skills you can use right now")
     check(lines[1]:find("too close", 1, true), "each choice explains itself: " .. tostring(lines[1]))
     check(lines[1]:find("cooldown", 1, true), "and says what does not count")
     w:unhover(view.usable.buttons.usable)
 
     w:click(view.enable.frame)
-    near(view.usable.frame:GetAlpha(), 0.4, "dimmed while the icons are off")
+    near(view.usable.frame:GetAlpha(), 0.35, "dimmed while the icons are off")
     w:click(view.enable.frame)
     near(view.usable.frame:GetAlpha(), 1)
 
@@ -7629,7 +7697,7 @@ panel("picking on which skills the icons appear", function(options)
     Clean(w)
 end)
 
-panel("sample icons show on the real buttons while the Appearance tab is open", function(options)
+panel("sample icons show on the real buttons while the Display or the Icons tab is open", function(options)
     local w = World(options)
     w:addButton("ActionButton1", 1, REND)
     w:addButton("ActionButton2", 2, HEROIC)
@@ -7644,12 +7712,18 @@ panel("sample icons show on the real buttons while the Appearance tab is open", 
     eq(w:icon("ActionButton2"), "partial", "on every button that holds a spell, with an icon of its own or not")
     eq(w:icon("ActionButton3"), "cross")
     eq(w:icon("ActionButton4"), nil, "an empty button stays empty")
-    check(view.sampleNote:GetText():find("sample icons", 1, true), "the panel says what they are")
+    check(view.footer:GetText():find("sample icons", 1, true), "the panel says what they are")
 
     w:click(view.tabs.spells)
     w:advance(0.2)
-    eq(w:icon("ActionButton1"), nil, "not while the Spells tab is up")
-    w:click(view.tabs.appearance)
+    eq(w:icon("ActionButton1"), nil, "not while the Skills tab is up")
+    w:click(view.tabs.icons)
+    w:advance(0.2)
+    eq(w:icon("ActionButton2"), "partial", "the Icons tab is about how they look too")
+    check(view.footer:GetText():find("sample icons", 1, true), "and says so")
+    w:click(view.tabs.spells)
+    w:advance(0.2)
+    w:click(view.tabs.display)
     w:advance(0.2)
     eq(w:icon("ActionButton2"), "partial")
 
@@ -7693,7 +7767,11 @@ panel("the preview shows all three icons life-size, where and as large as on the
         eq(preview.icon.path, ns.Icons.Texture(state.key), "with the icon for " .. state.key)
         eq(preview.icon.width, 16, "the size it is on the bars")
         eq(preview.icon.point[1], "TOPLEFT", "in the same spot")
-        eq(preview.caption:GetText(), state.title, "and the result's name under it")
+        eq(preview.caption:GetText(), state.title, "and the result's name beside it")
+        local title, lines = w:hover(preview.slot)
+        eq(title, state.title, "the mouse on it says what the result means")
+        eq(lines[1], state.detail)
+        w:unhover(preview.slot)
     end
     eq(view.previews.none.face.path, 130000 + SHOUT, "the pretend buttons wear spells from your own bars")
     eq(view.previews.some.face.path, 130000 + REND, "those with an icon first")
@@ -7703,8 +7781,6 @@ panel("the preview shows all three icons life-size, where and as large as on the
     w:slash("corner br")
     eq(view.previews.some.icon.width, 30)
     eq(view.previews.some.icon.point[1], "BOTTOMRIGHT")
-    eq(view.previews.all.zones.BOTTOMRIGHT.ghost.shown, false, "no dot under the icon")
-    eq(view.previews.all.zones.TOPLEFT.ghost.shown, true, "a dot on every other spot")
     Clean(w)
 end)
 
@@ -7736,20 +7812,43 @@ test("settings: the preview follows the size the action buttons are really drawn
     Clean(w)
 end)
 
-panel("clicking a spot on any pretend button moves the icon on every button", function(options)
+panel("nine squares say where the icon sits, and a click on one moves it on every button", function(options)
     local w, ns = Simple(options)
     local view = w:openSettings().view
     eq(w:overlay("ActionButton1").point[1], "TOPLEFT", "starts in the top left")
+    eq(view.zones.TOPLEFT.picked, true, "and that square is the one marked")
+    eq(view.where:GetText(), "Top left", "with its name beside the nine")
 
-    w:click(view.previews.all.zones.BOTTOMRIGHT)
+    w:click(view.zones.BOTTOMRIGHT)
     eq(ns.db.corner, "BOTTOMRIGHT")
     eq(w:overlay("ActionButton1").point[1], "BOTTOMRIGHT", "the real icon moved")
     eq(view.previews.none.icon.point[1], "BOTTOMRIGHT", "and so did all three previews")
     eq(view.previews.some.icon.point[1], "BOTTOMRIGHT")
+    eq(view.zones.BOTTOMRIGHT.picked, true)
+    eq(view.zones.TOPLEFT.picked, false, "one square is marked at a time")
+    eq(view.where:GetText(), "Bottom right")
 
-    w:click(view.previews.some.zones.TOP)
+    w:click(view.zones.TOP)
     eq(w:overlay("ActionButton1").point[1], "TOP", "edges work as well as corners")
-    eq(w:hover(view.previews.some.zones.CENTER), "Middle", "each spot says where it is")
+    eq(w:hover(view.zones.CENTER), "Middle", "each square says where it is")
+    w:unhover(view.zones.CENTER)
+
+    -- The squares are laid out like the button itself: three lines of three.
+    local count = 0
+    for position, zone in pairs(view.zones) do
+        count = count + 1
+        local _, _, _, x, y = zone:GetPoint(1)
+        eq(x, (zone.column - 1) * 22, position .. " is in its column")
+        eq(y, -(zone.row - 1) * 22, position .. " is on its line")
+    end
+    eq(count, 9)
+    eq(view.zones.TOPLEFT.row .. "," .. view.zones.TOPLEFT.column, "1,1")
+    eq(view.zones.RIGHT.row .. "," .. view.zones.RIGHT.column, "2,3")
+    eq(view.zones.BOTTOM.row .. "," .. view.zones.BOTTOM.column, "3,2")
+
+    w:slash("corner left")
+    eq(view.zones.LEFT.picked, true, "/se corner moves the mark too")
+    eq(view.where:GetText(), "Left")
     Clean(w)
 end)
 
@@ -7812,14 +7911,26 @@ test("settings: both copies of the panel stay in step", function()
     eq(inOptions.size.readout:GetText(), "23", "a click in one copy shows in the other")
     eq(inOptions.size.slider.widget:GetValue(), 23)
 
-    w:click(window.swatches.some.exclaim)
-    eq(inOptions.swatches.some.exclaim.ring.shown, true)
-    w:click(inOptions.previews.none.zones.LEFT)
+    w:click(inOptions.zones.LEFT)
     eq(window.previews.all.icon.point[1], "LEFT", "and the other way round")
+    eq(window.zones.LEFT.picked, true)
     w:click(inOptions.appear.buttons.combat)
     eq(window.appear.picked, "combat")
 
+    -- Each copy has its own tab open and its own result picked, and shows the
+    -- same settings on whatever that is.
+    w:click(Swatch(w, window, "some", "exclaim"))
+    w:click(inOptions.tabs.icons)
+    eq(inOptions.picked, "none", "the other copy has another result picked")
+    eq(inOptions.tiles.exclaim.ring.shown, false)
+    w:click(inOptions.results.some)
+    eq(inOptions.tiles.exclaim.ring.shown, true, "and shows the same icon in use for this one")
+    w:click(inOptions.tiles.star)
+    eq(window.tiles.star.ring.shown, true, "a click there shows here at once")
+    check(tostring(window.current.some.path):find("RaidTargetingIcon_1", 1, true), "in the result's own line too")
+
     w:slash("size auto")
+    w:click(window.tabs.display)
     eq(window.size.auto.ticked, true)
     eq(ns.db.size, 0)
     Clean(w)
@@ -7831,18 +7942,36 @@ panel("picking an icon changes what the buttons show", function(options)
     local view = w:openSettings().view
     w:advance(0.2)
     eq(w:icon("ActionButton1"), "check")
-    eq(view.swatches.none.check.ring.shown, true, "the icon in use is framed")
+    w:click(view.tabs.icons)
+    eq(view.picked, "none", "the first result is the one picked to begin with")
+    eq(view.results.none.picked, true)
+    eq(view.results.none.chosen:IsShown(), true, "its line is marked")
+    eq(view.results.all.chosen:IsShown(), false)
+    eq(view.offer:GetText(), "Icon for \"Worth casting\"", "and the icons under the three are for it")
+    eq(view.tiles.check.ring.shown, true, "the icon in use is framed")
 
-    w:click(view.swatches.none.greendot)
+    w:click(view.tiles.greendot)
     eq(ns.db.icons.none, "greendot")
     check(Art(w, "ActionButton1"):find("DotGreen.tga", 1, true), "the button shows the green dot straight away")
-    eq(view.swatches.none.greendot.ring.shown, true)
-    eq(view.swatches.none.check.ring.shown, false)
-    eq(view.swatches.all.cross.ring.shown, true, "the other results are untouched")
-    check(view.current.none.path:find("DotGreen.tga", 1, true), "the result's heading shows the icon in use")
-    check(view.previews.none.icon.path:find("DotGreen.tga", 1, true), "and so does the preview")
+    eq(view.tiles.greendot.ring.shown, true)
+    eq(view.tiles.check.ring.shown, false)
+    check(view.current.none.path:find("DotGreen.tga", 1, true), "the result's line shows the icon in use")
 
-    w:click(view.swatches.all.skull)
+    w:click(view.results.all)
+    eq(view.picked, "all")
+    eq(view.offer:GetText(), "Icon for \"No need to cast\"")
+    eq(view.results.all.picked, true)
+    eq(view.results.none.picked, false, "one result at a time")
+    eq(view.tiles.cross.ring.shown, true, "the other results are untouched")
+    eq(view.tiles.greendot.ring.shown, false, "the frame is on the icon of the result that is picked")
+    eq(w:hover(view.results.some), "Partly worth casting", "a result says what it is")
+    w:unhover(view.results.some)
+
+    w:click(view.tiles.skull)
+    eq(ns.db.icons.all, "skull")
+    w:click(view.tabs.display)
+    check(view.previews.none.icon.path:find("DotGreen.tga", 1, true), "the preview on the Display tab shows them too")
+    eq(view.previews.all.icon.path, SKULL)
     w:closeSettings()
     w:cast(REND)
     w:advance(0.5)
@@ -7853,30 +7982,39 @@ end)
 test("settings: the addon's ten icons are on one line and the game's eleven on the next", function()
     local w, ns = Simple()
     local view = w:openSettings().view
+    w:click(view.tabs.icons)
     local own, game = 0, 0
-    for _, state in ipairs(ns.Icons.STATES) do
-        local lineOne, lineTwo
-        for _, choice in ipairs(ns.Icons.CHOICES) do
-            local tile = view.swatches[state.key][choice.key]
-            check(tile, "missing tile " .. choice.key .. " for " .. state.key)
-            eq(tile.art.path, choice.texture)
-            local _, _, _, _, y = tile:GetPoint(1)
-            if choice.own then
-                own = own + 1
-                lineOne = lineOne or y
-                eq(y, lineOne, choice.key .. " is on the first line")
-            else
-                game = game + 1
-                lineTwo = lineTwo or y
-                eq(y, lineTwo, choice.key .. " is on the second line")
-            end
+    local lineOne, lineTwo
+    for _, choice in ipairs(ns.Icons.CHOICES) do
+        local tile = view.tiles[choice.key]
+        check(tile, "missing tile " .. choice.key)
+        eq(tile.art.path, choice.texture)
+        local _, _, _, _, y = tile:GetPoint(1)
+        if choice.own then
+            own = own + 1
+            lineOne = lineOne or y
+            eq(y, lineOne, choice.key .. " is on the first line")
+        else
+            game = game + 1
+            lineTwo = lineTwo or y
+            eq(y, lineTwo, choice.key .. " is on the second line")
         end
-        check(lineTwo < lineOne, "the game's icons sit under the addon's")
+    end
+    check(lineTwo < lineOne, "the game's icons sit under the addon's")
+    eq(own, 10, "the addon's own icons")
+    eq(game, 11, "the game's icons")
+    for _, state in ipairs(ns.Icons.STATES) do
         check(ns.Icons.Choice(state.default), "default for " .. state.key .. " exists")
     end
-    eq(own, 3 * 10, "the addon's own icons")
-    eq(game, 3 * 11, "the game's icons")
-    eq(w:hover(view.swatches.all.reddot), "Red dot", "each one says what it is")
+    eq(w:hover(view.tiles.reddot), "Red dot", "each one says what it is")
+    w:unhover(view.tiles.reddot)
+
+    -- One grid serves all three results: a click gives the icon to whichever is picked.
+    w:click(view.results.some)
+    w:click(view.tiles.reddot)
+    eq(ns.db.icons.some, "reddot")
+    eq(ns.db.icons.none, nil)
+    eq(ns.db.icons.all, nil)
     Clean(w)
 end)
 
@@ -7902,8 +8040,10 @@ end)
 panel("an icon set changes all three icons, and the set in use is marked", function(options)
     local w, ns = Simple(options)
     local view = w:openSettings().view
+    w:click(view.tabs.icons)
     eq(view.sets.marks.picked, true, "starts on the check, half circle and X")
     eq(view.sets.dots.picked, false)
+    eq(view.setName:GetText(), "Check, half circle and X", "the set in use is named beside the four")
 
     w:click(view.sets.dots)
     eq(ns.db.icons.none, "greendot")
@@ -7911,32 +8051,36 @@ panel("an icon set changes all three icons, and the set in use is marked", funct
     eq(ns.db.icons.all, "reddot")
     eq(view.sets.dots.picked, true)
     eq(view.sets.marks.picked, false)
+    eq(view.setName:GetText(), "Green, yellow and red dots")
     w:advance(0.2)
     check(Art(w, "ActionButton3"):find("DotRed.tga", 1, true), "the sample on the third button is the red dot")
 
-    w:click(view.swatches.some.star)
+    w:click(Swatch(w, view, "some", "star"))
     eq(view.sets.dots.picked, false, "a mix is no set")
+    eq(view.setName:GetText(), "A mix of your own.")
     w:click(view.sets.ready)
     eq(ns.db.icons.some, "waiting")
     eq(w:hover(view.sets.symbols), "Plus, exclamation mark and stop sign", "each set says what is in it")
+    w:unhover(view.sets.symbols)
     Clean(w)
 end)
 
 panel("two results that share an icon are pointed out", function(options)
     local w = Simple(options)
     local view = w:openSettings().view
+    w:click(view.tabs.icons)
     eq(view.clashes.some:IsShown(), false, "nothing to say to begin with")
 
-    w:click(view.swatches.some.check)
+    w:click(Swatch(w, view, "some", "check"))
     eq(view.clashes.some:IsShown(), true)
     eq(view.clashes.some:GetText(), "Same icon as \"Worth casting\"")
     eq(view.clashes.none:IsShown(), false, "only the later of the two says so")
-    w:click(view.swatches.all.check)
+    w:click(Swatch(w, view, "all", "check"))
     eq(view.clashes.all:GetText(), "Same icon as \"Worth casting\"")
 
-    w:click(view.swatches.some.hidden)
+    w:click(Swatch(w, view, "some", "hidden"))
     eq(view.clashes.some:IsShown(), false, "no icon clashes with nothing")
-    w:click(view.swatches.none.hidden)
+    w:click(Swatch(w, view, "none", "hidden"))
     eq(view.clashes.all:IsShown(), false)
     Clean(w)
 end)
@@ -7945,19 +8089,25 @@ panel("a result can be given no icon at all", function(options)
     options.combatAuras = "none"
     local w, ns = Simple(options)
     local view = w:openSettings().view
-    local title, lines = w:hover(view.swatches.all.hidden)
+    local hidden = Swatch(w, view, "all", "hidden")
+    local title, lines = w:hover(hidden)
     eq(title, "No icon")
     check(lines[1]:find("stay bare", 1, true))
+    w:unhover(hidden)
 
-    w:click(view.swatches.all.hidden)
+    w:click(hidden)
     eq(ns.db.icons.all, "hidden")
-    eq(view.swatches.all.hidden.ring.shown, true, "the bare tile is framed")
-    eq(view.swatches.all.cross.ring.shown, false)
-    eq(view.previews.all.icon.shown, false, "the pretend button is bare")
-    eq(view.current.all.shown, false)
+    eq(hidden.ring.shown, true, "the bare tile is framed")
+    eq(view.tiles.cross.ring.shown, false)
+    eq(view.current.all:IsShown(), false, "the result's line shows no icon")
+    eq(view.results.all.none:IsShown(), true, "but the mark that stands for none")
+    eq(view.results.none.none:IsShown(), false)
     w:advance(0.2)
-    eq(w:icon("ActionButton3"), nil, "and so is the sample for that result")
+    eq(w:icon("ActionButton3"), nil, "the sample for that result is bare too")
     eq(w:icon("ActionButton1"), "check", "the other results keep their icons")
+    w:click(view.tabs.display)
+    eq(view.previews.all.icon:IsShown(), false, "and so is the pretend button")
+    eq(view.previews.none.icon:IsShown(), true)
 
     w:closeSettings()
     w:cast(REND)
@@ -7979,22 +8129,29 @@ panel("a result can be given no icon at all", function(options)
     Clean(w)
 end)
 
-panel("the icons to pick from line up in one grid", function(options)
+panel("the icons to pick from line up in one grid, under the three results", function(options)
     local w, ns = Simple(options)
     local view = w:openSettings().view
-    for _, state in ipairs(ns.Icons.STATES) do
-        local tiles = view.swatches[state.key]
-        local first, last = tiles.check.point, tiles.skull.point
-        local hidden, custom = tiles[ns.Icons.HIDDEN].point, tiles.custom.point
-        eq(hidden[5], first[5], "\"no icon\" sits on the first line, with the addon's own icons")
-        eq(hidden[4], last[4], "in the column the second line ends in")
-        eq(custom[5], first[5], "your own texture comes after it")
-        eq(custom[4] - hidden[4], tiles.ring.point[4] - tiles.stop.point[4], "one step along")
-        local editor = view.editors[state.key]
-        eq(editor.point[5], first[5], "and its box opens beside it")
-        check(editor.point[4] >= custom[4] + tiles.custom.width, "clear of the tile")
-        check(editor.point[4] + editor.width <= 624, "and inside the page")
-    end
+    w:click(view.tabs.icons)
+    local tiles = view.tiles
+    local first, last = tiles.check.point, tiles.skull.point
+    local hidden, custom = tiles[ns.Icons.HIDDEN].point, tiles.custom.point
+    eq(hidden[5], first[5], "\"no icon\" sits on the first line, with the addon's own icons")
+    eq(hidden[4], last[4], "in the column the second line ends in")
+    eq(custom[5], first[5], "your own texture comes after it")
+    eq(custom[4] - hidden[4], tiles.ring.point[4] - tiles.stop.point[4], "one step along")
+    check(custom[4] + tiles.custom.width <= 624, "and the line ends inside the page")
+
+    local lowest = view.results.all
+    check(view.offer.point[5] < lowest.point[5] - lowest.height, "what the grid is for is said under the last result")
+    check(first[5] <= view.offer.point[5] - 16, "and the grid starts under that")
+
+    -- The box for a texture of your own opens under the grid, clear of it.
+    local editor = view.editor
+    check(editor.point[5] <= last[5] - tiles.skull.height, "under the second line")
+    eq(editor.point[4], first[4], "starting where the grid does")
+    check(editor.point[4] + editor.width <= 624, "and inside the page")
+    check(editor.point[5] - editor.height >= -(514 - 34), "above the strip at the bottom")
     Clean(w)
 end)
 
@@ -8002,10 +8159,14 @@ panel("your own texture: the tile opens a box that explains itself", function(op
     options.missingTextures = { [424242] = true }
     local w, ns = Simple(options)
     local view = w:openSettings().view
-    local editor, box = view.editors.none, view.inputs.none
+    w:click(view.tabs.icons)
+    local editor, box = view.editor, view.input
     eq(editor:IsShown(), false, "the box stays out of the way until it is asked for")
 
-    w:click(view.swatches.none.custom)
+    eq(view.tiles.custom.art:IsShown(), false, "its tile shows three dots until there is a texture")
+    eq(view.tiles.custom.dots:IsShown(), true)
+
+    w:click(view.tiles.custom)
     eq(editor:IsShown(), true)
     eq(box:HasFocus(), true, "ready to type into")
     eq(editor.note:GetText(), "A file ID or a path, then Enter.")
@@ -8022,9 +8183,12 @@ panel("your own texture: the tile opens a box that explains itself", function(op
     eq(ns.db.custom.none, 136243)
     w:advance(0.2)
     eq(Art(w, "ActionButton1"), 136243, "the button shows the file ID")
-    eq(view.swatches.none.check.ring.shown, false, "no stock icon is framed")
-    eq(view.swatches.none.custom.ring.shown, true, "the tile for your own is")
-    eq(view.swatches.none.custom.art.path, 136243, "and shows the texture")
+    eq(view.tiles.check.ring.shown, false, "no stock icon is framed")
+    eq(view.tiles.custom.ring.shown, true, "the tile for your own is")
+    eq(view.tiles.custom.art.path, 136243, "and shows the texture")
+    eq(view.tiles.custom.art:IsShown(), true)
+    eq(view.tiles.custom.dots:IsShown(), false, "in place of the three dots")
+    eq(view.current.none.path, 136243, "and so does the result's line")
     eq(box:GetText(), "136243")
     check(editor.note:GetText():find("In use", 1, true), "the box says how to undo it")
 
@@ -8038,76 +8202,220 @@ panel("your own texture: the tile opens a box that explains itself", function(op
     w:openSettings()
     eq(editor:IsShown(), true, "the box stays open while the result uses it")
 
+    -- The box belongs to the result that is picked.
+    w:click(view.results.some)
+    eq(editor:IsShown(), false, "another result has no texture of its own")
+    eq(view.tiles.custom.art:IsShown(), false, "and the tile is back to its dots for it")
+    eq(view.tiles.custom.dots:IsShown(), true)
+    w:click(view.results.none)
+    eq(editor:IsShown(), true)
+    eq(box:GetText(), "424242")
+
     w:type(box, "")
     eq(ns.db.icons.none, nil, "emptying the box goes back to the usual icon")
     eq(editor:IsShown(), false)
-    eq(view.swatches.none.check.ring.shown, true)
+    eq(view.tiles.check.ring.shown, true)
     w:advance(0.2)
     eq(w:icon("ActionButton1"), "check")
 
-    w:click(view.swatches.some.custom)
-    eq(view.editors.some:IsShown(), true)
-    w:escape(view.inputs.some)
-    eq(view.editors.some:IsShown(), false, "Escape puts away a box that is not in use")
-    w:click(view.swatches.some.custom)
-    w:click(view.swatches.some.ring)
-    eq(view.editors.some:IsShown(), false, "and so does picking another icon")
+    w:click(view.results.some)
+    w:click(view.tiles.custom)
+    eq(editor:IsShown(), true)
+    w:escape(box)
+    eq(editor:IsShown(), false, "Escape puts away a box that is not in use")
+    w:click(view.tiles.custom)
+    w:click(view.tiles.ring)
+    eq(editor:IsShown(), false, "and so does picking another icon")
+    w:click(view.tiles.custom)
+    w:type(box, "nonsense")
+    w:click(view.results.all)
+    eq(editor:IsShown(), false, "or another result")
+    eq(box:HasFocus(), false)
+    w:click(view.results.some)
+    eq(editor:IsShown(), false, "and coming back to the first one does not bring the box back")
+    w:click(view.results.all)
+    w:click(view.tiles.custom)
+    eq(editor.note:GetText(), "A file ID or a path, then Enter.", "which starts with a clean box, not the last one's complaint")
+
+    -- Picking a result that has a texture of its own ends the typing for another.
+    w:type(box, "136243")
+    eq(ns.db.custom.all, 136243)
+    w:click(view.results.some)
+    w:click(view.tiles.custom)
+    box:SetText("half typed")
+    eq(box:HasFocus(), true)
+    w:click(view.results.all)
+    eq(editor:IsShown(), true, "its own box shows")
+    eq(box:HasFocus(), false, "what was being typed for the other result is put away")
+    eq(box:GetText(), "136243", "and the box holds this result's texture")
+    check(editor.note:GetText():find("In use", 1, true))
+    eq(ns.db.icons.some, "ring", "the other one keeps the icon it had")
+    w:click(view.results.some)
+    w:click(view.tiles.custom)
+    w:type(box, "nonsense")
+    check(editor.note:GetText():find("Not a texture", 1, true))
+    w:click(view.results.all)
+    check(editor.note:GetText():find("In use", 1, true), "and neither does a complaint about the other one stay up")
     Clean(w)
 end)
 
 test("settings: a client that does not say whether a texture exists is asked another way", function()
     local w = Simple({ quietTextures = true, missingTextures = { [424242] = true } })
     local view = w:openSettings().view
-    w:click(view.swatches.none.custom)
-    w:type(view.inputs.none, "136243")
-    check(view.editors.none.note:GetText():find("In use", 1, true), "one that exists")
-    w:type(view.inputs.none, "424242")
-    check(view.editors.none.note:GetText():find("The game has no texture there", 1, true), "one that does not")
+    w:click(Swatch(w, view, "none", "custom"))
+    w:type(view.input, "136243")
+    check(view.editor.note:GetText():find("In use", 1, true), "one that exists")
+    w:type(view.input, "424242")
+    check(view.editor.note:GetText():find("The game has no texture there", 1, true), "one that does not")
     Clean(w)
 end)
 
-panel("the reset button asks first, and restores position, size and icons only", function(options)
+panel("Defaults asks first, and puts back the tab that is open and nothing else", function(options)
     local w, ns = Simple(options)
     local view = w:openSettings().view
     w:slash("track heroic strike")
     w:slash("when combat")
-    w:click(view.previews.none.zones.CENTER)
+    w:slash("usable off")
+    w:click(view.zones.CENTER)
     w:slide(view.size.slider.widget, 20)
-    w:click(view.swatches.some.ring)
-    w:click(view.swatches.all.custom)
-    w:type(view.inputs.all, "136243")
+    w:click(Swatch(w, view, "some", "ring"))
+    w:click(Swatch(w, view, "all", "custom"))
+    w:type(view.input, "136243")
+    local title, lines = w:hover(view.defaults)
+    eq(title, "Defaults")
+    check(lines[1]:find("the tab that is open", 1, true), "the button says how far it goes: " .. tostring(lines[1]))
+    w:unhover(view.defaults)
 
-    w:click(view.reset)
+    -- On the Icons tab it is about the three icons.
+    w:click(view.defaults)
     eq(view.confirm.frame:IsShown(), true, "it asks first")
-    eq(view.reset:IsShown(), false)
-    eq(ns.db.corner, "CENTER", "and has changed nothing yet")
+    eq(view.question:GetText(), "Put the three icons back to how they started?")
+    eq(view.footer:IsShown(), false, "in place of the line at the bottom")
+    eq(ns.db.icons.some, "ring", "and has changed nothing yet")
     w:click(view.confirm.no)
     eq(view.confirm.frame:IsShown(), false)
-    eq(view.reset:IsShown(), true)
-    eq(ns.db.size, 20, "Cancel leaves everything alone")
+    eq(view.footer:IsShown(), true)
+    eq(ns.db.custom.all, 136243, "Cancel leaves everything alone")
 
-    w:click(view.reset)
+    w:click(view.defaults)
+    w:click(view.confirm.yes)
+    eq(next(ns.db.icons), nil)
+    eq(next(ns.db.custom), nil)
+    eq(view.editor:IsShown(), false)
+    eq(view.confirm.frame:IsShown(), false)
+    eq(view.sets.marks.picked, true)
+    eq(ns.db.corner, "CENTER", "the Display tab is left alone")
+    eq(ns.db.size, 20)
+    eq(ns.db.appear, "combat")
+    eq(ns.db.usableOnly, false)
+    check(ns.db.spells["Heroic Strike"] ~= nil, "and so are the spells")
+
+    -- On the Display tab it is about everything on that tab.
+    w:click(view.tabs.display)
+    w:click(view.enable.frame)
+    eq(ns.db.enabled, false)
+    w:click(view.defaults)
+    eq(view.question:GetText(), "Put everything on the Display tab back to how it started?")
     w:click(view.confirm.yes)
     eq(ns.db.corner, "TOPLEFT")
     eq(ns.db.size, 0)
-    eq(view.size.auto.ticked, true)
-    eq(next(ns.db.icons), nil)
-    eq(next(ns.db.custom), nil)
-    eq(view.editors.all:IsShown(), false)
-    eq(view.confirm.frame:IsShown(), false)
-    eq(view.reset:IsShown(), true)
-    check(ns.db.spells["Heroic Strike"] ~= nil, "spell choices are left alone")
-    eq(ns.db.appear, "combat", "and so is when the icons appear")
+    eq(ns.db.appear, "group")
+    eq(ns.db.usableOnly, true)
     eq(ns.db.enabled, true)
+    eq(view.size.auto.ticked, true)
+    eq(view.enable.ticked, true)
+    eq(view.appear.picked, "group")
+    eq(view.usable.picked, "usable")
+    eq(view.zones.TOPLEFT.picked, true)
+    check(ns.db.spells["Heroic Strike"] ~= nil, "spell choices are still left alone")
 
-    w:click(view.reset)
+    -- A question that is left unanswered goes away.
+    w:click(view.zones.RIGHT)
+    w:click(view.defaults)
     w:closeSettings()
     w:openSettings()
     eq(view.confirm.frame:IsShown(), false, "closing the panel puts the question away")
-    w:click(view.reset)
+    w:click(view.defaults)
     w:click(view.tabs.spells)
-    w:click(view.tabs.appearance)
     eq(view.confirm.frame:IsShown(), false, "and so does leaving the tab")
+    eq(view.footer:IsShown(), true)
+    w:click(view.tabs.display)
+    eq(view.confirm.frame:IsShown(), false)
+    eq(ns.db.corner, "RIGHT", "neither is taken for a yes")
+    Clean(w)
+end)
+
+test("settings: what Defaults puts back on the Display tab is what a new install starts with", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    local ns = w:install()
+    local count = 0
+    for key, value in pairs(ns.Options.DEFAULTS) do
+        count = count + 1
+        eq(ns.db[key], value, "a new install's " .. key)
+    end
+    eq(count, 5, "whether, when, on which skills, where and how large")
+    Clean(w)
+end)
+
+panel("Defaults on the Skills tab forgets your own choices for every skill, and nothing the addon learned", function(options)
+    local function Copy(value)
+        if type(value) ~= "table" then
+            return value
+        end
+        local copy = {}
+        for key, inner in pairs(value) do
+            copy[key] = Copy(inner)
+        end
+        return copy
+    end
+    local function Same(a, b)
+        if type(a) ~= "table" or type(b) ~= "table" then
+            return a == b
+        end
+        for key, value in pairs(a) do
+            if not Same(value, b[key]) then
+                return false
+            end
+        end
+        for key in pairs(b) do
+            if a[key] == nil then
+                return false
+            end
+        end
+        return true
+    end
+
+    local w, ns = Simple(options)
+    w:cast(REND)
+    w:advance(2)
+    check(next(ns.db.learned) ~= nil, "the addon has learned something in play")
+    w:slash("track heroic strike")
+    w:slash("duration rend 30")
+    w:slash("ignore battle shout")
+    ns.db.spells["Mortal Strike"] = { track = true } -- a choice kept from when it was on the bars
+    w:click(Swatch(w, w:openSettings().view, "all", "skull"))
+    local view = w:openSettings().view
+    w:click(view.tabs.spells)
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "check", "Heroic Strike has an icon because you said so")
+    eq(w:icon("ActionButton3"), nil, "and Battle Shout has none")
+    local learned = Copy(ns.db.learned)
+
+    w:click(view.defaults)
+    eq(view.question:GetText(), "Forget your own choices for every skill?")
+    check(ns.db.spells.Rend ~= nil, "it asks first")
+    w:click(view.confirm.yes)
+    eq(next(ns.db.spells), nil, "every choice of yours is gone, also for a skill no longer on the bars")
+    check(Same(ns.db.learned, learned), "what the addon learned in play is kept")
+    eq(ns.db.icons.all, "skull", "and the other tabs are left alone")
+    eq(view.pane.show.picked, "auto")
+    eq(view.pane.resetNote:GetText(), "Nothing changed: the addon decides.")
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), nil, "Heroic Strike is back to having no icon")
+    eq(w:icon("ActionButton3"), "check", "and Battle Shout to having one")
+    check(w:icon("ActionButton1") ~= nil, "Rend, which the addon was following, is still followed")
+    eq(view.footer:GetText(), "3 skills on your bars, 2 with an icon.")
     Clean(w)
 end)
 
@@ -8117,7 +8425,7 @@ test("/se options opens a window of its own, on a tab if one is named", function
     local window = w.env.StatusEfficiencyOptions
     check(window and window:IsShown(), "the window is showing")
     eq(w.env.UISpecialFrames[1], "StatusEfficiencyOptions", "Escape closes it")
-    eq(window.view.tab, "appearance")
+    eq(window.view.tab, "display")
 
     w:slash("options")
     eq(window:IsShown(), false, "the command closes it again")
@@ -8127,17 +8435,33 @@ test("/se options opens a window of its own, on a tab if one is named", function
     eq(window:IsShown(), true, "naming a tab never closes it")
     eq(window.view.tab, "spells")
     eq(window.view.pages.spells:IsVisible(), true)
-    eq(window.view.pages.appearance:IsVisible(), false)
+    eq(window.view.pages.display:IsVisible(), false)
     eq(window.view.spells.rows[1].name:GetText(), "Battle Shout", "and the tab is filled in")
+    eq(window.view.pane.name:GetText(), "Battle Shout")
 
     w:click(window.close)
     eq(window:IsShown(), false, "the X closes it")
+    w:slash("options icons")
+    eq(window:IsShown(), true)
+    eq(window.view.tab, "icons")
+    eq(window.view.pages.icons:IsVisible(), true)
+    eq(window.view.offer:GetText(), "Icon for \"Worth casting\"")
+    w:slash("options display")
+    eq(window.view.tab, "display")
+    w:slash("options skills")
+    eq(window.view.tab, "spells", "the third tab by the name on it")
+    w:slash("options display")
+    w:slash("options spells")
+    eq(window.view.tab, "spells", "and by the name it had before")
+    w:slash("options icon")
+    eq(window.view.tab, "icons", "near enough is good enough")
     w:slash("options appearance")
     eq(window:IsShown(), true)
-    eq(window.view.tab, "appearance")
+    eq(window.view.tab, "display", "the name the first tab had before there were three still opens it")
     w:click(window.view.tabs.spells)
     eq(window.view.tabs.spells.picked, true)
-    eq(window.view.tabs.appearance.picked, false)
+    eq(window.view.tabs.display.picked, false)
+    eq(window.view.tabs.icons.picked, false)
     Clean(w)
 end)
 
@@ -8182,55 +8506,139 @@ end)
 test("settings: each of the three results says what it means, for an effect that stacks too", function()
     local w = Simple()
     local view = w:openSettings().view
+    w:click(view.tabs.icons)
     eq(view.names.none:GetText(), "Worth casting")
-    eq(view.details.none:GetText(), "Nothing it would land on has the effect yet.")
+    eq(view.details.none:GetText(), "Nothing it would land on has the full effect yet.")
     eq(view.names.some:GetText(), "Partly worth casting")
-    eq(view.details.some:GetText(), "Some enemies have the effect, or it can still stack higher.")
+    eq(view.details.some:GetText(), "Some of what it would land on already has the full effect.")
     eq(view.names.all:GetText(), "No need to cast")
-    eq(view.details.all:GetText(), "Everything it would land on already has the effect.")
+    eq(view.details.all:GetText(), "Everything it would land on already has the full effect.")
     Clean(w)
 end)
 
 --------------------------------------------------------------------------------
--- The settings panel: the Spells tab
+-- The settings panel: the Skills tab
 --------------------------------------------------------------------------------
 
-panel("the Spells tab lists every spell on the bars and how it is treated", function(options)
-    local w = Simple(options)
+--- Picks a spell in the list of the Skills tab with a click on its line, and
+--- returns the pane beside the list, which then shows it, and the line.
+local function Pane(w, view, name)
+    if view.tab ~= "spells" then
+        w:click(view.tabs.spells)
+    end
+    for _, row in ipairs(view.spells.rows) do
+        if row:IsShown() and row.name:GetText() == name then
+            w:click(row)
+            eq(view.pane.name:GetText(), name, "the pane shows the spell that was clicked")
+            eq(row.selected, true, "and its line is marked")
+            return view.pane, row
+        end
+    end
+    error("the Skills tab has no line for " .. name, 2)
+end
+
+--- What a control says when the mouse is on it: its title and its sentence.
+local function Says(w, widget)
+    local title, lines = w:hover(widget)
+    w:unhover(widget)
+    return title, lines and lines[1] or ""
+end
+
+panel("the Skills tab lists every spell on the bars, and shows the one that is picked beside the list", function(options)
+    local w, ns = Simple(options)
     local view = w:openSettings().view
     w:click(view.tabs.spells)
-    local rows = view.spells.rows
+    local rows, pane = view.spells.rows, view.pane
     eq(view.tab, "spells")
     eq(view.tabs.spells.picked, true)
     eq(rows[1].name:GetText(), "Battle Shout", "spells with an icon come first")
     eq(rows[2].name:GetText(), "Rend")
     eq(rows[3].name:GetText(), "Heroic Strike", "then the rest")
-    eq(rows[4]:IsShown(), false, "and no more rows than spells")
-    eq(view.spells.count:GetText(), "3 spells on your bars, 2 with an icon.")
+    eq(rows[4]:IsShown(), false, "and no more lines than spells")
+    eq(view.footer:GetText(), "3 skills on your bars, 2 with an icon.")
     eq(view.spells.bar:IsShown(), false, "nothing to scroll")
 
-    eq(rows[1].show.picked, "auto")
-    eq(rows[1].on.picked, "self", "Battle Shout is judged on you")
-    eq(rows[1].lasts:GetText(), "2 min")
-    eq(rows[1].why:GetText(), "tooltip mentions a duration")
+    -- Each line: the skill's own picture, its name, and how it is treated in a few words.
     eq(rows[1].icon.path, 130000 + SHOUT, "with the spell's own picture")
-    eq(rows[2].on.picked, "target", "Rend on your target")
-    eq(rows[2].lasts:GetText(), "21 s")
-    eq(rows[3].show.picked, "auto")
-    eq(rows[3].on.frame:IsShown(), false, "a spell with no icon has nobody to be judged on")
-    eq(rows[3].lasts:IsShown(), false, "and no duration")
-    eq(rows[3].why:GetText(), "not a status effect")
-    eq(rows[3].icon.desaturated, true, "and is greyed out")
+    eq(rows[1].status:GetText(), "On you, 2 min")
+    eq(rows[2].status:GetText(), "Your target, 21 s")
+    eq(rows[3].status:GetText(), "No icon")
+    eq(rows[3].icon.path, 130000 + HEROIC)
+    eq(rows[3].icon.desaturated, true, "a spell with no icon is greyed out")
+    eq(rows[1].icon.desaturated, false)
 
-    local title, lines = w:hover(rows[3].whyArea)
+    -- The first of the list is picked to begin with, and the pane is about it.
+    eq(rows[1].selected, true)
+    eq(rows[2].selected, false)
+    eq(pane:IsShown(), true)
+    eq(pane.name:GetText(), "Battle Shout")
+    eq(pane.icon.path, 130000 + SHOUT)
+    eq(pane.summary:GetText(), "On you, 2 min")
+    eq(pane.show.picked, "auto")
+    eq(pane.why:GetText(), "Cast on you or friends, and its tooltip gives a duration.")
+    eq(pane.on.picked, "self", "Battle Shout is judged on you")
+    eq(pane.onNote:GetText(), "You, or a friend you have targeted.")
+    eq(pane.lasts:GetText(), "2 min")
+    eq(pane.lastsNote:GetText(), "From the tooltip.")
+
+    w:click(rows[2])
+    eq(rows[2].selected, true)
+    eq(rows[1].selected, false, "one at a time")
+    eq(pane.name:GetText(), "Rend")
+    eq(pane.icon.path, 130000 + REND)
+    eq(pane.on.picked, "target", "Rend on your target")
+    eq(pane.onNote:GetText(), "The enemy you have targeted.")
+    eq(pane.lasts:GetText(), "21 s")
+
+    -- A spell with no icon: the rest of the pane is greyed out, and says why.
+    w:click(rows[3])
+    eq(pane.name:GetText(), "Heroic Strike")
+    eq(pane.summary:GetText(), "No icon")
+    eq(pane.show.picked, "auto")
+    eq(pane.why:GetText(), "It does not look like it leaves a status effect.")
+    eq(pane.on.picked, nil, "a spell with no icon has nobody to be judged on")
+    eq(pane.on.enabled, false)
+    near(pane.on.frame:GetAlpha(), 0.35, "so the rest is greyed out")
+    eq(pane.onNote:GetText(), "The rest only matters for a skill that has an icon.", "and the pane says why")
+    eq(pane.lasts:GetText(), "", "it has no duration")
+    eq(pane.lasts:IsEnabled(), false)
+    eq(pane.stacks:IsEnabled(), false)
+    eq(pane.shared.enabled, false)
+    near(pane.shared.frame:GetAlpha(), 0.35, "the tick box is drawn fainter")
+    near(pane.shared.label:GetAlpha(), 0.35, "and so are the words beside it")
+    w:click(pane.on.buttons.all)
+    eq(ns.db.spells["Heroic Strike"], nil, "a click on what is greyed out does nothing")
+
+    local title, says = Says(w, pane.whyArea)
     eq(title, "Heroic Strike")
-    check(lines[1]:find("Pick Always if it does", 1, true), "the reason is spelled out on hover: " .. tostring(lines[1]))
-    title, lines = w:hover(rows[2].on.buttons.all)
-    eq(title, "A debuff on every enemy in the fight")
+    check(says:find("Pick Always if it does", 1, true), "the reason is spelled out on hover: " .. says)
+    title, says = Says(w, pane.showArea)
+    eq(title, "Show an icon")
+    check(says:find("Auto lets the addon decide", 1, true), "and so is the setting itself: " .. says)
+    w:click(rows[2])
+    eq(Says(w, pane.on.buttons.all), "A debuff on every enemy in the fight")
+
+    -- The spell that is picked stays picked while the tab is away.
+    w:click(view.tabs.display)
+    w:click(view.tabs.spells)
+    eq(pane.name:GetText(), "Rend")
+    eq(rows[2].selected, true)
     Clean(w)
 end)
 
-panel("Spells tab: Auto, Always and Never", function(options)
+test("settings: when the spell that is picked leaves the bars, the first of the list is picked instead", function()
+    local w = Simple()
+    local view = w:openSettings().view
+    local pane = Pane(w, view, "Rend")
+    w:addButton("ActionButton1", 1, nil) -- Rend is dragged off the bar
+    w:advance(8)
+    eq(view.footer:GetText(), "2 skills on your bars, 1 with an icon.")
+    eq(pane.name:GetText(), "Battle Shout")
+    eq(view.spells.rows[1].selected, true)
+    Clean(w)
+end)
+
+panel("Skills tab: Auto, Always and Never", function(options)
     local w, ns = Simple(options)
     local view = w:openSettings().view
     w:click(view.tabs.spells)
@@ -8238,54 +8646,72 @@ panel("Spells tab: Auto, Always and Never", function(options)
     local rows = view.spells.rows
     eq(w:icon("ActionButton2"), nil, "Heroic Strike has no icon")
 
-    w:click(rows[3].show.buttons.always)
+    local pane = Pane(w, view, "Heroic Strike")
+    w:click(pane.show.buttons.always)
     eq(ns.db.spells["Heroic Strike"].track, true)
     w:advance(0.5)
     eq(w:icon("ActionButton2"), "check", "now it has")
-    eq(rows[3].name:GetText(), "Heroic Strike", "the row stays where it is while the tab is open")
-    eq(rows[3].show.picked, "always")
-    eq(rows[3].on.picked, "target")
-    eq(rows[3].why:GetText(), "you turned it on")
-    eq(view.spells.count:GetText(), "3 spells on your bars, 3 with an icon.")
+    eq(rows[3].name:GetText(), "Heroic Strike", "the line stays where it is while the tab is open")
+    check(rows[3].status:GetText():find("^Your target, "), "and says who it is now judged on: " .. rows[3].status:GetText())
+    eq(rows[3].icon.desaturated, false)
+    eq(pane.show.picked, "always")
+    eq(pane.on.picked, "target")
+    eq(pane.on.enabled, true, "the rest of the pane comes to life")
+    near(pane.on.frame:GetAlpha(), 1)
+    eq(pane.shared.enabled, true)
+    near(pane.shared.frame:GetAlpha(), 1, "the tick box with it")
+    near(pane.shared.label:GetAlpha(), 1)
+    eq(pane.why:GetText(), "You chose Always.")
+    eq(view.footer:GetText(), "3 skills on your bars, 3 with an icon, 1 changed by you.",
+        "the line at the bottom counts the skills that carry a choice of yours")
 
-    w:click(rows[2].show.buttons.never)
+    pane = Pane(w, view, "Rend")
+    w:click(pane.show.buttons.never)
     eq(ns.db.spells.Rend.track, false)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), nil, "Rend lost its icon")
-    eq(rows[2].show.picked, "never")
-    eq(rows[2].why:GetText(), "you turned it off")
-    eq(rows[2].on.frame:IsShown(), false)
+    eq(pane.show.picked, "never")
+    eq(pane.why:GetText(), "You chose Never.")
+    eq(pane.on.enabled, false)
+    eq(rows[2].status:GetText(), "No icon")
 
-    w:click(rows[2].show.buttons.auto)
+    w:click(pane.show.buttons.auto)
     eq(ns.db.spells.Rend, nil, "back to automatic leaves nothing behind")
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "check")
+    w:click(Pane(w, view, "Heroic Strike").show.buttons.auto)
+    eq(view.footer:GetText(), "3 skills on your bars, 2 with an icon.", "and nothing to count")
 
+    pane = Pane(w, view, "Battle Shout")
     w:slash("ignore battle shout")
-    eq(rows[1].show.picked, "never", "/se ignore shows here straight away")
+    eq(pane.show.picked, "never", "/se ignore shows here straight away")
     w:slash("auto battle shout")
-    eq(rows[1].show.picked, "auto")
+    eq(pane.show.picked, "auto")
 
-    -- Opened again, the list is sorted afresh.
-    w:click(rows[2].show.buttons.never)
-    w:click(view.tabs.appearance)
+    -- Opened again, the list is sorted afresh, and the spell that was picked still is.
+    pane = Pane(w, view, "Rend")
+    w:click(pane.show.buttons.never)
+    w:click(view.tabs.display)
     w:click(view.tabs.spells)
     eq(rows[1].name:GetText(), "Battle Shout")
     eq(rows[2].name:GetText(), "Heroic Strike", "the spell that gained an icon moved up")
     eq(rows[3].name:GetText(), "Rend", "and the one that lost its icon moved down")
+    eq(rows[3].selected, true, "still picked, in its new place")
+    eq(pane.name:GetText(), "Rend")
     Clean(w)
 end)
 
-panel("Spells tab: who a spell is judged on, and how long its effect lasts", function(options)
+panel("Skills tab: who a spell is judged on, and how long its effect lasts", function(options)
     local w, ns = Simple(options)
     local view = w:openSettings().view
-    w:click(view.tabs.spells)
-    local rend = view.spells.rows[2]
-    eq(rend.name:GetText(), "Rend")
+    local rend, row = Pane(w, view, "Rend")
 
     w:click(rend.on.buttons.all)
     eq(ns.db.spells.Rend.aoe, true, "every enemy in the fight")
     eq(rend.on.picked, "all")
+    eq(rend.onNote:GetText(), "Every enemy in the fight: some may have it, some not.")
+    eq(row.status:GetText(), "All enemies, 21 s", "the line in the list follows")
+    eq(rend.summary:GetText(), "All enemies, 21 s", "and so does the head of the pane")
     w:click(rend.on.buttons.target)
     eq(ns.db.spells.Rend.aoe, false, "your target only")
     w:click(rend.on.buttons.self)
@@ -8297,6 +8723,7 @@ panel("Spells tab: who a spell is judged on, and how long its effect lasts", fun
     eq(rend.on.picked, "target")
 
     eq(rend.lasts:GetText(), "21 s")
+    eq(rend.lastsNote:GetText(), "From the tooltip.", "where the figure comes from is said beside the box")
     rend.lasts:SetFocus()
     eq(rend.lasts:GetText(), "21", "typing starts from the bare number")
     w:type(rend.lasts, "21")
@@ -8306,6 +8733,7 @@ panel("Spells tab: who a spell is judged on, and how long its effect lasts", fun
     w:type(rend.lasts, "30")
     eq(ns.db.spells.Rend.duration, 30)
     eq(rend.lasts:GetText(), "30 s")
+    eq(rend.lastsNote:GetText(), "You set this.")
     eq(rend.lasts:HasFocus(), false)
     w:type(rend.lasts, "2 min")
     eq(ns.db.spells.Rend.duration, 120, "minutes are understood")
@@ -8314,41 +8742,73 @@ panel("Spells tab: who a spell is judged on, and how long its effect lasts", fun
     eq(ns.db.spells.Rend.duration, 120, "Enter on a figure of your own leaves that yours")
 
     w:type(rend.lasts, "soon")
-    check(rend.why:GetText():find("Type seconds", 1, true), "a bad entry is explained in the row")
+    check(rend.lastsNote:GetText():find("Type seconds", 1, true), "a bad entry is explained beside the box")
     eq(ns.db.spells.Rend.duration, 120, "and changes nothing")
+    eq(rend.lasts:HasFocus(), true, "the box stays open to put it right")
     w:type(rend.lasts, "99999")
-    check(rend.why:GetText():find("from 1 to 3600", 1, true), "so is one that is out of range")
+    check(rend.lastsNote:GetText():find("from 1 to 3600", 1, true), "so is one that is out of range")
     w:escape(rend.lasts)
-    eq(rend.why:GetText(), "you turned it on", "Escape drops the complaint")
+    eq(rend.lastsNote:GetText(), "You set this.", "Escape drops the complaint")
     eq(rend.lasts:GetText(), "2 min", "and the typing")
 
     w:type(rend.lasts, "")
     eq(ns.db.spells.Rend.duration, nil, "emptying the box lets the addon work it out again")
     eq(rend.lasts:GetText(), "21 s")
-    local title, lines = w:hover(rend.lasts)
+    local title, says = Says(w, rend.lasts)
     eq(title, "How long the effect lasts")
-    check(lines[1]:find("tooltip", 1, true), "the box says where the duration comes from: " .. tostring(lines[1]))
+    check(says:find("tooltip", 1, true), "the box says where the duration comes from: " .. says)
+
+    -- A complaint does not follow you to another spell.
+    w:type(rend.lasts, "soon")
+    local shout = Pane(w, view, "Battle Shout")
+    eq(shout.lastsNote:GetText(), "From the tooltip.")
+    eq(shout.lasts:HasFocus(), false)
+    eq(shout.lasts:GetText(), "2 min")
     Clean(w)
 end)
 
---- The row of the Spells tab that shows a spell.
-local function Row(view, name)
-    for _, row in ipairs(view.spells.rows) do
-        if row:IsShown() and row.name:GetText() == name then
-            return row
-        end
-    end
-    error("the Spells tab has no row for " .. name, 2)
-end
+panel("Skills tab: Reset this skill forgets your own choices for one skill", function(options)
+    local w, ns = Simple(options)
+    local view = w:openSettings().view
+    local pane = Pane(w, view, "Rend")
+    eq(pane.reset:IsEnabled(), false, "nothing to forget to begin with")
+    eq(pane.resetNote:GetText(), "Nothing changed: the addon decides.", "and the pane says why the button is greyed")
 
---- What a control of a row says when the mouse is on it: its title and its sentence.
-local function Says(w, widget)
-    local title, lines = w:hover(widget)
-    w:unhover(widget)
-    return title, lines and lines[1] or ""
-end
+    w:click(pane.on.buttons.all)
+    w:type(pane.lasts, "30")
+    eq(pane.reset:IsEnabled(), true)
+    eq(pane.resetNote:GetText(), "You have changed this skill.")
+    local title, says = Says(w, pane.reset)
+    eq(title, "Reset this skill")
+    check(says:find("What it has learned about the skill in play stays.", 1, true), says)
+    w:slash("track heroic strike")
 
-panel("Spells tab: how many times an effect stacks", function(options)
+    w:click(pane.reset)
+    eq(ns.db.spells.Rend, nil)
+    check(ns.db.spells["Heroic Strike"] ~= nil, "the other skills keep your choices")
+    eq(pane.on.picked, "target")
+    eq(pane.lasts:GetText(), "21 s")
+    eq(pane.reset:IsEnabled(), false)
+    eq(pane.resetNote:GetText(), "Nothing changed: the addon decides.")
+
+    -- A choice made with a command shows here as one to reset.
+    w:slash("duration rend 40")
+    eq(pane.reset:IsEnabled(), true, "/se duration counts as a change of yours")
+    w:click(pane.reset)
+    eq(ns.db.spells.Rend, nil)
+
+    -- Resetting a spell you had turned on takes its icon away again.
+    pane = Pane(w, view, "Heroic Strike")
+    eq(pane.show.picked, "always")
+    w:click(pane.reset)
+    eq(ns.db.spells["Heroic Strike"], nil)
+    eq(pane.show.picked, "auto")
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), nil)
+    Clean(w)
+end)
+
+panel("Skills tab: how many times an effect stacks", function(options)
     options.saved = Proven()
     local w, ns = Bar(options, SUNDER, REND, FRENZY, HEROIC)
     local boar = w:addMob("Boar")
@@ -8356,71 +8816,80 @@ panel("Spells tab: how many times an effect stacks", function(options)
     w:target(boar)
     w:advance(0.3)
     local view = w:openSettings().view
-    w:click(view.tabs.spells)
-    local sunder, rend, frenzy = Row(view, "Sunder Armor"), Row(view, "Rend"), Row(view, "Battle Frenzy")
-    eq(view.spells.headings[5]:GetText(), "Stacks")
+    local pane = Pane(w, view, "Sunder Armor")
+    local stacks, note = pane.stacks, pane.stacksNote
 
-    eq(sunder.stacks:GetText(), "5", "Sunder Armor: as its tooltip says")
-    eq(sunder.stacks.textColor[1], 1)
-    local title, says = Says(w, sunder.stacks)
+    eq(stacks:GetText(), "5", "Sunder Armor: as its tooltip says")
+    eq(stacks.textColor[1], 1)
+    eq(note:GetText(), "From the tooltip.", "where the number comes from is said beside the box")
+    local title, says = Says(w, stacks)
     eq(title, "How many times the effect stacks")
-    check(says:find("Taken from the spell's tooltip.", 1, true), "the box says where the number comes from: " .. says)
-    check(says:find("The icon says \"Partly worth casting\" until the effect has that many stacks.", 1, true),
+    check(says:find("Taken from the skill's tooltip.", 1, true), "the box says where the number comes from: " .. says)
+    check(says:find("A unit only counts as having the effect once it has that many stacks.", 1, true),
         "and what it does to the icon: " .. says)
-    eq(frenzy.stacks:GetText(), "3", "a buff that stacks")
-    eq(rend.stacks:GetText(), "-", "a dash for an effect that goes on once, as most do")
-    eq(rend.stacks.textColor[1], 0.5, "in grey")
-    title, says = Says(w, rend.stacks)
+    Pane(w, view, "Battle Frenzy")
+    eq(stacks:GetText(), "3", "a buff that stacks")
+    Pane(w, view, "Rend")
+    eq(stacks:GetText(), "-", "a dash for an effect that goes on once, as most do")
+    eq(stacks.textColor[1], 0.5, "in grey")
+    eq(note:GetText(), "Goes on once.")
+    title, says = Says(w, stacks)
     check(says:find("Nothing says that the effect stacks. If it does, type the most stacks it can have.", 1, true), says)
-    local heroic = Row(view, "Heroic Strike")
-    eq(heroic.stacks:IsShown(), false, "a spell with no icon has no stacks to set")
-    eq(heroic.shared.frame:IsShown(), false, "and nobody whose copy could count")
+    Pane(w, view, "Heroic Strike")
+    eq(stacks:IsEnabled(), false, "a spell with no icon has no stacks to set")
+    eq(stacks:GetText(), "")
+    eq(note:GetText(), "")
+    eq(pane.shared.enabled, false, "and nobody whose copy could count")
 
     -- Typing a number is the same as /se stacks.
-    rend.stacks:SetFocus()
-    eq(rend.stacks:GetText(), "", "typing starts from an empty box for an effect that does not stack")
-    w:type(rend.stacks, "3")
+    Pane(w, view, "Rend")
+    stacks:SetFocus()
+    eq(stacks:GetText(), "", "typing starts from an empty box for an effect that does not stack")
+    w:type(stacks, "3")
     eq(ns.db.spells.Rend.stacks, 3)
-    eq(rend.stacks:GetText(), "3")
-    eq(rend.stacks.textColor[1], 1, "no longer grey")
-    eq(rend.stacks:HasFocus(), false)
-    title, says = Says(w, rend.stacks)
-    check(says:find("^You set this%. The icon says"), says)
-    w:type(rend.stacks, "1")
+    eq(stacks:GetText(), "3")
+    eq(stacks.textColor[1], 1, "no longer grey")
+    eq(stacks:HasFocus(), false)
+    eq(note:GetText(), "You set this.")
+    title, says = Says(w, stacks)
+    check(says:find("^You set this%. A unit only counts"), says)
+    w:type(stacks, "1")
     eq(ns.db.spells.Rend.stacks, 1, "1 says that it does not stack, whatever the addon makes of it")
-    eq(rend.stacks:GetText(), "1", "which shows as your 1, not as the addon's dash")
-    title, says = Says(w, rend.stacks)
+    eq(stacks:GetText(), "1", "which shows as your 1, not as the addon's dash")
+    eq(note:GetText(), "You set this: it goes on once.")
+    title, says = Says(w, stacks)
     check(says:find("You set this: the effect does not stack.", 1, true), says)
-    rend.stacks:SetFocus()
-    eq(rend.stacks:GetText(), "1", "typing starts from your own number")
-    w:type(rend.stacks, "1")
+    stacks:SetFocus()
+    eq(stacks:GetText(), "1", "typing starts from your own number")
+    w:type(stacks, "1")
     eq(ns.db.spells.Rend.stacks, 1, "Enter on what was there changes nothing")
-    eq(rend.stacks:HasFocus(), false)
-    w:type(rend.stacks, "")
+    eq(stacks:HasFocus(), false)
+    w:type(stacks, "")
     eq(ns.db.spells.Rend, nil, "emptying the box lets the addon work it out again, and leaves nothing behind")
-    eq(rend.stacks:GetText(), "-")
-    eq(rend.stacks.textColor[1], 0.5)
+    eq(stacks:GetText(), "-")
+    eq(stacks.textColor[1], 0.5)
 
-    sunder.stacks:SetFocus()
-    eq(sunder.stacks:GetText(), "5", "typing starts from the bare number")
-    w:type(sunder.stacks, "5")
+    Pane(w, view, "Sunder Armor")
+    stacks:SetFocus()
+    eq(stacks:GetText(), "5", "typing starts from the bare number")
+    w:type(stacks, "5")
     eq(ns.db.spells["Sunder Armor"], nil, "Enter on the addon's own figure does not make it yours")
-    eq(sunder.stacks:HasFocus(), false, "it only closes the box")
+    eq(stacks:HasFocus(), false, "it only closes the box")
 
     for _, bad in ipairs({ "many", "0", "101", "2.5", "-3", "1e1" }) do
-        w:type(sunder.stacks, bad)
-        eq(sunder.why:GetText(), "Type a number from 1 to 100.", "\"" .. bad .. "\" is explained in the row")
+        w:type(stacks, bad)
+        eq(note:GetText(), "Type a number from 1 to 100.", "\"" .. bad .. "\" is explained beside the box")
         eq(ns.db.spells["Sunder Armor"], nil, "\"" .. bad .. "\" changes nothing")
-        eq(sunder.stacks:HasFocus(), true, "and the box stays open to put it right")
+        eq(stacks:HasFocus(), true, "and the box stays open to put it right")
     end
-    w:escape(sunder.stacks)
-    eq(sunder.why:GetText(), "tooltip mentions a duration", "Escape drops the complaint")
-    eq(sunder.stacks:GetText(), "5", "and the typing")
-    w:type(sunder.stacks, " 4 ")
+    w:escape(stacks)
+    eq(note:GetText(), "From the tooltip.", "Escape drops the complaint")
+    eq(stacks:GetText(), "5", "and the typing")
+    w:type(stacks, " 4 ")
     eq(ns.db.spells["Sunder Armor"].stacks, 4, "spaces around the number do not matter")
     for _, auto in ipairs({ "auto", "-" }) do
-        w:type(sunder.stacks, "4")
-        w:type(sunder.stacks, auto)
+        w:type(stacks, "4")
+        w:type(stacks, auto)
         eq(ns.db.spells["Sunder Armor"], nil, "\"" .. auto .. "\" goes back to the addon's figure, like an empty box")
     end
 
@@ -8430,22 +8899,22 @@ panel("Spells tab: how many times an effect stacks", function(options)
         w:advance(1.5)
     end
     eq(w:icon("ActionButton1"), "partial", "two of five")
-    w:type(sunder.stacks, "2")
+    w:type(stacks, "2")
     eq(ns.db.spells["Sunder Armor"].stacks, 2)
     w:advance(0.1)
     eq(w:icon("ActionButton1"), "cross", "two of two: full by the number typed in the panel, with no cast in between")
 
     w:slash("stacks sunder armor 4")
-    eq(sunder.stacks:GetText(), "4", "/se stacks shows here straight away")
+    eq(stacks:GetText(), "4", "/se stacks shows here straight away")
     w:advance(0.1)
     eq(w:icon("ActionButton1"), "partial", "two of four")
     w:slash("stacks sunder armor auto")
-    eq(sunder.stacks:GetText(), "5")
+    eq(stacks:GetText(), "5")
     eq(ns.db.spells["Sunder Armor"], nil)
     Clean(w)
 end)
 
-test("settings: the Stacks box says where each number comes from", function()
+test("settings: the box for an effect's stacks says where each number comes from", function()
     -- The game's own figure, for a tooltip that does not say.
     local w, ns = World()
     w:addSpell(900, {
@@ -8466,112 +8935,133 @@ test("settings: the Stacks box says where each number comes from", function()
     w:target(boar)
     w:advance(0.3)
     local view = w:openSettings().view
-    w:click(view.tabs.spells)
-    local bite, rot = Row(view, "Festering Bite"), Row(view, "Creeping Rot")
-    eq(bite.stacks:GetText(), "4")
-    local _, says = Says(w, bite.stacks)
-    check(says:find("The game's own figure for the spell.", 1, true), says)
+    local pane = Pane(w, view, "Festering Bite")
+    eq(pane.stacks:GetText(), "4")
+    eq(pane.stacksNote:GetText(), "The game's own figure.")
+    local _, says = Says(w, pane.stacks)
+    check(says:find("The game's own figure for the skill.", 1, true), says)
 
     -- And what was read off a unit, which the effect may yet outgrow.
-    eq(rot.stacks:GetText(), "-", "nothing says that it stacks")
+    Pane(w, view, "Creeping Rot")
+    eq(pane.stacks:GetText(), "-", "nothing says that it stacks")
     for _ = 1, 2 do
         w:applyAura(boar, "Creeping Rot", 12, true, nil, nil, { shared = true, stacks = 3 })
     end
     w:advance(1.5)
     eq(ns.db.learned["Creeping Rot"].stacks, 2, "twice over on the boar")
-    eq(rot.stacks:GetText(), "2", "what the addon sees shows up in the open panel by itself")
-    _, says = Says(w, rot.stacks)
+    eq(pane.stacks:GetText(), "2", "what the addon sees shows up in the open panel by itself")
+    eq(pane.stacksNote:GetText(), "The most seen so far.")
+    _, says = Says(w, pane.stacks)
     check(says:find("The most seen on a unit so far, so the effect may go higher.", 1, true), says)
     Clean(w)
 end)
 
-panel("Spells tab: whether another player's copy of an effect counts", function(options)
+panel("Skills tab: whether another player's copy of an effect counts", function(options)
     local w, ns, boar = Party(options, SUNDER, REND, RAGING, BLOCK)
     local view = w:openSettings().view
-    w:click(view.tabs.spells)
-    local sunder, rend = Row(view, "Sunder Armor"), Row(view, "Rend")
-    local raging, block = Row(view, "Raging Shout"), Row(view, "Shield Block")
-    eq(view.spells.headings[6]:GetText(), "Shared")
+    local pane = Pane(w, view, "Sunder Armor")
+    local shared, note = pane.shared, pane.sharedNote
+    --- Whether the tick is drawn in the box.
+    local function Drawn()
+        if shared.mark then
+            return shared.mark:IsShown()
+        end
+        return shared.frame:GetChecked()
+    end
 
-    eq(sunder.shared.ticked, true, "an enemy carries Sunder Armor once, whoever put it there")
-    eq(sunder.shared.mark:IsShown(), true, "the tick is drawn")
-    eq(raging.shared.ticked, true, "and you one shout, whichever warrior shouted")
-    eq(rend.shared.ticked, false, "a bleed is its caster's own")
-    eq(rend.shared.mark:IsShown(), false)
-    eq(block.shared.frame:IsShown(), false, "nobody else can put Shield Block on you: nothing to choose")
-    eq(block.stacks:IsShown(), true, "though it could stack")
-    local title, says = Says(w, sunder.shared.frame)
+    eq(shared.label:GetText(), "Their copy counts too")
+    eq(shared.ticked, true, "an enemy carries Sunder Armor once, whoever put it there")
+    eq(Drawn(), true, "the tick is drawn")
+    eq(note:GetText(), "Counted whoever cast it. From the tooltip.", "what it means is said under the box, and who decided")
+    local title, says = Says(w, shared.frame)
     eq(title, "Another player's copy counts")
     check(says:find("A unit carries the effect only once, whoever casts it", 1, true), says)
-    check(says:find("This is what the addon made of the spell's tooltip.", 1, true), "it says who decided: " .. says)
-    title, says = Says(w, rend.shared.frame)
+    check(says:find("This is what the addon made of the skill's tooltip.", 1, true), "it says who decided: " .. says)
+    Pane(w, view, "Raging Shout")
+    eq(shared.ticked, true, "and you one shout, whichever warrior shouted")
+    Pane(w, view, "Rend")
+    eq(shared.ticked, false, "a bleed is its caster's own")
+    eq(Drawn(), false)
+    eq(note:GetText(), "Only your own counts. From the tooltip.")
+    title, says = Says(w, shared.frame)
     check(says:find("Only an effect you put there yourself counts.", 1, true), says)
-    check(says:find("This is what the addon made of the spell's tooltip.", 1, true), says)
+    check(says:find("This is what the addon made of the skill's tooltip.", 1, true), says)
+    Pane(w, view, "Shield Block")
+    eq(shared.enabled, false, "nobody else can put Shield Block on you: nothing to choose")
+    eq(note:GetText(), "Only you can have this effect.", "and the pane says so")
+    eq(pane.stacks:IsEnabled(), true, "though it could stack")
+    w:click(shared.frame)
+    eq(ns.db.spells["Shield Block"], nil, "a click on the greyed box does nothing")
+    eq(shared.ticked, false)
 
     -- Another warrior's Sunder Armor is on the boar.
+    Pane(w, view, "Sunder Armor")
     w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, { shared = true, stacks = 5 })
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "partial", "theirs counts: one of five")
 
     w:drain()
-    w:click(sunder.shared.frame)
+    w:click(shared.frame)
     eq(ns.db.spells["Sunder Armor"].shared, false, "unticked: the same as /se mine")
-    eq(sunder.shared.ticked, false)
-    eq(sunder.shared.mark:IsShown(), false)
+    eq(shared.ticked, false)
+    eq(Drawn(), false)
     eq(w.sounds[#w.sounds], 857, "with the game's click for a box unticked")
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "and their copy stops counting at once")
-    title, says = Says(w, sunder.shared.frame)
+    eq(note:GetText(), "Only your own counts. You set this.")
+    title, says = Says(w, shared.frame)
     check(says:find("Only an effect you put there yourself counts.", 1, true) and says:find("You set this.", 1, true), says)
 
-    w:click(sunder.shared.frame)
+    w:click(shared.frame)
     eq(ns.db.spells["Sunder Armor"], nil, "ticked again is what the addon made of it: nothing of yours is left behind")
-    eq(sunder.shared.ticked, true)
+    eq(shared.ticked, true)
     eq(w.sounds[#w.sounds], 856)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "partial", "and their copy counts again at once")
 
-    w:click(rend.shared.frame)
+    Pane(w, view, "Rend")
+    w:click(shared.frame)
     eq(ns.db.spells.Rend.shared, true, "ticked: the same as /se anyone")
     w:applyAura(boar, "Rend", 21, false)
     w:advance(0.3)
     eq(w:icon("ActionButton2"), "cross", "now their Rend counts like yours")
-    title, says = Says(w, rend.shared.frame)
+    title, says = Says(w, shared.frame)
     check(says:find("another player's copy counts like your own", 1, true) and says:find("You set this.", 1, true), says)
-    w:click(rend.shared.frame)
+    w:click(shared.frame)
     eq(ns.db.spells.Rend, nil)
     w:advance(0.3)
     eq(w:icon("ActionButton2"), "check", "and theirs is theirs again")
     eq(w:drain(), "", "the panel says nothing of this in chat")
 
-    -- The commands show in the row at once, and a click undoes them like any other choice.
+    -- The commands show in the pane at once, and a click undoes them like any other choice.
+    Pane(w, view, "Sunder Armor")
     w:slash("mine sunder armor")
-    eq(sunder.shared.ticked, false, "/se mine shows here straight away")
+    eq(shared.ticked, false, "/se mine shows here straight away")
     w:slash("anyone sunder armor")
-    eq(sunder.shared.ticked, true, "and so does /se anyone")
+    eq(shared.ticked, true, "and so does /se anyone")
     eq(ns.db.spells["Sunder Armor"].shared, true, "which keeps the choice even where the addon agrees")
-    title, says = Says(w, sunder.shared.frame)
+    title, says = Says(w, shared.frame)
     check(says:find("You set this.", 1, true), says)
-    w:click(sunder.shared.frame)
+    w:click(shared.frame)
     eq(ns.db.spells["Sunder Armor"].shared, false)
-    w:click(sunder.shared.frame)
+    w:click(shared.frame)
     eq(ns.db.spells["Sunder Armor"], nil)
 
     -- A spell that loses its icon has nobody whose copy could count.
-    w:click(sunder.show.buttons.never)
-    eq(sunder.shared.frame:IsShown(), false)
-    eq(sunder.stacks:IsShown(), false)
-    w:click(sunder.show.buttons.auto)
-    eq(sunder.shared.frame:IsShown(), true)
-    eq(sunder.shared.ticked, true)
+    w:click(pane.show.buttons.never)
+    eq(shared.enabled, false)
+    eq(pane.stacks:IsEnabled(), false)
+    eq(note:GetText(), "")
+    w:click(pane.show.buttons.auto)
+    eq(shared.enabled, true)
+    eq(shared.ticked, true)
     Clean(w)
 end)
 
-panel("Spells tab: unticking Shared in the middle of a fight drops another player's copy at once", function(options)
+panel("Skills tab: unticking another player's copy in the middle of a fight drops it at once", function(options)
     local w, ns, _, warrior = Party(options, DEMO, REND)
     local view = w:openSettings().view
-    w:click(view.tabs.spells)
-    local demo = Row(view, "Demoralizing Shout")
+    local demo = Pane(w, view, "Demoralizing Shout")
     eq(demo.shared.ticked, true)
     Open(w)
     w:partyCast(warrior, DEMO)
@@ -8598,90 +9088,135 @@ panel("Spells tab: unticking Shared in the middle of a fight drops another playe
     Clean(w)
 end)
 
-test("settings: a spell whose tooltip could not be read says so on its Shared tick", function()
+panel("Skills tab: a reset drops another player's copy that only a choice of yours made count", function(options)
+    local w, ns, _, warrior = Party(options, DEMO, REND)
+    local view = w:openSettings().view
+    local rend = Pane(w, view, "Rend")
+    eq(rend.shared.ticked, false, "a bleed is its caster's own")
+    w:click(rend.shared.frame)
+    eq(ns.db.spells.Rend.shared, true)
+    Open(w)
+    w:partyCast(warrior, REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross", "their Rend counts, because you said so")
+
+    w:click(rend.reset)
+    eq(ns.db.spells.Rend, nil)
+    w:advance(0.1)
+    eq(w:icon("ActionButton2"), "check", "reset: theirs no longer counts, and nothing can be read to say so")
+
+    -- A skill their copy counts for anyway keeps it through a reset.
+    local demo = Pane(w, view, "Demoralizing Shout")
+    w:partyCast(warrior, DEMO)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "their shout")
+    w:type(demo.lasts, "40")
+    eq(ns.db.spells["Demoralizing Shout"].duration, 40)
+    w:click(demo.reset)
+    eq(ns.db.spells["Demoralizing Shout"], nil)
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "cross", "a reset that changes nothing about whose copy counts leaves theirs alone")
+
+    -- Defaults does the same, also for a skill that has left the bars meanwhile.
+    Pane(w, view, "Rend")
+    w:click(rend.shared.frame)
+    w:partyCast(warrior, REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "cross")
+    w:addButton("ActionButton2", 2, nil) -- Rend is dragged off the bar, back on, and off again
+    w:advance(1.5)
+    w:addButton("ActionButton2", 2, REND)
+    w:advance(1.5)
+    eq(w:icon("ActionButton2"), "cross", "their copy is still counted while the choice stands")
+    w:addButton("ActionButton2", 2, nil)
+    w:advance(1.5)
+    w:click(view.defaults)
+    w:click(view.confirm.yes)
+    eq(ns.db.spells.Rend, nil)
+    w:addButton("ActionButton2", 2, REND)
+    w:advance(1.5)
+    eq(w:icon("ActionButton2"), "check", "back on the bar after that, their copy from before is not counted")
+    Clean(w)
+end)
+
+test("settings: a spell whose tooltip could not be read says so beside the tick for other players", function()
     local w = World()
     w:addSpell(902, { name = "Strange Brand", harmful = true, effect = { duration = 20, shared = true } })
     w:addButton("ActionButton1", 1, 902)
     local ns = w:load()
     w:slash("track strange brand")
     local view = w:openSettings().view
-    w:click(view.tabs.spells)
-    local brand = Row(view, "Strange Brand")
-    eq(brand.shared.ticked, false, "it counts as your own until you say otherwise")
-    local _, says = Says(w, brand.shared.frame)
-    check(says:find("The spell's tooltip could not be read, so its effect is taken to be yours alone.", 1, true), says)
-    w:click(brand.shared.frame)
+    local pane = Pane(w, view, "Strange Brand")
+    eq(pane.shared.ticked, false, "it counts as your own until you say otherwise")
+    eq(pane.sharedNote:GetText(), "Only your own counts. The tooltip could not be read.")
+    local _, says = Says(w, pane.shared.frame)
+    check(says:find("The skill's tooltip could not be read, so its effect is taken to be yours alone.", 1, true), says)
+    w:click(pane.shared.frame)
     eq(ns.db.spells["Strange Brand"].shared, true)
-    _, says = Says(w, brand.shared.frame)
+    eq(pane.sharedNote:GetText(), "Counted whoever cast it. You set this.")
+    _, says = Says(w, pane.shared.frame)
     check(says:find("You set this.", 1, true), says)
     Clean(w)
 end)
 
-test("settings: the columns of the Spells tab keep clear of each other, and so do their headings", function()
-    for _, wider in ipairs({ 1, 1.3, 2 }) do
+test("settings: the list of the Skills tab and the pane beside it keep clear of each other", function()
+    for _, wider in ipairs({ 1, 1.35, 2 }) do
         local what = "letters " .. wider .. " times as wide"
         local w = Bar({ fontWidth = wider }, SUNDER, REND, RAGING)
         local view = w:openSettings().view
-        w:click(view.tabs.spells)
-        local row = Row(view, "Sunder Armor")
-        local function Left(region)
-            local _, _, _, x = region:GetPoint(1)
-            return x
-        end
+        local pane, row = Pane(w, view, "Sunder Armor")
+        local list = view.spells
 
-        -- Across a row: the name with the reason under it, then one control after another.
-        local parts = {
-            { "the spell's name", Left(row.name), row.name.fitRoom },
-            { "the reason under it", Left(row.why), row.why.fitRoom },
-            { "Show an icon", Left(row.show.frame), row.show.width },
-            { "Judged on", Left(row.on.frame), row.on.width },
-            { "Lasts", Left(row.lasts), row.lasts:GetWidth() },
-            { "Stacks", Left(row.stacks), row.stacks:GetWidth() },
-            { "Shared", Left(row.shared.frame), row.shared.frame:GetWidth() },
-        }
-        eq(parts[1][2], parts[2][2], "the reason starts under the name")
-        check(row.name:GetStringWidth() <= parts[1][3] + 0.5 and row.why:GetStringWidth() <= parts[2][3] + 0.5,
-            "the name and the reason keep to their room, with " .. what)
-        for i = 2, #parts - 1 do
-            local this, after = parts[i], parts[i + 1]
-            check(this[2] + this[3] + 4 <= after[2], string.format("%s ends at %d and %s starts at %d, with %s",
-                this[1], this[2] + this[3], after[1], after[2], what))
-        end
-        local last = parts[#parts]
-        check(last[2] + last[3] <= row:GetWidth(), "the last column is inside the row")
-        local _, _, _, starts = row.whyArea:GetPoint(1)
-        local _, _, _, ends = row.whyArea:GetPoint(2)
-        eq(starts, 0, "a row explains itself when the mouse is on the spell's picture, its name or the reason")
-        eq(ends, parts[1][2] + parts[1][3], "and no further: the buttons after them take their own clicks")
+        -- Side by side on the page: the list, its scroll bar, the pane.
+        local rowLeft, barLeft, paneLeft = row.point[4], list.bar.point[4], pane.point[4]
+        check(rowLeft + row.width <= barLeft, "the list ends before its scroll bar, with " .. what)
+        check(barLeft + list.bar.width + 4 <= paneLeft, "and the bar well before the pane")
+        check(paneLeft + pane.width <= 624.01, "which ends inside the page")
+        eq(pane.point[5], list.rows[1].point[5], "the pane starts level with the first line")
+        check(-list.rows[#list.rows].point[5] + row.height <= 514 - 34, "the last line ends above the strip at the bottom")
 
-        -- The headings: each starts where its column does, or is centred on a
-        -- column narrower than itself, and none reaches the next.
-        local spans = {}
-        for i, heading in ipairs(view.spells.headings) do
-            local point, _, _, x = heading:GetPoint(1)
-            local width = heading:GetStringWidth()
-            if point == "TOP" then
-                spans[i] = { x - width / 2, x + width / 2, x }
-            else
-                spans[i] = { x, x + width }
-            end
+        -- In a line: the picture, then the name over the few words about it.
+        local textLeft = row.name.point[4]
+        check(row.icon.point[4] + row.icon.width + 4 <= textLeft, "the picture ends before the name")
+        eq(row.status.point[4], textLeft, "the words about it start under the name")
+        check(row.name:GetStringWidth() <= row.name.fitRoom + 0.5 and row.status:GetStringWidth() <= row.status.fitRoom + 0.5,
+            "both keep to their room, with " .. what)
+        check(textLeft + row.name.fitRoom <= row.width, "which ends inside the line")
+
+        -- In the pane: what a setting is called on the left, its control on the
+        -- right, and no control wider than the pane.
+        local names = pane.showArea.label.fitRoom
+        check(pane.showArea.label:GetStringWidth() <= names + 0.5, "what a row is called keeps to its room, with " .. what)
+        local tops = {}
+        for _, part in ipairs({
+            { "Show an icon", pane.show.frame, pane.show.width },
+            { "Lands on", pane.on.frame, pane.on.width },
+            { "Lasts", pane.lasts, pane.lasts:GetWidth() },
+            { "Stacks up to", pane.stacks, pane.stacks:GetWidth() },
+        }) do
+            local left, top = part[2].point[4], part[2].point[5]
+            check(left >= names + 8, part[1] .. " starts clear of the names, with " .. what)
+            check(left + part[3] <= pane.width + 0.01, part[1] .. " ends inside the pane, with " .. what)
+            tops[#tops + 1] = top
         end
-        eq(#spans, 6)
-        for i = 1, 5 do
-            check(spans[i][2] + 4 <= spans[i + 1][1], string.format("heading %d ends at %.1f and the next starts at %.1f, with %s",
-                i, spans[i][2], spans[i + 1][1], what))
+        for i = 2, #tops do
+            check(tops[i] <= tops[i - 1] - 28, "row " .. i .. " starts under the row before it")
         end
-        check(spans[6][2] <= 624.01, "the last heading ends inside the page, with " .. what)
-        eq(spans[2][1], 12 + parts[3][2], "\"Show an icon\" starts where its buttons do")
-        eq(spans[3][1], 12 + parts[4][2], "\"Judged on\" too")
-        eq(spans[4][1], 12 + parts[5][2], "and \"Lasts\" where its box does")
-        near(spans[5][3], 12 + parts[6][2] + parts[6][3] / 2, "\"Stacks\" is centred on its box")
-        near(spans[6][3], 12 + parts[7][2] + parts[7][3] / 2, "and \"Shared\" on its tick")
+        -- The words beside a box start after the box, and end inside the pane.
+        for _, pair in ipairs({ { pane.lasts, pane.lastsNote }, { pane.stacks, pane.stacksNote } }) do
+            local box, note = pair[1], pair[2]
+            check(box.point[4] + box:GetWidth() + 4 <= note.point[4], "the words beside a box start after it")
+            check(note.point[4] + note.fitRoom <= pane.width + 0.01, "and end inside the pane, with " .. what)
+        end
+        -- The button at the bottom is clear of the last row and of the words at its left.
+        local lowest = pane.sharedNote.point[5] - 24
+        check(lowest >= -pane.height + 4 + pane.reset.height, "the last row ends above the button")
+        check(pane.resetNote.fitRoom + 8 <= pane.width - pane.reset.width, "and the words at its left end before it")
         Clean(w)
     end
 end)
 
-panel("Spells tab: a long list scrolls", function(options)
+panel("Skills tab: a long list scrolls, and the pane stays", function(options)
     local w = World(options)
     for i = 1, 20 do
         w:addSpell(500 + i, {
@@ -8694,18 +9229,21 @@ panel("Spells tab: a long list scrolls", function(options)
     w:load()
     local view = w:openSettings().view
     w:click(view.tabs.spells)
-    local list, page = view.spells, view.pages.spells
+    local list, page, pane = view.spells, view.pages.spells, view.pane
     eq(#list.items, 20)
     local shown = #list.rows
+    eq(shown, 12)
     eq(list.rows[1].name:GetText(), "Curse 01")
     eq(list.rows[shown].name:GetText(), string.format("Curse %02d", shown), "as many at a time as fit the page")
     eq(list.bar:IsShown(), true, "with a scroll bar once they do not all fit")
-    eq(list.more:IsShown(), true)
-    eq(list.count:GetText(), "20 spells on your bars, 20 with an icon.")
+    eq(view.footer:GetText(), "20 skills on your bars, 20 with an icon. Scroll the list for more.")
+    eq(pane.name:GetText(), "Curse 01", "the first is picked")
 
     w:wheel(page, -1)
-    eq(list.rows[1].name:GetText(), "Curse 04", "the wheel moves three rows")
+    eq(list.rows[1].name:GetText(), "Curse 04", "the wheel moves three lines")
     eq(list.bar:GetValue(), 3, "and the bar with it")
+    eq(pane.name:GetText(), "Curse 01", "the pane keeps the spell that is picked, though its line scrolled away")
+    eq(list.rows[1].selected, false)
     w:wheel(page, -1)
     w:wheel(page, -1)
     w:wheel(page, -1)
@@ -8715,18 +9253,34 @@ panel("Spells tab: a long list scrolls", function(options)
     eq(list.rows[1].name:GetText(), string.format("Curse %02d", 18 - shown))
     w:slide(list.bar, 0)
     eq(list.rows[1].name:GetText(), "Curse 01", "dragging the bar works too")
+    eq(list.rows[1].selected, true)
 
-    list.rows[2].lasts:SetFocus()
+    -- What is being typed in the pane is not lost to the wheel.
+    pane.lasts:SetFocus()
     w:wheel(page, -1)
-    eq(list.rows[2].lasts:HasFocus(), false, "a row that scrolls away takes its typing with it")
-    eq(list.rows[2].name:GetText(), "Curse 05")
+    eq(pane.lasts:HasFocus(), true, "the pane stays as it is while the list scrolls")
+    eq(pane.lasts:GetText(), "10")
+    w:escape(pane.lasts)
 
-    w:click(list.rows[2].show.buttons.never)
-    eq(w.ns.db.spells["Curse 05"].track, false, "a click lands on the spell the row shows now")
+    w:click(list.rows[2])
+    eq(pane.name:GetText(), "Curse 05", "a click lands on the spell the line shows now")
+    w:click(pane.show.buttons.never)
+    eq(w.ns.db.spells["Curse 05"].track, false)
+
+    -- Opened again, the list comes up with the spell that is picked in sight.
+    view.Select("Curse 19")
+    w:click(view.tabs.display)
+    w:click(view.tabs.spells)
+    eq(pane.name:GetText(), "Curse 19")
+    local seen = false
+    for _, row in ipairs(list.rows) do
+        seen = seen or (row.selected == true and row.name:GetText() == "Curse 19")
+    end
+    check(seen, "the spell that is picked is on screen when the tab opens")
     Clean(w)
 end)
 
-test("settings: the Spells tab keeps up with what the addon learns, without a click", function()
+test("settings: the Skills tab keeps up with what the addon learns, without a click", function()
     local w = World({ combatAuras = "ids" })
     w:addButton("ActionButton1", 1, STOMP)
     local ns = w:load()
@@ -8740,32 +9294,44 @@ test("settings: the Spells tab keeps up with what the addon learns, without a cl
     w:enterCombat()
     w:applyAura(mobs[1], "Deep Wounds", 600)
     w:slash("options spells")
-    local row = w.env.StatusEfficiencyOptions.view.spells.rows[1]
+    local view = w.env.StatusEfficiencyOptions.view
+    local row, pane = view.spells.rows[1], view.pane
     w:advance(0.5)
     eq(row.name:GetText(), "Ground Stomp")
-    eq(row.why:GetText(), "not a status effect")
-    eq(row.on.frame:IsShown(), false)
+    eq(row.status:GetText(), "No icon")
+    eq(pane.name:GetText(), "Ground Stomp")
+    eq(pane.why:GetText(), "It does not look like it leaves a status effect.")
+    eq(pane.on.enabled, false)
 
     for _ = 1, 6 do
         w:cast(STOMP)
         w:advance(8)
     end
     eq(ns.db.learned["Ground Stomp"].hits, 6)
-    eq(row.why:GetText(), "6 of 6 casts left an effect", "what was learned shows up by itself")
-    eq(row.on.picked, "all", "judged on every enemy in the fight, as the area spell it turned out to be")
-    eq(row.show.picked, "auto")
-    eq(w.env.StatusEfficiencyOptions.view.spells.count:GetText(), "1 spell on your bars, 1 with an icon.")
+    eq(pane.why:GetText(), "6 of 6 casts left an effect behind.", "what was learned shows up by itself")
+    eq(pane.on.picked, "all", "judged on every enemy in the fight, as the area spell it turned out to be")
+    eq(pane.show.picked, "auto")
+    check(row.status:GetText():find("^All enemies, "), "and the line in the list says so too: " .. row.status:GetText())
+    eq(view.footer:GetText(), "1 skill on your bars, 1 with an icon.")
+    local title, lines = w:hover(pane.whyArea)
+    eq(title, "Ground Stomp")
+    eq(lines[1], "A new effect of yours followed 6 of 6 casts.")
+    w:unhover(pane.whyArea)
     Clean(w)
 end)
 
-test("settings: with no spells on the bars the Spells tab says so", function()
-    local w = World()
-    w:load()
+test("settings: with no spells on the bars the Skills tab says so", function()
+    local w, ns = World()
+    ns = w:load()
     local view = w:openSettings().view
     w:click(view.tabs.spells)
     eq(view.spells.empty:IsShown(), true)
     eq(view.spells.rows[1]:IsShown(), false)
-    eq(view.spells.count:GetText(), "")
+    eq(view.pane:IsShown(), false, "and there is no pane without a spell to show")
+    eq(view.footer:GetText(), "")
+    w:click(view.defaults)
+    w:click(view.confirm.yes)
+    eq(next(ns.db.spells), nil, "Defaults has nothing to forget, and does no harm")
     Clean(w)
 end)
 
@@ -8778,18 +9344,21 @@ panel("with the icons turned off the panel still reads the bars", function(optio
     eq(#ns.BarSpells(), 0, "switched off and with the panel shut, the addon reads nothing")
 
     local view = w:openSettings().view
-    eq(view.previews.none.face.path, "Interface\\Icons\\INV_Misc_QuestionMark", "nothing has been read yet")
+    eq(view.previews.none.face.path, QUESTION, "nothing has been read yet")
     w:advance(1)
     eq(view.previews.none.face.path, 130000 + REND, "the pretend buttons get their pictures a moment after it opens")
+    eq(view.enable.ticked, false)
+    eq(view.off:GetText(), "Off: your action buttons stay bare.")
     w:click(view.tabs.spells)
-    eq(view.spells.rows[1].name:GetText(), "Rend", "and the Spells tab has its list")
+    eq(view.spells.rows[1].name:GetText(), "Rend", "and the Skills tab has its list")
     eq(view.spells.rows[2].name:GetText(), "Heroic Strike")
+    eq(view.pane.name:GetText(), "Rend")
     eq(view.spells.empty:IsShown(), false)
     eq(w:icon("ActionButton1"), nil, "still no icons on the bars")
 
     w:addButton("ActionButton3", 3, SHOUT)
     w:advance(6)
-    eq(view.spells.count:GetText(), "3 spells on your bars, 2 with an icon.",
+    eq(view.footer:GetText(), "3 skills on your bars, 2 with an icon.",
         "a spell put on the bars while the panel is open joins the list")
 
     w:closeSettings()
@@ -8797,6 +9366,65 @@ panel("with the icons turned off the panel still reads the bars", function(optio
     w:advance(8)
     eq(#ns.BarSpells(), 3, "shut again, the addon goes back to reading nothing")
     eq(w:icon("ActionButton1"), nil)
+    Clean(w)
+end)
+
+test("settings: a skill's own picture is shown wherever the panel points at the skill", function()
+    local w, ns = Simple()
+    local view = w:openSettings().view
+    eq(view.previews.none.face.path, 130000 + SHOUT, "on the pretend buttons")
+    w:click(view.tabs.spells)
+    eq(view.spells.rows[2].icon.path, 130000 + REND, "in the list")
+    w:click(view.spells.rows[2])
+    eq(view.pane.icon.path, 130000 + REND, "and at the head of the pane")
+    eq(next(ns.Options.notes.pictures), nil, "none was missing, so nothing is noted")
+    Clean(w)
+end)
+
+test("settings: where the client has no picture for a spell, the one on its action button is shown", function()
+    local w, ns = Simple()
+    w.env.C_Spell.GetSpellTexture = function()
+        return nil -- as for a spell the client has not loaded
+    end
+    w.env.GetActionTexture = function(slot)
+        return 990000 + slot
+    end
+    local view = w:openSettings().view
+    eq(view.previews.some.face.path, 990001, "Rend is on the first button, and wears that button's picture")
+    w:click(view.tabs.spells)
+    eq(view.spells.rows[1].icon.path, 990003, "Battle Shout is on the third")
+    eq(view.pane.icon.path, 990003)
+    eq(view.spells.rows[3].icon.path, 990002, "a skill with no status icon has its picture all the same")
+    eq(next(ns.Options.notes.pictures), nil, "a picture was found, so nothing is noted")
+    Clean(w)
+end)
+
+test("settings: the question mark stands in only while the client has no picture at all, and that is noted", function()
+    local w, ns = Simple()
+    local real = w.env.C_Spell.GetSpellTexture
+    w.env.C_Spell.GetSpellTexture = function()
+        return nil
+    end
+    w.env.GetActionTexture = function()
+        return 0 -- an empty answer
+    end
+    local view = w:openSettings().view
+    eq(view.previews.some.face.path, QUESTION)
+    w:click(view.tabs.spells)
+    eq(view.spells.rows[2].icon.path, QUESTION)
+    eq(view.pane.icon.path, QUESTION)
+    eq(ns.Options.notes.pictures.Rend, "none", "which skills had none is noted")
+
+    -- The client has it a moment later: nothing was kept from the failure.
+    w.env.C_Spell.GetSpellTexture = real
+    w:advance(1.5)
+    eq(view.spells.rows[2].icon.path, 130000 + REND, "it shows without a click")
+    eq(view.pane.icon.path, 130000 + SHOUT)
+    eq(ns.Options.notes.pictures.Rend, "late", "and that it came late is noted too")
+    w:click(view.tabs.display)
+    eq(view.previews.some.face.path, 130000 + REND)
+    w:closeSettings()
+    eq(ns.db.panel.pictures.Rend, "late", "the notes are saved with the settings")
     Clean(w)
 end)
 
@@ -8885,7 +9513,7 @@ test("a client without the Options window API still gets /se options", function(
     eq(#w.settings.addons, 0)
     w:slash("options")
     check(w.env.StatusEfficiencyOptions:IsShown(), "the window opens")
-    w:click(w.env.StatusEfficiencyOptions.view.previews.none.zones.RIGHT)
+    w:click(w.env.StatusEfficiencyOptions.view.zones.RIGHT)
     eq(w.ns.db.corner, "RIGHT")
     Clean(w)
 end)
@@ -8949,7 +9577,7 @@ test("a failure while clicking in the panel is reported by the addon, not thrown
         error("simulated bug")
     end
     w:drain()
-    w:click(view.previews.none.zones.RIGHT)
+    w:click(view.zones.RIGHT)
     eq(#w.errors, 0, "nothing reaches the client's error handler")
     check(w:drain():find("hit a problem", 1, true), "the addon reports it in chat")
     check(tostring(ns.lastError):find("simulated bug", 1, true), "and keeps it for /se debug")
@@ -9075,25 +9703,40 @@ test("the addon keeps its hands off the global namespace", function()
         w:slash(command)
     end
     local window = w.env.StatusEfficiencyOptions
-    w:click(window.view.swatches.none.plus)
-    w:click(window.view.sets.dots)
-    w:click(window.view.swatches.some.custom)
-    w:type(window.view.inputs.some, "136243")
-    w:slide(window.view.size.slider.widget, 22)
-    w:click(window.view.size.auto.frame)
-    w:click(window.view.enable.frame)
-    w:click(window.view.enable.frame)
-    w:click(window.view.appear.buttons.always)
-    w:hover(window.view.swatches.all.hidden)
-    w:click(window.view.reset)
-    w:click(window.view.confirm.yes)
+    local view = window.view
+    w:click(Swatch(w, view, "none", "plus"))
+    w:click(view.sets.dots)
+    w:click(Swatch(w, view, "some", "custom"))
+    w:type(view.input, "136243")
+    w:hover(view.tiles.hidden)
+    w:hover(view.results.all)
+    w:click(view.defaults)
+    w:click(view.confirm.yes)
+    w:click(view.tabs.display)
+    w:slide(view.size.slider.widget, 22)
+    w:click(view.size.auto.frame)
+    w:click(view.enable.frame)
+    w:click(view.enable.frame)
+    w:click(view.appear.buttons.always)
+    w:click(view.usable.buttons.always)
+    w:click(view.zones.BOTTOM)
+    w:hover(view.previews.all.slot)
+    w:click(view.defaults)
+    w:click(view.confirm.yes)
     w:drag(window, "TOP", "TOP", 0, -40)
-    w:click(window.view.tabs.spells)
-    w:click(window.view.spells.rows[1].show.buttons.always)
-    w:type(window.view.spells.rows[1].lasts, "45")
-    w:wheel(window.view.pages.spells, -1)
+    w:click(view.tabs.spells)
+    w:click(view.spells.rows[2])
+    w:click(view.pane.show.buttons.always)
+    w:type(view.pane.lasts, "45")
+    w:type(view.pane.stacks, "3")
+    w:click(view.pane.shared.frame)
+    w:hover(view.pane.whyArea)
+    w:click(view.pane.reset)
+    w:wheel(view.pages.spells, -1)
+    w:click(view.defaults)
+    w:click(view.confirm.yes)
     w:click(window.close)
-    local view = w:openSettings().view
+    view = w:openSettings().view
     w:click(view.tabs.spells)
     w:advance(1.5)
     w:closeSettings()

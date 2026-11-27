@@ -1,9 +1,17 @@
 -- Status Efficiency: the settings panel.
 --
--- Two tabs. "Appearance" has the on/off switch, when the icons appear and on
--- which skills, where the icon sits on a button, how big it is and which icon
--- each result uses, with a life-size preview of all three. "Spells" has one row
--- per spell on the action bars.
+-- Three tabs. "Display" has the on/off switch, when the icons appear and on
+-- which skills, where the icon sits on a button and how big it is, with a
+-- life-size preview of all three results. "Icons" has which icon each result
+-- uses. "Spells" lists the skills on the action bars, and beside the list
+-- shows everything about the one that is picked.
+--
+-- Every setting is a row of its own, laid out the way the game lays out its
+-- own Options pages: what the setting is called on the left, the control for
+-- it on the right, and rows that belong together under a heading. A screen
+-- shows what is needed to decide on one thing at a time: the icons on offer
+-- are those of the one result that is picked, and the choices for a spell
+-- are those of the one spell that is picked.
 --
 -- Buttons, tick boxes and the size slider are the game's own where this client
 -- has them and they pass a quick test. Where one is missing, fails its test, or
@@ -16,7 +24,9 @@
 -- Nothing is taken on trust about the text either. A font this client lacks is
 -- replaced by its nearest neighbour, and every label is measured once it is
 -- made: where the game's font, or the player's own, is too wide for the room a
--- label has, the label is drawn smaller until it fits.
+-- label has, the label is drawn smaller until it fits. The rooms are sized for
+-- letters a good third wider than the game's standard font draws them, so
+-- that this is the exception.
 --
 -- The panel appears in two places: in the game's Options window under AddOns,
 -- and in a window of its own that /se options opens (which also works when the
@@ -45,27 +55,44 @@ local L = {
     bar = 28, -- the window's title bar
     canvasTop = 86, -- the heading and the tabs above a page in the Options window
     right = 624, -- nothing on a page goes further right than this
+    foot = 34, -- the strip along the bottom of a page
 
-    headTop = -68, -- the headings "Preview", "Icon size": what is under them hangs off this
+    left = 16, -- where a heading starts
+    label = 24, -- where a row's label starts
+    control = 220, -- and where its control does
+
     tile = 30, -- an icon to pick
     tileStep = 34,
-    blockTop = -200, -- the first result's heading
-    blockPitch = 92,
 
-    slotWidth = 88, -- the room each pretend button gets in the preview
-    slotHeight = 64,
-    slotPitch = 92,
     previewMin = 36, -- a pretend button is drawn life-size, within these
     previewMax = 60,
 
-    rows = 14, -- spells shown at once
-    rowHeight = 30,
-    listTop = -58,
+    rows = 12, -- spells shown at once
+    rowHeight = 36,
+    listTop = -44,
+    listLeft = 12,
+    listWidth = 244,
+    paneLeft = 280, -- where the pane for one spell starts
+    paneControl = 400, -- and where the controls in it do
 }
+
+local RADIO_LINE = 22 -- one choice of a list of them
+local GRID_CELL, GRID_GAP = 20, 2 -- the nine squares that say where the icon sits
+local PREVIEW_SLOT, PREVIEW_PITCH = 64, 200 -- the room a pretend button gets, and from one to the next
+local SET_WIDTH = 76 -- a set of three icons
+local RESULT_HEIGHT, RESULT_ICON = 44, 28 -- one of the three results, and the icon it uses
+local EDITOR_BOX = 240 -- the box for a texture of your own
+local LIST_ICON, PANE_ICON = 26, 36 -- a skill's picture in the list, and at the head of the pane
+local LASTS_BOX, STACKS_BOX = 60, 40
+local RESET_WIDTH, DEFAULTS_WIDTH = 150, 96
+-- Where each row of the pane starts, from the pane's top.
+local PANE_ROWS = { show = -56, on = -112, lasts = -168, stacks = -198, shared = -228 }
 
 local GOLD = { 1, 0.82, 0 }
 local WARN = { 1, 0.6, 0.2 }
 local BAD = { 1, 0.35, 0.3 }
+local GREY = { 0.6, 0.6, 0.6 }
+local DIM = 0.35 -- how faint a control is drawn that has nothing to say right now
 
 local GRID = {
     { "TOPLEFT", "TOP", "TOPRIGHT" },
@@ -82,14 +109,14 @@ Options.POSITION_NAMES = POSITION_NAMES
 
 -- When the icons appear at all. `words` is how chat messages put it.
 local APPEAR_CHOICES = {
-    { key = "always", label = "Always", width = 54, words = "always", tip = "Always",
+    { key = "always", label = "Always", words = "always", tip = "Always",
         body = "Whenever there is something to judge: a buff at any time, a debuff whenever there is an enemy to check "
             .. "and all through a fight." },
-    { key = "combat", label = "When you are in combat", width = 140, words = "when you are in combat",
+    { key = "combat", label = "When you are in combat", words = "when you are in combat",
         tip = "When you are in combat",
         body = "Only while you are in combat yourself. The rest of the time your buttons stay bare, even while "
             .. "others in your group are fighting." },
-    { key = "group", label = "When you or your group are in combat", width = 218,
+    { key = "group", label = "When you or your group are in combat",
         words = "when you or your group are in combat", tip = "When you or your group are in combat",
         body = "While you are in combat, and while someone in your party or raid is in combat close by. The rest "
             .. "of the time your buttons stay bare." },
@@ -98,10 +125,10 @@ Options.APPEAR_CHOICES = APPEAR_CHOICES
 
 -- And on which skills: every one, or only those that can be used right now.
 local USABLE_CHOICES = {
-    { key = "always", label = "On every skill", width = 92, words = "on every skill", tip = "On every skill",
+    { key = "always", label = "Every skill", words = "on every skill", tip = "Every skill",
         body = "Whether or not you can use the skill right now." },
-    { key = "usable", label = "Only when the skill is usable", width = 172,
-        words = "only on skills you can use right now", tip = "Only when the skill is usable",
+    { key = "usable", label = "Only skills you can use right now",
+        words = "only on skills you can use right now", tip = "Only skills you can use right now",
         body = "Not while the game says the skill cannot be used: you are too close or too far, in the wrong "
             .. "stance and the like. Being short of rage, mana or energy does not hide the icon, and neither "
             .. "does a cooldown." },
@@ -124,6 +151,7 @@ local notes = {
     controls = {}, -- kind of control -> "game", or "own: " and why the game's was not used
     fonts = {}, -- font wanted -> the font used in its place
     tight = {}, -- label -> "width/room", for labels that fill their room or more
+    pictures = {}, -- skill -> "none" while the client has no picture for it, "late" once one came after all
 }
 Options.notes = notes
 
@@ -149,9 +177,9 @@ local function SaveNotes()
     local saved = {
         version = ns.VERSION, build = ns.BuildKey(), plain = Plain(),
         rebuilt = notes.rebuilt, failed = notes.failed, page = notes.page, scale = notes.scale,
-        controls = {}, fonts = {}, tight = {},
+        controls = {}, fonts = {}, tight = {}, pictures = {},
     }
-    for _, name in pairs({ "controls", "fonts", "tight" }) do
+    for _, name in pairs({ "controls", "fonts", "tight", "pictures" }) do
         for key, value in pairs(notes[name]) do
             saved[name][key] = value
         end
@@ -183,8 +211,9 @@ end
 
 -- The fonts to try, nearest look first, when this client lacks one.
 local FONT_SPARES = {
-    GameFontHighlightHuge = { "GameFontNormalLarge", "GameFontHighlight", "GameFontNormal" },
-    GameFontNormalLarge = { "GameFontNormal", "GameFontHighlight" },
+    GameFontHighlightHuge = { "GameFontHighlightLarge", "GameFontNormalLarge", "GameFontHighlight", "GameFontNormal" },
+    GameFontHighlightLarge = { "GameFontNormalLarge", "GameFontHighlight", "GameFontNormal" },
+    GameFontNormalLarge = { "GameFontHighlightLarge", "GameFontNormal", "GameFontHighlight" },
     GameFontNormal = { "GameFontHighlight", "GameFontNormalSmall", "GameFontHighlightSmall" },
     GameFontHighlight = { "GameFontNormal", "GameFontHighlightSmall", "GameFontNormalSmall" },
     GameFontDisable = { "GameFontHighlight", "GameFontNormal", "GameFontDisableSmall" },
@@ -192,7 +221,8 @@ local FONT_SPARES = {
     GameFontHighlightSmall = { "GameFontNormalSmall", "GameFontHighlight", "GameFontNormal" },
     GameFontDisableSmall = { "GameFontHighlightSmall", "GameFontNormalSmall", "GameFontDisable", "GameFontNormal" },
 }
-local FONT_HEIGHTS = { GameFontHighlightHuge = 20, GameFontNormalLarge = 16 } -- the rest: 10 when small, else 12
+-- The rest: 10 when small, else 12.
+local FONT_HEIGHTS = { GameFontHighlightHuge = 20, GameFontHighlightLarge = 16, GameFontNormalLarge = 16 }
 
 local fontNames = {} -- font wanted -> the font to use, or false when the client has none of them
 
@@ -626,9 +656,9 @@ end
 
 --- A tick box with its words beside it: control.Set(ticked), and
 --- control.onChange(ticked) is called when a click changes it. control.Fit(room)
---- says how much room the words have.
+--- says how much room the words have, and control.Enable(false) greys it out.
 local function TickBox(parent, text, font)
-    local control = { ticked = false }
+    local control = { ticked = false, enabled = true }
 
     local mark
     local box = Native("tick", MakeGameTick, parent)
@@ -666,7 +696,20 @@ local function TickBox(parent, text, font)
         end
     end
 
+    --- Greys the box out and stops it taking clicks, or brings it back.
+    function control.Enable(enabled)
+        enabled = enabled and true or false
+        control.enabled = enabled
+        Try(box, "SetEnabled", enabled)
+        Try(box, "SetAlpha", enabled and 1 or DIM)
+        Try(label, "SetAlpha", enabled and 1 or DIM)
+    end
+
     box:SetScript("OnClick", function()
+        if not control.enabled then
+            control.Set(control.ticked) -- a box of the game's that took the click all the same is put back
+            return
+        end
         local ticked = not control.ticked
         control.Set(ticked) -- the game's own box has flipped itself already; this keeps both kinds in step
         Sound(ticked and "IG_MAINMENU_OPTION_CHECKBOX_ON" or "IG_MAINMENU_OPTION_CHECKBOX_OFF")
@@ -675,35 +718,7 @@ local function TickBox(parent, text, font)
         end
     end)
 
-    control.frame, control.label = box, label
-    control.Set(false)
-    return control
-end
-
---- A small tick box with no words of its own, for a cell of a list:
---- control.Set(ticked), and control.onChange(ticked) when a click changes it.
---- It is always the addon's own drawing, like the rest of a row, since the
---- game's box is as tall as a whole row.
-local function CellTick(parent, size)
-    local control = { ticked = false }
-    local box, mark = OwnTick(parent, size)
-
-    function control.Set(ticked)
-        ticked = ticked and true or false
-        control.ticked = ticked
-        Shown(mark, ticked)
-    end
-
-    box:SetScript("OnClick", function()
-        local ticked = not control.ticked
-        control.Set(ticked)
-        Sound(ticked and "IG_MAINMENU_OPTION_CHECKBOX_ON" or "IG_MAINMENU_OPTION_CHECKBOX_OFF")
-        if control.onChange then
-            ns.Guard(control.onChange, ticked)
-        end
-    end)
-
-    control.frame, control.mark = box, mark
+    control.frame, control.label, control.mark = box, label, mark
     control.Set(false)
     return control
 end
@@ -865,10 +880,10 @@ local function Tile(parent, size)
 end
 
 --- A row of joined buttons of which one is picked: control.Set(key), and
---- control.onPick(key) is called on a click. Each choice is { key, label,
---- width, tip, body }.
+--- control.onPick(key) is called on a click. control.Enable(false) greys the
+--- row out. Each choice is { key, label, width, tip, body }.
 local function Segmented(parent, choices)
-    local control = { buttons = {} }
+    local control = { buttons = {}, enabled = true }
     local frame = CreateFrame("Frame", nil, parent)
     local x = 0
     for i = 1, #choices do
@@ -895,7 +910,7 @@ local function Segmented(parent, choices)
 
         button.edge, button.back, button.label = edge, back, label
         OnClick(button, function()
-            if control.onPick then
+            if control.enabled and control.onPick then
                 control.onPick(choice.key)
             end
         end)
@@ -903,6 +918,16 @@ local function Segmented(parent, choices)
         control.buttons[choice.key] = button
     end
     frame:SetSize(x + 1, 20)
+
+    --- Greys the row out and stops it taking clicks, or brings it back.
+    function control.Enable(enabled)
+        enabled = enabled and true or false
+        control.enabled = enabled
+        for _, button in pairs(control.buttons) do
+            Try(button, "SetEnabled", enabled)
+        end
+        Try(frame, "SetAlpha", enabled and 1 or DIM)
+    end
 
     function control.Set(key)
         control.picked = key
@@ -981,15 +1006,16 @@ local function SpellChanged()
 end
 
 --- Tells the addon what the panel needs of it: sample icons on the real action
---- buttons while some copy is open on its Appearance tab, and the bars read
---- while any copy is open at all (the panel lists them even with the icons off).
+--- buttons while some copy is open on a tab that is about how the icons look,
+--- and the bars read while any copy is open at all (the panel lists them even
+--- with the icons off).
 function Options.UpdateSampling()
     local open, sampling = false, false
     for i = 1, #views do
         local view = views[i]
         if view.pages[view.tab]:IsVisible() then
             open = true
-            sampling = sampling or view.tab == "appearance"
+            sampling = sampling or view.tab ~= "spells"
         end
     end
     ns.SetWatching(open)
@@ -997,10 +1023,50 @@ function Options.UpdateSampling()
 end
 
 --------------------------------------------------------------------------------
--- The Appearance tab
+-- A skill's own picture
+--
+-- Wherever the panel points at a skill it shows that skill's own picture, the
+-- one on its action button. The game is asked for the spell's picture first,
+-- and for the picture on the action slot it sits in second. The question mark
+-- stands in only while the client gives neither: that is noted, and the skill
+-- is asked about again every time the panel is brought up to date, so that a
+-- picture the client only has a moment later still shows.
 --------------------------------------------------------------------------------
 
---- Pictures for the pretend buttons: spells from your own bars, those that get
+local PICTURES_KEPT = 12
+local picturesKept = 0
+
+--- A skill's picture, as something a texture can show, or nil.
+local function Picture(info)
+    local art = ns.SpellIcon(info.id)
+    if not art then
+        local slot = ns.BarSlot(info.name)
+        art = slot and ns.SlotIcon(slot) or nil
+    end
+    local noted = notes.pictures[info.name]
+    if art then
+        if noted == "none" then
+            notes.pictures[info.name] = "late" -- the client had none for it at first
+        end
+    elseif noted == nil and picturesKept < PICTURES_KEPT then
+        picturesKept = picturesKept + 1
+        notes.pictures[info.name] = "none"
+    end
+    return art
+end
+
+Options.Picture = Picture
+
+--- Shows a skill's picture on a texture, or the question mark for no skill.
+local function Wear(texture, info)
+    local face = info and Picture(info) or QUESTION
+    if texture.wears ~= face then
+        texture.wears = face
+        texture:SetTexture(face)
+    end
+end
+
+--- Pictures for the pretend buttons: skills from your own bars, those that get
 --- an icon first.
 local function PreviewFaces()
     local faces = {}
@@ -1012,22 +1078,232 @@ local function PreviewFaces()
             end
             local tracked = Spells:Tracking(list[i]) and true or false
             if tracked == (pass == 1) then
-                faces[#faces + 1] = ns.SpellIcon(list[i].id)
+                faces[#faces + 1] = list[i]
             end
         end
     end
     return faces
 end
 
---- One pretend action button, with nine spots to click and the icon of one
---- result drawn on it where and as large as it is on the real ones.
-local function BuildPreview(view, page, index, state)
-    local preview = { zones = {} }
+--------------------------------------------------------------------------------
+-- Rows
+--
+-- Every setting is a row of its own: what it is called on the left, the
+-- control for it on the right, and under the control, where it helps, a line
+-- that says what the setting is doing right now. Rows that belong together
+-- stand under a heading.
+--------------------------------------------------------------------------------
+
+--- A section's heading.
+local function Heading(page, text, top)
+    local heading = Text(page, "GameFontHighlightLarge", text)
+    heading:SetPoint("TOPLEFT", page, "TOPLEFT", L.left, top)
+    Fit(heading, L.right - L.left)
+    return heading
+end
+
+--- What a setting is called, at the start of its row. With `body` it has a
+--- tooltip that says what the setting does.
+local function RowLabel(parent, text, left, top, room, body)
+    local area = CreateFrame("Frame", nil, parent)
+    area:SetSize(room, 20)
+    area:SetPoint("TOPLEFT", parent, "TOPLEFT", left, top)
+    local label = Text(area, "GameFontNormal", text)
+    label:SetJustifyV("MIDDLE")
+    label:SetPoint("LEFT", area, "LEFT", 0, 0)
+    Fit(label, room)
+    if body then
+        area:EnableMouse(true)
+        Tip(area, text, body)
+    end
+    area.label = label
+    return area
+end
+
+--- A line or two of small grey words: what a setting is doing right now.
+--- note.Tell(text, colour) changes what it says.
+local function Note(parent, width, lines)
+    local label = Text(parent, "GameFontHighlightSmall")
+    lines = lines or 1
+    if lines > 1 then
+        label:SetWidth(width)
+    end
+    function label.Tell(text, colour)
+        label:SetText(text or "")
+        if lines > 1 then
+            FitLines(label, width, lines)
+        else
+            Fit(label, width)
+        end
+        Colour(label, colour or GREY)
+    end
+    label.Tell("")
+    return label
+end
+
+--- Greys a control out, or brings it back.
+local function Dim(region, dimmed)
+    Try(region, "SetAlpha", dimmed and DIM or 1)
+end
+
+--- A list of choices of which one is picked, one to a line, each with a round
+--- mark before it: control.Set(key), and control.onPick(key) is called on a
+--- click. control.Enable(false) greys the list out. Each choice is { key,
+--- label, tip, body }.
+local function RadioList(parent, choices, width)
+    local control = { buttons = {}, enabled = true }
+    local frame = CreateFrame("Frame", nil, parent)
+    frame:SetSize(width, #choices * RADIO_LINE)
+    for i = 1, #choices do
+        local choice = choices[i]
+        local button = CreateFrame("Button", nil, frame)
+        button:SetSize(width, RADIO_LINE)
+        button:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -(i - 1) * RADIO_LINE)
+
+        local glow = button:CreateTexture(nil, "HIGHLIGHT")
+        glow:SetAllPoints(button)
+        glow:SetColorTexture(1, 1, 1, 0.08)
+
+        -- The mark is two of the addon's own icons: a ring, and a dot in it for the one picked.
+        local ring = button:CreateTexture(nil, "ARTWORK")
+        ring:SetSize(16, 16)
+        ring:SetPoint("LEFT", button, "LEFT", 2, 0)
+        ring:SetTexture(Icons.Choice("ring").texture)
+        local dot = button:CreateTexture(nil, "OVERLAY")
+        dot:SetSize(8, 8)
+        dot:SetPoint("CENTER", ring, "CENTER", 0, 0)
+        dot:SetTexture(Icons.Choice("yellowdot").texture)
+
+        local label = Label(button, "ARTWORK", "GameFontHighlight")
+        label:SetJustifyH("LEFT")
+        label:SetPoint("LEFT", button, "LEFT", 24, 0)
+        Say(label, choice.label, width - 28)
+
+        button.ring, button.dot, button.label = ring, dot, label
+        OnClick(button, function()
+            if control.enabled and control.onPick then
+                control.onPick(choice.key)
+            end
+        end)
+        Tip(button, choice.tip, choice.body)
+        control.buttons[choice.key] = button
+    end
+
+    function control.Set(key)
+        control.picked = key
+        for name, button in pairs(control.buttons) do
+            local picked = name == key
+            button.picked = picked
+            Shown(button.dot, picked)
+            Try(button.ring, "SetDesaturated", not picked)
+            if picked then
+                button.label:SetTextColor(1, 1, 1)
+            else
+                button.label:SetTextColor(0.75, 0.75, 0.75)
+            end
+        end
+    end
+
+    function control.Enable(enabled)
+        enabled = enabled and true or false
+        control.enabled = enabled
+        for _, button in pairs(control.buttons) do
+            Try(button, "SetEnabled", enabled)
+        end
+        Dim(frame, not enabled)
+    end
+
+    control.frame = frame
+    control.Set(nil)
+    return control
+end
+
+--- Nine squares, for the nine places on a button the icon can sit:
+--- control.Set(position) marks one, and a click moves the icon there.
+local function PositionGrid(parent)
+    local control = { zones = {} }
+    local frame = CreateFrame("Frame", nil, parent)
+    frame:SetSize(3 * GRID_CELL + 2 * GRID_GAP, 3 * GRID_CELL + 2 * GRID_GAP)
+    for row = 1, 3 do
+        for column = 1, 3 do
+            local position = GRID[row][column]
+            local zone = CreateFrame("Button", nil, frame)
+            zone:SetSize(GRID_CELL, GRID_CELL)
+            zone:SetPoint("TOPLEFT", frame, "TOPLEFT", (column - 1) * (GRID_CELL + GRID_GAP),
+                -(row - 1) * (GRID_CELL + GRID_GAP))
+
+            local edge = zone:CreateTexture(nil, "BACKGROUND")
+            edge:SetAllPoints(zone)
+            local back = zone:CreateTexture(nil, "BORDER")
+            back:SetPoint("TOPLEFT", zone, "TOPLEFT", 1, -1)
+            back:SetPoint("BOTTOMRIGHT", zone, "BOTTOMRIGHT", -1, 1)
+            local glow = zone:CreateTexture(nil, "HIGHLIGHT")
+            glow:SetAllPoints(zone)
+            glow:SetColorTexture(1, 1, 1, 0.25)
+
+            zone.edge, zone.back, zone.row, zone.column = edge, back, row, column
+            OnClick(zone, function()
+                Change(function()
+                    ns.db.corner = position
+                end)
+            end)
+            Tip(zone, POSITION_NAMES[position])
+            control.zones[position] = zone
+        end
+    end
+
+    function control.Set(position)
+        control.picked = position
+        for name, zone in pairs(control.zones) do
+            local picked = name == position
+            zone.picked = picked
+            if picked then
+                zone.edge:SetColorTexture(1, 1, 1, 1)
+                zone.back:SetColorTexture(GOLD[1], GOLD[2], GOLD[3], 1)
+            else
+                zone.edge:SetColorTexture(0.35, 0.35, 0.4, 1)
+                zone.back:SetColorTexture(0.1, 0.1, 0.13, 1)
+            end
+        end
+    end
+
+    control.frame = frame
+    control.Set(nil)
+    return control
+end
+
+--- The stroke that says "no icon" on a square, or the word for it on a client
+--- that draws no lines.
+local function Stroke(frame, size)
+    local inset = floor(size * 0.27 + 0.5)
+    local drawn, stroke = Try(frame, "CreateLine", nil, "ARTWORK")
+    if drawn and stroke and Try(stroke, "SetStartPoint", "BOTTOMLEFT", frame, inset, inset)
+        and Try(stroke, "SetEndPoint", "TOPRIGHT", frame, -inset, -inset) then
+        Try(stroke, "SetThickness", 2)
+        Try(stroke, "SetColorTexture", 0.6, 0.6, 0.65, 1)
+        return stroke
+    end
+    local dash = Label(frame, "ARTWORK", "GameFontDisableSmall")
+    dash:SetPoint("CENTER", frame, "CENTER", 0, 0)
+    Say(dash, "none", size - 4)
+    return dash
+end
+
+--------------------------------------------------------------------------------
+-- The Display tab: whether the icons show, when, on which skills, where on the
+-- button and how large
+--------------------------------------------------------------------------------
+
+--- One pretend action button, wearing a skill from your own bars, with the icon
+--- of one result drawn on it where and as large as it is on the real ones.
+local function BuildPreview(view, page, index, state, top)
+    local preview = {}
+    local left = L.label + (index - 1) * PREVIEW_PITCH
 
     -- The slot cuts off an icon that is set far larger than the button.
     local slot = CreateFrame("Frame", nil, page)
-    slot:SetSize(L.slotWidth, L.slotHeight)
-    slot:SetPoint("TOPLEFT", page, "TOPLEFT", 16 + (index - 1) * L.slotPitch, L.headTop - 18)
+    slot:SetSize(PREVIEW_SLOT, PREVIEW_SLOT)
+    slot:SetPoint("TOPLEFT", page, "TOPLEFT", left, top)
     Try(slot, "SetClipsChildren", true)
 
     local button = CreateFrame("Frame", nil, slot)
@@ -1036,75 +1312,223 @@ local function BuildPreview(view, page, index, state)
 
     local face = button:CreateTexture(nil, "BACKGROUND")
     face:SetAllPoints(button)
-    face:SetTexture(QUESTION)
     Try(face, "SetTexCoord", 0.07, 0.93, 0.07, 0.93) -- trims the picture's own border, as action buttons do
+    Wear(face, nil)
 
-    for row = 1, 3 do
-        for column = 1, 3 do
-            local position = GRID[row][column]
-            local zone = CreateFrame("Button", nil, button)
+    -- The icon is drawn above the picture, on a frame of its own, as on the real buttons.
+    local above = CreateFrame("Frame", nil, button)
+    above:SetAllPoints(button)
+    above:SetFrameLevel(button:GetFrameLevel() + 5)
+    local icon = above:CreateTexture(nil, "OVERLAY")
 
-            local ghost = zone:CreateTexture(nil, "ARTWORK")
-            ghost:SetSize(3, 3)
-            ghost:SetPoint("CENTER", zone, "CENTER", 0, 0)
-            ghost:SetColorTexture(1, 1, 1, 0.45)
-
-            local glow = zone:CreateTexture(nil, "HIGHLIGHT")
-            glow:SetAllPoints(zone)
-            glow:SetColorTexture(1, 1, 1, 0.3)
-
-            zone.ghost, zone.row, zone.column = ghost, row, column
-            OnClick(zone, function()
-                Change(function()
-                    ns.db.corner = position
-                end)
-            end)
-            Tip(zone, POSITION_NAMES[position])
-            preview.zones[position] = zone
-        end
-    end
-
-    -- The icon is drawn above the spots, on a frame the mouse passes through.
-    local top = CreateFrame("Frame", nil, button)
-    top:SetAllPoints(button)
-    top:SetFrameLevel(button:GetFrameLevel() + 5)
-    local icon = top:CreateTexture(nil, "OVERLAY")
-
+    -- What the result is called, beside its button: two lines if it comes to that.
+    local room = PREVIEW_PITCH - PREVIEW_SLOT - 8 - 12
     local caption = Text(page, "GameFontHighlightSmall", state.title)
-    caption:SetJustifyH("CENTER")
-    caption:SetPoint("TOP", slot, "BOTTOM", 0, -4)
+    caption:SetJustifyV("MIDDLE")
+    caption:SetWidth(room)
+    caption:SetPoint("LEFT", slot, "RIGHT", 8, 0)
+    FitLines(caption, room, 2)
+
+    slot:EnableMouse(true)
+    Tip(slot, state.title, state.detail)
 
     preview.slot, preview.button, preview.face, preview.icon, preview.caption = slot, button, face, icon, caption
     return preview
 end
 
+local function BuildDisplay(view, page)
+    view.previews = {}
+    local labelRoom = L.control - L.label - 10
+    local wide = L.right - L.control
+
+    Heading(page, "Visibility", -12)
+
+    RowLabel(page, "Show status icons", L.label, -40, labelRoom,
+        "The icons this addon puts on your action buttons. Unticked, your buttons stay bare.")
+    local enable = TickBox(page, "")
+    enable.frame:SetPoint("LEFT", page, "TOPLEFT", L.control, -50)
+    enable.onChange = function(ticked)
+        ns.SetEnabled(ticked)
+        Options.RefreshAll()
+    end
+    Tip(enable.frame, "Show status icons")
+    view.enable = enable
+    local off = Note(page, wide - 40)
+    off:SetPoint("LEFT", page, "TOPLEFT", L.control + 40, -50)
+    view.off = off
+
+    RowLabel(page, "When to show them", L.label, -70, labelRoom,
+        "The icons can stay away until there is a fight, so that your buttons are bare the rest of the time.")
+    local appear = RadioList(page, APPEAR_CHOICES, wide)
+    appear.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -69)
+    appear.onPick = function(key)
+        Change(function()
+            ns.SetAppear(key)
+        end)
+    end
+    view.appear = appear
+
+    RowLabel(page, "On which skills", L.label, -144, labelRoom,
+        "A skill the game will not let you use right now can go without its icon.")
+    local usable = RadioList(page, USABLE_CHOICES, wide)
+    usable.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -143)
+    usable.onPick = function(key)
+        Change(function()
+            ns.SetUsableOnly(key == "usable")
+        end)
+    end
+    view.usable = usable
+    local usableNote = Note(page, wide - 24, 2)
+    usableNote:SetPoint("TOPLEFT", page, "TOPLEFT", L.control + 24, -189)
+    view.usableNote = usableNote
+
+    Heading(page, "Position and size", -224)
+
+    -- Where on a button: nine squares, laid out like the button itself.
+    local grid = PositionGrid(page)
+    grid.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -252)
+    local gridHeight = 3 * GRID_CELL + 2 * GRID_GAP
+    RowLabel(page, "Position", L.label, -252 - (gridHeight - 20) / 2, labelRoom,
+        "Where on each action button the icon sits. Click one of the nine squares.")
+    local where = Text(page, "GameFontHighlight")
+    where:SetJustifyV("MIDDLE")
+    where:SetPoint("LEFT", grid.frame, "RIGHT", 12, 0)
+    view.grid, view.zones, view.where = grid, grid.zones, where
+
+    -- How large: a slider, or follow the button.
+    RowLabel(page, "Size", L.label, -328, labelRoom, "How large the icon is drawn, from " .. ns.SIZE_MIN .. " to "
+        .. ns.SIZE_MAX .. ". Auto sizes it from the button it sits on.")
+    local slider = NumberSlider(page, 200, ns.SIZE_MIN, ns.SIZE_MAX)
+    slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -328)
+    slider.onChange = function(value)
+        Change(function()
+            ns.db.size = value
+        end)
+    end
+
+    local readout = Text(page, "GameFontHighlight")
+    readout:SetJustifyH("CENTER")
+    readout:SetJustifyV("MIDDLE")
+    readout:SetPoint("CENTER", slider.frame, "RIGHT", 20, 0)
+
+    local auto = TickBox(page, "Auto")
+    auto.frame:SetPoint("LEFT", slider.frame, "RIGHT", 44, 0)
+    auto.Fit(L.right - (L.control + 200 + 44) - Wide(auto.frame, 30) - 4)
+    auto.onChange = function(ticked)
+        Change(function()
+            -- Unticked, the icon stays the size it was, as a size of its own.
+            ns.db.size = ticked and 0 or max(ns.SIZE_MIN, min(ns.SIZE_MAX, ns.AutoIconSize()))
+        end)
+    end
+    Tip(auto.frame, "Auto", "Size the icon from the button it sits on.")
+    view.size = { slider = slider, readout = readout, auto = auto }
+
+    local sizeNote = Note(page, wide)
+    sizeNote:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -352)
+    view.sizeNote = sizeNote
+
+    -- A pretend button for each result.
+    Heading(page, "Preview", -380)
+    for index = 1, #Icons.STATES do
+        local state = Icons.STATES[index]
+        view.previews[state.key] = BuildPreview(view, page, index, state, -406)
+    end
+
+    --- The pretend buttons wear pictures of skills on your own bars.
+    local function RefreshFaces()
+        local faces = PreviewFaces()
+        for index = 1, #Icons.STATES do
+            Wear(view.previews[Icons.STATES[index].key].face, faces[index])
+        end
+    end
+
+    -- The bars may only have been read a moment after the panel opened.
+    local waited = 0
+    page:SetScript("OnUpdate", function(_, elapsed)
+        waited = waited + (type(elapsed) == "number" and elapsed or 0)
+        if waited >= 0.5 then
+            waited = 0
+            ns.Guard(RefreshFaces)
+        end
+    end)
+
+    function view.RefreshDisplay()
+        local on = ns.db.enabled and true or false
+        enable.Set(on)
+        off.Tell(on and "" or "Off: your action buttons stay bare.")
+        appear.Set(ns.db.appear)
+        usable.Set(ns.db.usableOnly and "usable" or "always")
+        -- Neither changes anything while the icons are off.
+        appear.Enable(on)
+        usable.Enable(on)
+        usableNote.Tell(ns.db.usableOnly
+            and "Being short of rage, mana or energy does not hide an icon, and neither does a cooldown." or "")
+        Dim(usableNote, not on)
+
+        local corner = ns.db.corner
+        grid.Set(corner)
+        Say(where, POSITION_NAMES[corner] or "", L.right - (L.control + gridHeight + 12))
+
+        -- Size: the slider sits at the size in use, chosen or not.
+        local chosen = ns.db.size
+        local size = chosen > 0 and chosen or ns.AutoIconSize()
+        slider.Set(max(ns.SIZE_MIN, min(ns.SIZE_MAX, size)))
+        Say(readout, tostring(size), 36)
+        auto.Set(chosen == 0)
+        sizeNote.Tell(chosen == 0 and "Sized from the button it sits on." or "The same size on every button.")
+
+        -- The pretend buttons are as large as a real one looks from here, so the
+        -- icon on them is the size it is on the bars.
+        local width, ratio = ns.TypicalButton(page)
+        local side = max(L.previewMin, min(L.previewMax, width * ratio))
+        local scale = side / width
+        local offset = ns.CORNERS[corner] or ns.CORNERS.TOPLEFT
+        RefreshFaces()
+        for index = 1, #Icons.STATES do
+            local key = Icons.STATES[index].key
+            local preview = view.previews[key]
+            preview.button:SetSize(side, side)
+            local art = Icons.Texture(key)
+            if art then
+                preview.icon:SetTexture(art)
+                preview.icon:SetSize(size * scale, size * scale)
+                preview.icon:ClearAllPoints()
+                preview.icon:SetPoint(corner, preview.button, corner, offset[1] * scale, offset[2] * scale)
+            end
+            Shown(preview.icon, art ~= nil)
+        end
+
+        view.Foot(on and "Out of combat, your action buttons show sample icons while this tab is open."
+            or "Status icons are turned off, so your action buttons show none.")
+    end
+end
+
+--------------------------------------------------------------------------------
+-- The Icons tab: which icon each of the three results uses
+--------------------------------------------------------------------------------
+
 --- The box for a texture of your own: somewhere to type, and a line that says
---- what to type or what went wrong. The tile beside it shows the texture.
-local function BuildEditor(view, page, state, left, top)
+--- what to type or what went wrong. It belongs to whichever result is picked.
+local function BuildEditor(view, page, left, top)
     local editor = CreateFrame("Frame", nil, page)
-    editor:SetSize(196, 54)
+    editor:SetSize(L.right - left, 24)
     editor:SetPoint("TOPLEFT", page, "TOPLEFT", left, top)
     editor:Hide()
 
-    local note = Text(editor, "GameFontDisableSmall")
-    note:SetPoint("TOPLEFT", editor, "TOPLEFT", 2, -29)
-    note:SetWidth(194)
-
-    local function Tell(text, colour)
-        note:SetText(text)
-        FitLines(note, 194, 3) -- three lines is all the room there is above the next result
-        Colour(note, colour or { 0.5, 0.5, 0.5 })
-    end
+    local room = L.right - left - EDITOR_BOX - 14
+    local note = Note(editor, room, 2)
+    note:SetPoint("TOPLEFT", editor, "TOPLEFT", EDITOR_BOX + 14, 0)
 
     local function Apply(box)
+        local key = view.picked
         local text = box:GetText() or ""
         if not text:find("%S") then
             -- Emptied: back to the usual icon if this result was on a texture of its own.
             box:ClearFocus()
-            view.editing[state.key] = nil
-            if Icons.Current(state.key) == "custom" then
+            view.editing = nil
+            if Icons.Current(key) == "custom" then
                 Change(function()
-                    Icons.Set(state.key, nil)
+                    Icons.Set(key, nil)
                 end)
             else
                 view.Refresh()
@@ -1114,25 +1538,25 @@ local function BuildEditor(view, page, state, left, top)
         local texture = Icons.ParseCustom(text)
         if not texture then
             editor.problem = true
-            Tell("Not a texture. Type a file ID such as 136243, or a path that starts with Interface.", BAD)
+            note.Tell("Not a texture. Type a file ID such as 136243, or a path that starts with Interface.", BAD)
             return
         end
         box:ClearFocus()
         Change(function()
-            Icons.SetCustom(state.key, texture)
+            Icons.SetCustom(key, texture)
         end)
     end
 
-    local built, box = pcall(Input, editor, 192)
+    local built, box = pcall(Input, editor, EDITOR_BOX)
     if built and box then
-        box:SetPoint("TOPLEFT", editor, "TOPLEFT", 2, -5)
+        box:SetPoint("TOPLEFT", editor, "TOPLEFT", 1, -1)
         box:SetScript("OnEnterPressed", function(self)
             ns.Guard(Apply, self)
         end)
         box:SetScript("OnEscapePressed", function(self)
             self:ClearFocus()
-            if Icons.Current(state.key) ~= "custom" then
-                view.editing[state.key] = nil
+            if Icons.Current(view.picked) ~= "custom" then
+                view.editing = nil
             end
             ns.Guard(view.Refresh)
         end)
@@ -1142,7 +1566,8 @@ local function BuildEditor(view, page, state, left, top)
     --- Brings the box in line with the settings. `missing` says that the game
     --- has no texture where the player's own one points.
     function editor.Refresh(current, custom, missing)
-        local open = current == "custom" or view.editing[state.key] == true
+        local key = view.picked
+        local open = current == "custom" or view.editing == key
         Shown(editor, open)
         if not open then
             editor.problem = nil
@@ -1157,13 +1582,13 @@ local function BuildEditor(view, page, state, left, top)
         if editor.problem then
             return -- the complaint stays up while the box is being corrected
         elseif not editor.box then
-            Tell("/se icon " .. state.key .. " <file ID or path>")
+            note.Tell("/se icon " .. key .. " <file ID or path>")
         elseif editor.missing then
-            Tell("The game has no texture there, so no icon shows.", WARN)
+            note.Tell("The game has no texture there, so no icon shows.", WARN)
         elseif current == "custom" then
-            Tell("In use. Empty the box and press Enter to undo.")
+            note.Tell("In use. Empty the box and press Enter to undo.")
         else
-            Tell("A file ID or a path, then Enter.")
+            note.Tell("A file ID or a path, then Enter.")
         end
     end
 
@@ -1171,198 +1596,78 @@ local function BuildEditor(view, page, state, left, top)
     return editor
 end
 
---- One result: its heading, every icon it can use, "no icon", and "your own".
-local function BuildResult(view, page, index, state)
-    local top = L.blockTop - (index - 1) * L.blockPitch
+--- One result: the icon it uses now, what it is called and what it means. A
+--- click picks it, and the icons under the three are then on offer for it.
+local function BuildResult(view, page, index, state, top)
     local key = state.key
+    local width = L.right - L.left
 
-    local current = page:CreateTexture(nil, "ARTWORK")
-    current:SetSize(16, 16)
-    current:SetPoint("TOPLEFT", page, "TOPLEFT", 16, top + 2)
-    view.current[key] = current
+    local row = CreateFrame("Button", nil, page)
+    row:SetSize(width, RESULT_HEIGHT - 2)
+    row:SetPoint("TOPLEFT", page, "TOPLEFT", L.left, top - (index - 1) * RESULT_HEIGHT)
 
-    local name = Text(page, "GameFontNormal", state.title)
-    name:SetPoint("TOPLEFT", page, "TOPLEFT", 38, top)
-    Fit(name, 200)
-    local detail = Text(page, "GameFontHighlightSmall", state.detail)
-    detail:SetPoint("LEFT", name, "RIGHT", 10, 0)
-    view.names[key], view.details[key] = name, detail
+    local chosen = row:CreateTexture(nil, "BACKGROUND")
+    chosen:SetAllPoints(row)
+    chosen:SetColorTexture(0.24, 0.2, 0.08, 0.8)
+    local bar = row:CreateTexture(nil, "BORDER")
+    bar:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+    bar:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+    bar:SetWidth(3)
+    bar:SetColorTexture(GOLD[1], GOLD[2], GOLD[3], 1)
+    local glow = row:CreateTexture(nil, "HIGHLIGHT")
+    glow:SetAllPoints(row)
+    glow:SetColorTexture(1, 1, 1, 0.07)
+
+    -- The icon in use, on a dark square that stays when the result has none.
+    local box = CreateFrame("Frame", nil, row)
+    box:SetSize(RESULT_ICON, RESULT_ICON)
+    box:SetPoint("LEFT", row, "LEFT", 10, 0)
+    local back = box:CreateTexture(nil, "BACKGROUND")
+    back:SetAllPoints(box)
+    back:SetColorTexture(0.1, 0.1, 0.12, 1)
+    local icon = box:CreateTexture(nil, "ARTWORK")
+    icon:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)
+    icon:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -2, 2)
+    local none = Stroke(box, RESULT_ICON)
+
+    local textLeft = 10 + RESULT_ICON + 10
+    local name = Text(row, "GameFontNormal", state.title)
+    name:SetPoint("TOPLEFT", row, "TOPLEFT", textLeft, -6)
+    Fit(name, 220)
+    local detail = Text(row, "GameFontHighlightSmall", state.detail)
+    detail:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", textLeft, 7)
+    Fit(detail, width - textLeft - 8)
 
     -- Says so when this result cannot be told from an earlier one.
-    local clash = Text(page, "GameFontHighlightSmall")
+    local clash = Text(row, "GameFontHighlightSmall")
     clash:SetJustifyH("RIGHT")
-    clash:SetPoint("TOPRIGHT", page, "TOPLEFT", L.right, top - 1)
+    clash:SetPoint("TOPRIGHT", row, "TOPRIGHT", -8, -8)
     Colour(clash, WARN)
     clash:Hide()
-    view.clashes[key] = clash
 
-    local tiles = {}
-    local own, game = 0, 0
-    for i = 1, #Icons.CHOICES do
-        local choice = Icons.CHOICES[i]
-        local column, line
-        if choice.own then
-            column, line, own = own, 0, own + 1 -- the addon's own icons on the first line
-        else
-            column, line, game = game, 1, game + 1 -- the game's on the second
-        end
-        local tile = Tile(page, L.tile)
-        tile:SetPoint("TOPLEFT", page, "TOPLEFT", 18 + column * L.tileStep, top - 20 - line * L.tileStep)
-        tile.art:SetTexture(choice.texture)
-        OnClick(tile, function()
-            view.editing[key] = nil
-            Change(function()
-                Icons.Set(key, choice.key)
-            end)
-        end)
-        Tip(tile, choice.name)
-        tiles[choice.key] = tile
-    end
-
-    -- No icon at all: a bare tile with a stroke through it, at the end of the first line.
-    local hidden = Tile(page, L.tile)
-    hidden:SetPoint("TOPLEFT", page, "TOPLEFT", 18 + own * L.tileStep, top - 20)
-    local drawn, stroke = Try(hidden, "CreateLine", nil, "ARTWORK")
-    if drawn and stroke and Try(stroke, "SetStartPoint", "BOTTOMLEFT", hidden, 8, 8)
-        and Try(stroke, "SetEndPoint", "TOPRIGHT", hidden, -8, -8) then
-        Try(stroke, "SetThickness", 2)
-        Try(stroke, "SetColorTexture", 0.6, 0.6, 0.65, 1)
-    else
-        local dash = Label(hidden, "ARTWORK", "GameFontDisableSmall")
-        dash:SetPoint("CENTER", hidden, "CENTER", 0, 0)
-        Say(dash, "none", L.tile - 4)
-    end
-    OnClick(hidden, function()
-        view.editing[key] = nil
-        Change(function()
-            Icons.SetHidden(key)
-        end)
+    OnClick(row, function()
+        view.Pick(key)
     end)
-    Tip(hidden, Icons.HIDDEN_NAME, "Buttons stay bare for this result.")
-    tiles[Icons.HIDDEN] = hidden
+    Tip(row, state.title, "Click to choose its icon below.")
 
-    -- A texture of your own: the tile opens a box to type it into.
-    local editor = BuildEditor(view, page, state, 18 + (own + 2) * L.tileStep, top - 20)
-    local custom = Tile(page, L.tile)
-    custom:SetPoint("TOPLEFT", page, "TOPLEFT", 18 + (own + 1) * L.tileStep, top - 20)
-    local dots = Label(custom, "ARTWORK", "GameFontHighlight")
-    dots:SetPoint("CENTER", custom, "CENTER", 0, 3)
-    Say(dots, "...", L.tile - 4)
-    custom.dots = dots
-    OnClick(custom, function()
-        view.editing[key] = true
-        view.Refresh()
-        if editor.box then
-            editor.box:SetFocus()
-        end
-    end)
-    Tip(custom, "Your own texture", "Any picture in the game, by file ID or by path.")
-    tiles.custom = custom
-
-    view.swatches[key] = tiles
-    view.editors[key] = editor
-    view.inputs[key] = editor.box
+    row.chosen, row.bar, row.icon, row.none = chosen, bar, icon, none
+    view.results[key], view.current[key] = row, icon
+    view.names[key], view.details[key], view.clashes[key] = name, detail, clash
 end
 
-local function BuildAppearance(view, page)
-    view.previews, view.sets, view.current, view.clashes = {}, {}, {}, {}
-    view.swatches, view.editors, view.inputs, view.editing = {}, {}, {}, {}
-    view.names, view.details = {}, {}
-
-    -- On or off, when, and on which skills: the three read as one sentence.
-    local enable = TickBox(page, "Show status icons")
-    enable.frame:SetPoint("LEFT", page, "TOPLEFT", 14, -22)
-    enable.onChange = function(ticked)
-        ns.SetEnabled(ticked)
-        Options.RefreshAll()
-    end
-    view.enable = enable
-
-    local appear = Segmented(page, APPEAR_CHOICES)
-    appear.frame:SetPoint("LEFT", enable.label, "RIGHT", 14, 0)
-    -- The words get what the box before them and the choices after them leave.
-    enable.Fit(L.right - appear.width - 14 - (14 + Wide(enable.frame, 30) + 4))
-    appear.onPick = function(key)
-        Change(function()
-            ns.SetAppear(key)
-        end)
-    end
-    view.appear = appear
-
-    local usable = Segmented(page, USABLE_CHOICES)
-    usable.frame:SetPoint("TOPLEFT", appear.frame, "BOTTOMLEFT", 0, -4)
-    usable.onPick = function(key)
-        Change(function()
-            ns.SetUsableOnly(key == "usable")
-        end)
-    end
-    view.usable = usable
-
-    -- A pretend button for each result.
-    local previewLabel = Text(page, "GameFontNormal", "Preview")
-    previewLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.headTop)
-    Fit(previewLabel, 80)
-    local hint = Text(page, "GameFontHighlightSmall", "Click a spot on any button to move the icon.")
-    hint:SetPoint("BOTTOMLEFT", previewLabel, "BOTTOMRIGHT", 10, 1)
-    view.previewLabel, view.hint = previewLabel, hint
-
-    for index = 1, #Icons.STATES do
-        local state = Icons.STATES[index]
-        view.previews[state.key] = BuildPreview(view, page, index, state)
-    end
-    view.zones = view.previews[Icons.STATES[1].key].zones
-
-    local sampleNote = Text(page, "GameFontDisableSmall")
-    sampleNote:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.headTop - 112)
-    view.sampleNote = sampleNote
-
-    -- Size: a slider, or follow the button.
-    local sizeLabel = Text(page, "GameFontNormal", "Icon size")
-    sizeLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop)
-    Fit(sizeLabel, L.right - 300)
-
-    local slider = NumberSlider(page, 200, ns.SIZE_MIN, ns.SIZE_MAX)
-    slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop - 18)
-    slider.onChange = function(value)
-        Change(function()
-            ns.db.size = value
-        end)
-    end
-
-    local lowest = Text(page, "GameFontDisableSmall", tostring(ns.SIZE_MIN))
-    lowest:SetJustifyH("CENTER")
-    lowest:SetPoint("TOP", slider.frame, "BOTTOMLEFT", 22, -1)
-    local highest = Text(page, "GameFontDisableSmall", tostring(ns.SIZE_MAX))
-    highest:SetJustifyH("CENTER")
-    highest:SetPoint("TOP", slider.frame, "BOTTOMRIGHT", -22, -1)
-
-    local readout = Text(page, "GameFontHighlight")
-    readout:SetJustifyH("CENTER")
-    readout:SetJustifyV("MIDDLE")
-    readout:SetPoint("CENTER", slider.frame, "RIGHT", 18, 0)
-
-    local auto = TickBox(page, "Auto")
-    auto.frame:SetPoint("LEFT", slider.frame, "RIGHT", 38, 0)
-    auto.Fit(L.right - (300 + 200 + 38) - Wide(auto.frame, 30) - 4)
-    auto.onChange = function(ticked)
-        Change(function()
-            -- Unticked, the icon stays the size it was, as a size of its own.
-            ns.db.size = ticked and 0 or max(ns.SIZE_MIN, min(ns.SIZE_MAX, ns.AutoIconSize()))
-        end)
-    end
-    Tip(auto.frame, "Auto", "Size the icon from the button it sits on.")
-
-    view.size = { slider = slider, readout = readout, auto = auto }
+local function BuildIcons(view, page)
+    view.sets, view.current, view.clashes, view.names, view.details = {}, {}, {}, {}, {}
+    view.results, view.tiles = {}, {}
+    view.picked = Icons.STATES[1].key -- the result whose icons are on offer
+    view.editing = nil -- the result for which the box for a texture of your own is open, before one is in use
 
     -- Sets: all three icons in one click.
-    local setLabel = Text(page, "GameFontNormal", "Icon set")
-    setLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 300, L.headTop - 58)
-    Fit(setLabel, L.right - 300)
+    Heading(page, "Icon set", -12)
     for index = 1, #Icons.SETS do
         local set = Icons.SETS[index]
         local button = CreateFrame("Button", nil, page)
-        button:SetSize(76, 30)
-        button:SetPoint("TOPLEFT", page, "TOPLEFT", 300 + (index - 1) * 80, L.headTop - 76)
+        button:SetSize(SET_WIDTH, 30)
+        button:SetPoint("TOPLEFT", page, "TOPLEFT", L.label + (index - 1) * (SET_WIDTH + 8), -40)
 
         local ring = button:CreateTexture(nil, "BACKGROUND")
         ring:SetAllPoints(button)
@@ -1386,7 +1691,7 @@ local function BuildAppearance(view, page)
 
         button.ring = ring
         OnClick(button, function()
-            ns.Wipe(view.editing)
+            view.editing = nil
             Change(function()
                 Icons.ApplySet(set)
             end)
@@ -1394,302 +1699,237 @@ local function BuildAppearance(view, page)
         Tip(button, set.name, "Uses these three icons for the three results.")
         view.sets[set.key] = button
     end
+    -- Which set is in use, in words, beside the four.
+    local setLeft = L.label + #Icons.SETS * (SET_WIDTH + 8) + 6
+    local setName = Note(page, L.right - setLeft, 2)
+    setName:SetJustifyV("MIDDLE")
+    setName:SetPoint("LEFT", page, "TOPLEFT", setLeft, -55)
+    view.setName = setName
 
-    -- Each result and the icons it can use.
+    -- The three results. One of them is picked, and its icons are on offer below.
+    Heading(page, "One icon for each result", -88)
+    local hint = Note(page, L.right - L.label)
+    hint:SetPoint("TOPLEFT", page, "TOPLEFT", L.label, -110)
+    hint.Tell("Pick a result, then the icon it should use.")
+    view.hint = hint
     for index = 1, #Icons.STATES do
-        BuildResult(view, page, index, Icons.STATES[index])
+        BuildResult(view, page, index, Icons.STATES[index], -130)
     end
 
-    -- Reset, which asks first.
-    local bottom = L.blockTop - #Icons.STATES * L.blockPitch - 4
-    local reset = PushButton(page, 150, 22, "Reset appearance...")
-    reset:SetPoint("TOPLEFT", page, "TOPLEFT", 16, bottom)
+    local gridTop = -130 - #Icons.STATES * RESULT_HEIGHT - 14
+    local offer = Text(page, "GameFontNormal")
+    offer:SetPoint("TOPLEFT", page, "TOPLEFT", L.label, gridTop)
+    view.offer = offer
 
-    local pointer = Text(page, "GameFontDisableSmall", "Spell by spell settings are on the Spells tab.")
-    pointer:SetJustifyH("RIGHT")
-    pointer:SetPoint("TOPRIGHT", page, "TOPLEFT", L.right, bottom - 6)
-    Fit(pointer, L.right - (16 + 150) - 12) -- what the reset button leaves
-
-    local confirm = CreateFrame("Frame", nil, page)
-    confirm:SetSize(608, 22)
-    confirm:SetPoint("TOPLEFT", page, "TOPLEFT", 16, bottom)
-    confirm:Hide()
-    local question = Text(confirm, "GameFontHighlight", "Put the position, size and icons back to how they started?")
-    question:SetJustifyV("MIDDLE")
-    question:SetPoint("LEFT", confirm, "LEFT", 0, 0)
-    Fit(question, 608 - 12 - 90 - 6 - 90) -- what its two buttons leave
-    view.pointer, view.question = pointer, question
-    local yes = PushButton(confirm, 90, 22, "Reset")
-    yes:SetPoint("LEFT", question, "RIGHT", 12, 0)
-    local no = PushButton(confirm, 90, 22, "Cancel")
-    no:SetPoint("LEFT", yes, "RIGHT", 6, 0)
-
-    local function Asking(asking)
-        Shown(confirm, asking)
-        Shown(reset, not asking)
-        Shown(pointer, not asking)
+    -- The icons: the addon's own on the first line, with "no icon" and "your
+    -- own" after them, and the game's on the second.
+    local tiles = view.tiles
+    local tilesTop = gridTop - 22
+    local own, game = 0, 0
+    for i = 1, #Icons.CHOICES do
+        local choice = Icons.CHOICES[i]
+        local column, line
+        if choice.own then
+            column, line, own = own, 0, own + 1
+        else
+            column, line, game = game, 1, game + 1
+        end
+        local tile = Tile(page, L.tile)
+        tile:SetPoint("TOPLEFT", page, "TOPLEFT", L.label + column * L.tileStep, tilesTop - line * L.tileStep)
+        tile.art:SetTexture(choice.texture)
+        OnClick(tile, function()
+            view.editing = nil
+            Change(function()
+                Icons.Set(view.picked, choice.key)
+            end)
+        end)
+        Tip(tile, choice.name)
+        tiles[choice.key] = tile
     end
-    OnClick(reset, function()
-        Asking(true)
-    end)
-    OnClick(no, function()
-        Asking(false)
-    end)
-    OnClick(yes, function()
-        Asking(false)
-        ns.Wipe(view.editing)
+
+    -- No icon at all: a bare tile with a stroke through it.
+    local hidden = Tile(page, L.tile)
+    hidden:SetPoint("TOPLEFT", page, "TOPLEFT", L.label + own * L.tileStep, tilesTop)
+    Stroke(hidden, L.tile)
+    OnClick(hidden, function()
+        view.editing = nil
         Change(function()
-            ns.db.corner = "TOPLEFT"
-            ns.db.size = 0
-            Icons.ResetAll()
+            Icons.SetHidden(view.picked)
         end)
     end)
-    view.reset, view.confirm = reset, { frame = confirm, yes = yes, no = no }
+    Tip(hidden, Icons.HIDDEN_NAME, "Buttons stay bare for this result.")
+    tiles[Icons.HIDDEN] = hidden
 
-    --- Puts away whatever was half done when the panel closes.
-    function view.Settle()
-        Asking(false)
-        for key in pairs(view.editing) do
-            view.editing[key] = nil
+    -- A texture of your own: the tile opens a box to type it into.
+    local editor = BuildEditor(view, page, L.label, tilesTop - 2 * L.tileStep - 8)
+    local custom = Tile(page, L.tile)
+    custom:SetPoint("TOPLEFT", page, "TOPLEFT", L.label + (own + 1) * L.tileStep, tilesTop)
+    local dots = Label(custom, "ARTWORK", "GameFontHighlight")
+    dots:SetPoint("CENTER", custom, "CENTER", 0, 3)
+    Say(dots, "...", L.tile - 4)
+    custom.dots = dots
+    OnClick(custom, function()
+        view.editing = view.picked
+        view.Refresh()
+        if editor.box then
+            editor.box:SetFocus()
         end
-        for _, editor in pairs(view.editors) do
+    end)
+    Tip(custom, "Your own texture", "Any picture in the game, by file ID or by path.")
+    tiles.custom = custom
+    view.editor, view.input = editor, editor.box
+
+    --- Picks the result whose icons are on offer.
+    function view.Pick(key)
+        if not view.results[key] then
+            return
+        end
+        if key ~= view.picked then
+            -- What was being typed for the other result is put away. (A box
+            -- that is not being typed into forgets its complaint by itself.)
+            view.editing = nil
             if editor.box then
                 editor.box:ClearFocus()
             end
         end
+        view.picked = key
+        view.Refresh()
     end
 
-    --- The three captions under the pretend buttons stand shoulder to shoulder,
-    --- so they are fitted together: all three shrink until each pair of
-    --- neighbours has a gap between them.
-    local function FitCaptions()
-        local scale, widths = 1, {}
-        for index = 1, #Icons.STATES do
-            local caption = view.previews[Icons.STATES[index].key].caption
-            if not Scale(caption, 1) then
-                return
-            end
-            widths[index] = Measure(caption, "GetUnboundedStringWidth")
-                or (not caption.fitCut and Measure(caption, "GetStringWidth")) or nil
-            if not widths[index] then
-                return
-            end
-        end
-        for index = 1, #widths - 1 do
-            scale = min(scale, (L.slotPitch - 4) * 2 / (widths[index] + widths[index + 1]))
-        end
-        -- Nor may the first run off the page, or the last into the next column.
-        local first = 16 + L.slotWidth / 2
-        local last = first + (#widths - 1) * L.slotPitch
-        scale = min(scale, (first - 4) * 2 / widths[1], (292 - last) * 2 / widths[#widths])
-        -- Letters only shrink so far. Past that each caption is cut to its own slot.
-        local cut = scale < SMALLEST
-        scale = max(SMALLEST, scale)
-        for index = 1, #widths do
-            local caption = view.previews[Icons.STATES[index].key].caption
-            Scale(caption, scale)
-            caption.fitScale = scale
-            if cut ~= (caption.fitCut == true) then
-                caption.fitCut = cut
-                Try(caption, "SetWidth", cut and L.slotPitch - 4 or 0)
-                Try(caption, "SetWordWrap", not cut)
-            end
-        end
-        if scale < 1 then
-            notes.tight["(captions under the preview)"] = floor(scale * 100 + 0.5) .. "%"
-        end
-    end
-
-    --- The pretend buttons wear pictures from your own bars.
-    local function RefreshFaces()
-        local faces = PreviewFaces()
-        for index = 1, #Icons.STATES do
-            local preview = view.previews[Icons.STATES[index].key]
-            local face = faces[index] or QUESTION
-            if preview.wears ~= face then
-                preview.wears = face
-                preview.face:SetTexture(face)
-            end
-        end
-    end
-
-    -- The bars may only have been read a moment after the panel opened.
-    local waited = 0
-    page:SetScript("OnUpdate", function(_, elapsed)
-        waited = waited + (type(elapsed) == "number" and elapsed or 0)
-        if waited >= 0.5 then
-            waited = 0
-            ns.Guard(RefreshFaces)
-        end
-    end)
-
-    function view.RefreshAppearance()
-        enable.Set(ns.db.enabled)
-        appear.Set(ns.db.appear)
-        usable.Set(ns.db.usableOnly and "usable" or "always")
-        local alpha = ns.db.enabled and 1 or 0.4 -- neither changes anything while the icons are off
-        Try(appear.frame, "SetAlpha", alpha)
-        Try(usable.frame, "SetAlpha", alpha)
-
-        -- Size: the slider sits at the size in use, chosen or not.
-        local chosen = ns.db.size
-        local size = chosen > 0 and chosen or ns.AutoIconSize()
-        slider.Set(max(ns.SIZE_MIN, min(ns.SIZE_MAX, size)))
-        Say(readout, tostring(size), 34)
-        auto.Set(chosen == 0)
-
-        -- The hint has what the word "Preview" leaves it, up to the next column.
-        Fit(hint, 292 - (16 + Drawn(previewLabel, 50) + 10))
-        FitCaptions()
-
-        -- The pretend buttons are as large as a real one looks from here, so the
-        -- icon on them is the size it is on the bars.
-        local width, ratio = ns.TypicalButton(page)
-        local side = max(L.previewMin, min(L.previewMax, width * ratio))
-        local scale = side / width
-        local corner = ns.db.corner
-        local offset = ns.CORNERS[corner] or ns.CORNERS.TOPLEFT
-        RefreshFaces()
-        for index = 1, #Icons.STATES do
-            local key = Icons.STATES[index].key
-            local preview = view.previews[key]
-            preview.button:SetSize(side, side)
-            for position, zone in pairs(preview.zones) do
-                zone:SetSize(side / 3, side / 3)
-                zone:ClearAllPoints()
-                zone:SetPoint("TOPLEFT", preview.button, "TOPLEFT", (zone.column - 1) * side / 3,
-                    -(zone.row - 1) * side / 3)
-                Shown(zone.ghost, position ~= corner)
-            end
-            local art = Icons.Texture(key)
-            if art then
-                preview.icon:SetTexture(art)
-                preview.icon:SetSize(size * scale, size * scale)
-                preview.icon:ClearAllPoints()
-                preview.icon:SetPoint(corner, preview.button, corner, offset[1] * scale, offset[2] * scale)
-            end
-            Shown(preview.icon, art ~= nil)
-        end
-        Say(sampleNote, ns.db.enabled
-            and "Out of combat, your action buttons show sample icons while this tab is open."
-            or "Status icons are turned off, so your action buttons show none.", L.right - 16)
-
+    function view.RefreshIcons()
         local set = Icons.CurrentSet()
         for setKey, button in pairs(view.sets) do
-            if set and set.key == setKey then
+            local picked = set ~= nil and set.key == setKey
+            if picked then
                 button.ring:SetColorTexture(GOLD[1], GOLD[2], GOLD[3], 1)
             else
                 button.ring:SetColorTexture(0.35, 0.35, 0.4, 1)
             end
-            button.picked = set ~= nil and set.key == setKey
+            button.picked = picked
         end
+        setName.Tell(set and set.name or "A mix of your own.")
 
         for index = 1, #Icons.STATES do
             local state = Icons.STATES[index]
             local key = state.key
-            local current, custom = Icons.Current(key)
+            local row = view.results[key]
+            local picked = key == view.picked
+            row.picked = picked
+            Shown(row.chosen, picked)
+            Shown(row.bar, picked)
+
+            local current = Icons.Current(key)
             local art = Icons.Texture(key)
             if art then
-                view.current[key]:SetTexture(art)
+                row.icon:SetTexture(art)
             end
-            Shown(view.current[key], art ~= nil)
+            Shown(row.icon, art ~= nil)
+            Shown(row.none, current == Icons.HIDDEN)
 
-            local tiles = view.swatches[key]
-            for choiceKey, tile in pairs(tiles) do
-                Shown(tile.ring, choiceKey == current)
-            end
-            -- The tile for your own texture shows it once there is one. Setting it
-            -- is also the only way to learn that the game has no such texture.
-            local missing = false
-            if current == "custom" then
-                local art = tiles.custom.art
-                local answer = art:SetTexture(custom)
-                missing = answer == false or (answer == nil and art:GetTexture() == nil)
-            end
-            Shown(tiles.custom.art, current == "custom")
-            Shown(tiles.custom.dots, current ~= "custom")
-
-            view.editors[key].Refresh(current, custom, missing)
-
-            -- The result's sentence has what its heading leaves it, less the
-            -- note at the far end when that is up.
-            local clash, taken = view.clashes[key], 0
+            local clash = view.clashes[key]
             local other = Icons.SharedWith(key)
             if other then
-                Say(clash, "Same icon as \"" .. other.title .. "\"", 300)
-                taken = Drawn(clash, 190) + 12
+                Say(clash, "Same icon as \"" .. other.title .. "\"", 280)
             end
             Shown(clash, other ~= nil)
-            Fit(view.details[key], L.right - (38 + Drawn(view.names[key], 130) + 10) - taken)
         end
+
+        -- The icons on offer are for the result that is picked.
+        local key = view.picked
+        local current, custom = Icons.Current(key)
+        Say(offer, "Icon for \"" .. Icons.State(key).title .. "\"", L.right - L.label)
+        for choiceKey, tile in pairs(tiles) do
+            Shown(tile.ring, choiceKey == current)
+        end
+        -- The tile for your own texture shows it once there is one. Setting it
+        -- is also the only way to learn that the game has no such texture.
+        local missing = false
+        if current == "custom" then
+            local art = tiles.custom.art
+            local answer = art:SetTexture(custom)
+            missing = answer == false or (answer == nil and art:GetTexture() == nil)
+        end
+        Shown(tiles.custom.art, current == "custom")
+        Shown(tiles.custom.dots, current ~= "custom")
+        editor.Refresh(current, custom, missing)
+
+        view.Foot(ns.db.enabled and "Out of combat, your action buttons show sample icons while this tab is open."
+            or "Status icons are turned off, so your action buttons show none.")
     end
 end
 
 --------------------------------------------------------------------------------
--- The Spells tab
+-- The Skills tab: the skills on your bars in a list, and beside it everything
+-- about the one that is picked
 --------------------------------------------------------------------------------
 
 local SHOW_CHOICES = {
-    { key = "auto", label = "Auto", width = 38, tip = "Let the addon decide",
+    { key = "auto", label = "Auto", width = 50, tip = "Let the addon decide",
         body = "It gets an icon when it looks like it leaves a status effect, and loses it if casts keep leaving nothing behind." },
-    { key = "always", label = "Always", width = 50, tip = "Always show an icon" },
-    { key = "never", label = "Never", width = 44, tip = "Never show an icon" },
+    { key = "always", label = "Always", width = 64, tip = "Always show an icon" },
+    { key = "never", label = "Never", width = 58, tip = "Never show an icon" },
 }
 
 local ON_CHOICES = {
-    { key = "target", label = "Target", width = 48, tip = "A debuff on your target",
-        body = "Judged on the enemy you have targeted." },
-    { key = "all", label = "All enemies", width = 76, tip = "A debuff on every enemy in the fight",
-        body = "Judged on all of them, so the icon can also say that only some have it." },
-    { key = "self", label = "You", width = 36, tip = "A buff on you",
-        body = "Or on the friend you have targeted, if the spell can be cast on others." },
+    { key = "target", label = "Your target", width = 88, tip = "A debuff on your target",
+        body = "Judged on the enemy you have targeted.", note = "The enemy you have targeted.",
+        short = "Your target" },
+    { key = "all", label = "All enemies", width = 88, tip = "A debuff on every enemy in the fight",
+        body = "Judged on all of them, so the icon can also say that only some have it.",
+        note = "Every enemy in the fight: some may have it, some not.", short = "All enemies" },
+    { key = "self", label = "You", width = 46, tip = "A buff on you",
+        body = "Or on the friend you have targeted, if the skill can be cast on others.",
+        note = "You, or a friend you have targeted.", short = "On you" },
 }
 
--- Why a spell is treated the way it is: a few words for the row, and a sentence
--- for the tooltip.
+local ON_BY_KEY = {}
+for i = 1, #ON_CHOICES do
+    ON_BY_KEY[ON_CHOICES[i].key] = ON_CHOICES[i]
+end
+
+-- Why a spell is treated the way it is: a sentence for the pane, and a longer
+-- one for the tooltip where there is more to say.
 local WHY = {
-    you = { "you turned it on", "You chose Always." },
-    ignored = { "you turned it off", "You chose Never." },
+    you = { "You chose Always." },
+    ignored = { "You chose Never." },
     seen = {
-        debuff = { "debuff seen on an enemy", "Its debuff has been read off an enemy." },
-        buff = { "buff seen on you", "Its buff has been read off you." },
+        debuff = { "Its debuff has been seen on an enemy.", "Its debuff has been read off an enemy." },
+        buff = { "Its buff has been seen on you.", "Its buff has been read off you." },
     },
-    ["built-in"] = { "a well known area debuff", "It is a well known area debuff." },
+    ["built-in"] = { "A well known area debuff." },
     tooltip = {
-        debuff = { "tooltip mentions a duration", "It can be cast on enemies and its tooltip mentions a duration." },
-        buff = { "tooltip mentions a duration",
+        debuff = { "Cast on enemies, and its tooltip gives a duration.",
+            "It can be cast on enemies and its tooltip mentions a duration." },
+        buff = { "Cast on you or friends, and its tooltip gives a duration.",
             "It is cast on yourself or on friends and its tooltip mentions a duration." },
     },
 }
 
+-- Where a figure comes from: a few words beside its box, and a sentence for the tooltip.
 local DURATION_WHY = {
-    you = "You set this.",
-    seen = "Read off the effect itself in play.",
-    tooltip = "Taken from the spell's tooltip.",
-    guess = "A guess: nothing better is known yet.",
+    you = { "You set this.", "You set this." },
+    seen = { "Seen in play.", "Read off the effect itself in play." },
+    tooltip = { "From the tooltip.", "Taken from the skill's tooltip." },
+    guess = { "A guess so far.", "A guess: nothing better is known yet." },
 }
 
--- Where the most stacks of an effect comes from. What was seen on a unit is the
--- weakest of them: the effect may go higher than it has been seen to.
+-- What was seen on a unit is the weakest of them: the effect may go higher
+-- than it has been seen to.
 local STACKS_WHY = {
-    you = "You set this.",
-    tooltip = "Taken from the spell's tooltip.",
-    game = "The game's own figure for the spell.",
-    seen = "The most seen on a unit so far, so the effect may go higher.",
+    you = { "You set this.", "You set this." },
+    tooltip = { "From the tooltip.", "Taken from the skill's tooltip." },
+    game = { "The game's own figure.", "The game's own figure for the skill." },
+    seen = { "The most seen so far.", "The most seen on a unit so far, so the effect may go higher." },
 }
-
--- Where each part of a row starts, from the row's left edge, and the room the
--- spell's name has, with the reason under it. The headings go by these too.
-local COL = { name = 34, nameRoom = 148, show = 188, on = 324, lasts = 488, stacks = 540, shared = 586 }
-local LASTS_BOX, STACKS_BOX, CELL_TICK = 46, 30, 18
 
 --- What the box for an effect's stacks says when the mouse is on it.
 local function StacksTip(info)
     local user = ns.db.spells[info.name]
     local auto = " or empty the box to let the addon work it out."
     if Spells:Stacking(info) then
-        return (STACKS_WHY[Spells:StackingSource(info)] or "By what is known of the spell.")
-            .. " The icon says \"" .. Icons.State("some").title .. "\" until the effect has that many stacks."
+        local why = STACKS_WHY[Spells:StackingSource(info)]
+        return (why and why[2] or "By what is known of the skill.")
+            .. " A unit only counts as having the effect once it has that many stacks."
             .. " Type another number to change it, 1 if the effect does not stack," .. auto
     elseif user and type(user.stacks) == "number" then
         return "You set this: the effect does not stack. Type the most stacks it can have to change it," .. auto
@@ -1697,14 +1937,25 @@ local function StacksTip(info)
     return "Nothing says that the effect stacks. If it does, type the most stacks it can have."
 end
 
---- And what the tick for an effect that players share says.
+--- Where the answer to "does another player's copy count" comes from.
+local function SharedSource(info)
+    local user = ns.db.spells[info.name]
+    if user and user.shared ~= nil then
+        return "You set this."
+    elseif info.described ~= true then
+        return "The tooltip could not be read."
+    end
+    return "From the tooltip."
+end
+
+--- And what the tick for it says when the mouse is on it.
 local function SharedTip(info, shared)
     local user = ns.db.spells[info.name]
-    local source = " This is what the addon made of the spell's tooltip."
+    local source = " This is what the addon made of the skill's tooltip."
     if user and user.shared ~= nil then
         source = " You set this."
     elseif info.described ~= true then
-        source = " The spell's tooltip could not be read, so its effect is taken to be yours alone."
+        source = " The skill's tooltip could not be read, so its effect is taken to be yours alone."
     end
     if shared then
         return "A unit carries the effect only once, whoever casts it, so another player's copy counts like your own. "
@@ -1742,31 +1993,57 @@ local function ParseSpan(text)
     return floor(value * each + 0.5)
 end
 
+--- Why a spell has an icon or has none: a sentence, and a longer one.
 local function WhyText(info, tracked, source, kind)
     local why = WHY[source]
     if why and not why[1] then
         why = why[kind]
     end
     if why then
-        return why[1], why[2]
+        return why[1], why[2] or why[1]
     end
     local casts, hits = Spells:Record(info.name, kind)
     casts, hits = floor(casts + 0.5), floor(hits + 0.5)
     if source == "learned" then
-        return hits .. " of " .. casts .. " casts left an effect",
+        return hits .. " of " .. casts .. " casts left an effect behind.",
             "A new effect of yours followed " .. hits .. " of " .. casts .. " casts."
     elseif source == "demoted" then
-        return "nothing after " .. (casts - hits) .. " of " .. casts .. " casts",
+        return "Nothing followed " .. (casts - hits) .. " of " .. casts .. " casts, so it lost its icon.",
             "No new effect of yours followed " .. (casts - hits) .. " of " .. casts
                 .. " casts, so it lost its icon. Pick Always to give it back."
     end
-    return "not a status effect", "It does not look like it leaves a status effect. Pick Always if it does."
+    return "It does not look like it leaves a status effect.",
+        "It does not look like it leaves a status effect. Pick Always if it does."
 end
 
-local function BuildRow(view, page, index)
-    local row = CreateFrame("Frame", nil, page)
-    row:SetSize(612, L.rowHeight)
-    row:SetPoint("TOPLEFT", page, "TOPLEFT", 12, L.listTop - (index - 1) * L.rowHeight)
+--- A spell in a few words, for its line in the list: who its effect is judged
+--- on and how long that lasts, or that it has no icon.
+local function Summary(info)
+    local tracked, area, duration, _, kind = Spells:Tracking(info)
+    if not tracked then
+        return "No icon", false
+    end
+    local on = ON_BY_KEY[kind == "buff" and "self" or (area and "all" or "target")]
+    return on.short .. ", " .. Short(duration), true
+end
+
+--- Takes your own choices for a skill away again. What the addon is following
+--- of its effect stays, like what it learned in play, except another player's
+--- copy that only counted because of those choices. `info` is nil for a skill
+--- that is off the bars, where nothing says what its choices decided.
+local function Unchoose(name, info)
+    local counted = info == nil or Spells:Shared(info)
+    ns.db.spells[name] = nil
+    if counted and (info == nil or not Spells:Shared(info)) then
+        Tracker:ForgetTheirs(name)
+    end
+end
+
+--- One line of the list: the skill's picture, its name, and how it is treated.
+local function BuildListRow(view, page, index)
+    local row = CreateFrame("Button", nil, page)
+    row:SetSize(L.listWidth, L.rowHeight)
+    row:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft, L.listTop - (index - 1) * L.rowHeight)
     row:Hide()
 
     if index % 2 == 0 then
@@ -1774,36 +2051,116 @@ local function BuildRow(view, page, index)
         stripe:SetAllPoints(row)
         stripe:SetColorTexture(1, 1, 1, 0.04)
     end
+    local chosen = row:CreateTexture(nil, "BORDER")
+    chosen:SetAllPoints(row)
+    chosen:SetColorTexture(0.24, 0.2, 0.08, 0.9)
+    local bar = row:CreateTexture(nil, "ARTWORK")
+    bar:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+    bar:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 0, 0)
+    bar:SetWidth(3)
+    bar:SetColorTexture(GOLD[1], GOLD[2], GOLD[3], 1)
+    local glow = row:CreateTexture(nil, "HIGHLIGHT")
+    glow:SetAllPoints(row)
+    glow:SetColorTexture(1, 1, 1, 0.08)
 
     local icon = row:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(22, 22)
-    icon:SetPoint("LEFT", row, "LEFT", 4, 0)
+    icon:SetSize(LIST_ICON, LIST_ICON)
+    icon:SetPoint("LEFT", row, "LEFT", 8, 0)
     Try(icon, "SetTexCoord", 0.07, 0.93, 0.07, 0.93)
 
-    -- The spell's name, and under it why it is treated the way it is. Each has
-    -- one line: a long one is drawn in smaller letters, a longer one still is cut short.
+    local textLeft = 8 + LIST_ICON + 8
+    local room = L.listWidth - textLeft - 6
     local name = Text(row, "GameFontHighlight")
-    name:SetPoint("TOPLEFT", row, "TOPLEFT", COL.name, -2)
-    local why = Text(row, "GameFontDisableSmall")
-    why:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", COL.name, 2)
-    local whyArea = CreateFrame("Frame", nil, row)
-    whyArea:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
-    whyArea:SetPoint("BOTTOMRIGHT", row, "BOTTOMLEFT", COL.name + COL.nameRoom, 0)
-    whyArea:EnableMouse(true)
-    Tip(whyArea, "Why")
+    name:SetPoint("TOPLEFT", row, "TOPLEFT", textLeft, -4)
+    local status = Text(row, "GameFontHighlightSmall")
+    status:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", textLeft, 4)
 
-    --- Puts a complaint about what was typed where the reason is, until it is put right.
-    local function Complain(problem)
-        row.problem = problem
-        why:SetText(problem)
-        Fit(why, COL.nameRoom)
-        Colour(why, BAD)
+    OnClick(row, function()
+        if row.info then
+            view.Select(row.info.name)
+        end
+    end)
+
+    --- Shows a spell in this line, or nothing.
+    function row.Bind(info, selected)
+        row.info = info
+        Shown(row, info ~= nil)
+        if not info then
+            return
+        end
+        local summary, tracked = Summary(info)
+        Wear(icon, info)
+        Try(icon, "SetDesaturated", not tracked)
+        icon:SetAlpha(tracked and 1 or 0.6)
+        Say(name, info.name, room)
+        if tracked then
+            name:SetTextColor(1, 1, 1)
+        else
+            name:SetTextColor(0.6, 0.6, 0.6)
+        end
+        Say(status, summary, room)
+        if tracked then
+            status:SetTextColor(0.8, 0.8, 0.8)
+        else
+            status:SetTextColor(0.5, 0.5, 0.5)
+        end
+        row.selected = selected
+        Shown(chosen, selected)
+        Shown(bar, selected)
     end
 
-    local show = Segmented(row, SHOW_CHOICES)
-    show.frame:SetPoint("LEFT", row, "LEFT", COL.show, 0)
+    row.icon, row.name, row.status, row.chosen = icon, name, status, chosen
+    return row
+end
+
+--- Everything about one spell: whether it gets an icon and why, who its effect
+--- is judged on, how long that lasts, how often it stacks, and whether another
+--- player's copy counts.
+local function BuildPane(view, page)
+    local width = L.right - L.paneLeft
+    local control = L.paneControl - L.paneLeft -- where the controls start, from the pane's left edge
+    local wide = width - control
+    local labelRoom = control - 8
+
+    local pane = CreateFrame("Frame", nil, page)
+    pane:SetSize(width, L.rows * L.rowHeight)
+    pane:SetPoint("TOPLEFT", page, "TOPLEFT", L.paneLeft, L.listTop)
+    pane:Hide()
+
+    -- Which spell it is.
+    local icon = pane:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(PANE_ICON, PANE_ICON)
+    icon:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, 0)
+    Try(icon, "SetTexCoord", 0.07, 0.93, 0.07, 0.93)
+    local nameRoom = width - PANE_ICON - 10
+    local name = Text(pane, "GameFontNormalLarge")
+    name:SetPoint("TOPLEFT", pane, "TOPLEFT", PANE_ICON + 10, -2)
+    local summary = Note(pane, nameRoom)
+    summary:SetPoint("TOPLEFT", pane, "TOPLEFT", PANE_ICON + 10, -22)
+    local rule = pane:CreateTexture(nil, "ARTWORK")
+    rule:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -(PANE_ICON + 8))
+    rule:SetSize(width, 1)
+    rule:SetColorTexture(0.4, 0.4, 0.45, 1)
+
+    --- Says what is wrong with what was typed, beside the box it was typed
+    --- into, until it is put right.
+    local function Complain(at, problem)
+        pane.problem, pane.problemAt = problem, at
+        ns.Guard(view.Refresh)
+    end
+
+    local function Settled()
+        pane.problem, pane.problemAt = nil, nil
+    end
+
+    -- Whether it gets an icon.
+    local showArea = RowLabel(pane, "Show an icon", 0, PANE_ROWS.show, labelRoom,
+        "Auto lets the addon decide: a skill gets an icon when it looks like it leaves a status effect, and "
+            .. "loses it if casts keep leaving nothing behind.")
+    local show = Segmented(pane, SHOW_CHOICES)
+    show.frame:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.show)
     show.onPick = function(key)
-        local info = row.info
+        local info = pane.info
         if not info then
             return
         end
@@ -1819,11 +2176,23 @@ local function BuildRow(view, page, index)
         Spells:Tidy(info.name)
         SpellChanged()
     end
+    local why = Note(pane, wide, 2)
+    why:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.show - 24)
+    -- The mouse on the reason spells it out.
+    local whyArea = CreateFrame("Frame", nil, pane)
+    whyArea:SetSize(wide, 26)
+    whyArea:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.show - 23)
+    whyArea:EnableMouse(true)
+    Tip(whyArea, nil)
 
-    local on = Segmented(row, ON_CHOICES)
-    on.frame:SetPoint("LEFT", row, "LEFT", COL.on, 0)
+    -- Who its effect is judged on.
+    RowLabel(pane, "Lands on", 0, PANE_ROWS.on, labelRoom,
+        "Who the effect is looked for on. That decides what the icon can say: only a debuff judged on every "
+            .. "enemy can be on some of them and not on others.")
+    local on = Segmented(pane, ON_CHOICES)
+    on.frame:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.on)
     on.onPick = function(key)
-        local info = row.info
+        local info = pane.info
         if not info then
             return
         end
@@ -1840,9 +2209,12 @@ local function BuildRow(view, page, index)
         end
         SpellChanged()
     end
+    local onNote = Note(pane, wide, 2)
+    onNote:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.on - 24)
 
+    -- How long the effect lasts.
     local function ApplyDuration(box)
-        local info = row.info
+        local info = pane.info
         if not info then
             return
         end
@@ -1859,24 +2231,27 @@ local function BuildRow(view, page, index)
         else
             local seconds = ParseSpan(text)
             if not seconds or seconds < Spells.MIN_DURATION or seconds > Spells.MAX_DURATION then
-                Complain("Type seconds, from " .. Spells.MIN_DURATION .. " to " .. Spells.MAX_DURATION .. ".")
+                Complain("lasts", "Type seconds, from " .. Spells.MIN_DURATION .. " to " .. Spells.MAX_DURATION .. ".")
                 return
             end
             Spells:Choice(info.name).duration = seconds
         end
-        row.problem = nil
+        Settled()
         box:ClearFocus()
         SpellChanged()
     end
 
-    local built, lasts = pcall(Input, row, LASTS_BOX)
+    RowLabel(pane, "Lasts", 0, PANE_ROWS.lasts, labelRoom,
+        "How long the effect is taken to last when it cannot be watched. Type a number of seconds to change it, "
+            .. "or empty the box to let the addon work it out.")
+    local built, lasts = pcall(Input, pane, LASTS_BOX)
     if built and lasts then
-        lasts:SetPoint("LEFT", row, "LEFT", COL.lasts, 0)
+        lasts:SetPoint("TOPLEFT", pane, "TOPLEFT", control + 1, PANE_ROWS.lasts)
         Try(lasts, "SetJustifyH", "CENTER")
         lasts:SetMaxLetters(12)
         lasts:SetScript("OnEditFocusGained", function(self)
             -- Typing starts from the bare number of seconds.
-            local info = row.info
+            local info = pane.info
             if info then
                 local _, _, duration = Spells:Tracking(info)
                 self.before = tostring(floor(duration + 0.5))
@@ -1886,7 +2261,7 @@ local function BuildRow(view, page, index)
         end)
         lasts:SetScript("OnEditFocusLost", function(self)
             Try(self, "HighlightText", 0, 0)
-            row.problem = nil
+            Settled()
             ns.Guard(view.Refresh)
         end)
         lasts:SetScript("OnEnterPressed", function(self)
@@ -1899,10 +2274,13 @@ local function BuildRow(view, page, index)
     else
         lasts = nil
     end
+    local lastsNote = Note(pane, wide - LASTS_BOX - 12, 2)
+    lastsNote:SetJustifyV("MIDDLE")
+    lastsNote:SetPoint("LEFT", pane, "TOPLEFT", control + LASTS_BOX + 12, PANE_ROWS.lasts - 10)
 
     -- How many times over the effect goes on one unit: the same as /se stacks.
     local function ApplyStacks(box)
-        local info = row.info
+        local info = pane.info
         if not info then
             return
         end
@@ -1918,26 +2296,29 @@ local function BuildRow(view, page, index)
         else
             local most = text:find("^%d+$") and tonumber(text)
             if not most or most < 1 or most > 100 then
-                Complain("Type a number from 1 to 100.")
+                Complain("stacks", "Type a number from 1 to 100.")
                 return
             end
             Spells:Choice(info.name).stacks = most
         end
-        row.problem = nil
+        Settled()
         box:ClearFocus()
         SpellChanged()
     end
 
+    RowLabel(pane, "Stacks up to", 0, PANE_ROWS.stacks, labelRoom,
+        "How many times over the effect goes on one unit. A unit only counts as having the effect once it "
+            .. "has that many stacks.")
     local stacks
-    built, stacks = pcall(Input, row, STACKS_BOX)
+    built, stacks = pcall(Input, pane, STACKS_BOX)
     if built and stacks then
-        stacks:SetPoint("LEFT", row, "LEFT", COL.stacks, 0)
+        stacks:SetPoint("TOPLEFT", pane, "TOPLEFT", control + 1, PANE_ROWS.stacks)
         Try(stacks, "SetJustifyH", "CENTER")
         stacks:SetMaxLetters(4)
         stacks:SetScript("OnEditFocusGained", function(self)
             -- Typing starts from the bare number: your own if you set one, or
             -- from nothing for an effect that does not stack.
-            local info = row.info
+            local info = pane.info
             if info then
                 local user = ns.db.spells[info.name]
                 local most = (user and type(user.stacks) == "number" and user.stacks) or Spells:Stacking(info)
@@ -1949,7 +2330,7 @@ local function BuildRow(view, page, index)
         end)
         stacks:SetScript("OnEditFocusLost", function(self)
             Try(self, "HighlightText", 0, 0)
-            row.problem = nil
+            Settled()
             ns.Guard(view.Refresh)
         end)
         stacks:SetScript("OnEnterPressed", function(self)
@@ -1962,14 +2343,21 @@ local function BuildRow(view, page, index)
     else
         stacks = nil
     end
+    local stacksNote = Note(pane, wide - STACKS_BOX - 12, 2)
+    stacksNote:SetJustifyV("MIDDLE")
+    stacksNote:SetPoint("LEFT", pane, "TOPLEFT", control + STACKS_BOX + 12, PANE_ROWS.stacks - 10)
 
     -- Whether another player's copy of the effect counts: the same as /se anyone
     -- and /se mine. A choice of yours is only kept while it differs from what
     -- the addon makes of the spell by itself, so ticking it back is going back.
-    local shared = CellTick(row, CELL_TICK)
-    shared.frame:SetPoint("LEFT", row, "LEFT", COL.shared, 0)
+    RowLabel(pane, "Other players", 0, PANE_ROWS.shared, labelRoom,
+        "Whether the same effect counts when someone else put it there. It does for an effect a unit carries "
+            .. "only once, whoever casts it, and not for one every caster has their own of, such as a bleed.")
+    local shared = TickBox(pane, "Their copy counts too")
+    shared.frame:SetPoint("LEFT", pane, "TOPLEFT", control, PANE_ROWS.shared - 10)
+    shared.Fit(wide - Wide(shared.frame, 30) - 6)
     shared.onChange = function(ticked)
-        local info = row.info
+        local info = pane.info
         if not info then
             return
         end
@@ -1985,11 +2373,32 @@ local function BuildRow(view, page, index)
         SpellChanged()
     end
     Tip(shared.frame, "Another player's copy counts")
+    local sharedNote = Note(pane, wide, 2)
+    sharedNote:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.shared - 24)
 
-    --- Shows a spell in this row, or nothing.
-    function row.Bind(info)
-        if row.info ~= info then
-            row.problem = nil
+    -- Back to what the addon works out by itself.
+    local reset = PushButton(pane, RESET_WIDTH, 22, "Reset this skill")
+    reset:SetPoint("BOTTOMRIGHT", pane, "BOTTOMRIGHT", 0, 4)
+    OnClick(reset, function()
+        local info = pane.info
+        if info and ns.db.spells[info.name] then
+            Settled()
+            Unchoose(info.name, info)
+            SpellChanged()
+        end
+    end)
+    Tip(reset, "Reset this skill",
+        "Forgets your own choices for this skill, so that the addon works it out by itself again. What it has "
+            .. "learned about the skill in play stays.")
+    local resetNote = Note(pane, width - RESET_WIDTH - 12, 2)
+    resetNote:SetJustifyV("MIDDLE")
+    resetNote:SetPoint("LEFT", pane, "BOTTOMLEFT", 0, 15)
+
+    --- Shows a spell in the pane, or puts the pane away.
+    function pane.Bind(info)
+        local name1, name2 = pane.info and pane.info.name, info and info.name
+        if name1 ~= name2 then
+            Settled()
             if lasts and lasts:HasFocus() then
                 lasts:ClearFocus()
             end
@@ -1997,8 +2406,8 @@ local function BuildRow(view, page, index)
                 stacks:ClearFocus()
             end
         end
-        row.info = info
-        Shown(row, info ~= nil)
+        pane.info = info
+        Shown(pane, info ~= nil)
         if not info then
             return
         end
@@ -2006,18 +2415,9 @@ local function BuildRow(view, page, index)
         local tracked, area, duration, source, kind = Spells:Tracking(info)
         local user = ns.db.spells[info.name]
 
-        if row.iconFor ~= info.id then
-            row.iconFor = info.id
-            icon:SetTexture(ns.SpellIcon(info.id) or QUESTION)
-        end
-        Try(icon, "SetDesaturated", not tracked)
-        icon:SetAlpha(tracked and 1 or 0.6)
-        Say(name, info.name, COL.nameRoom)
-        if tracked then
-            name:SetTextColor(1, 1, 1)
-        else
-            name:SetTextColor(0.6, 0.6, 0.6)
-        end
+        Wear(icon, info)
+        Say(name, info.name, nameRoom)
+        summary.Tell((Summary(info)))
 
         local pick = "auto"
         if user and user.track == true then
@@ -2026,62 +2426,100 @@ local function BuildRow(view, page, index)
             pick = "never"
         end
         show.Set(pick)
+        local short, long = WhyText(info, tracked, source, kind)
+        why.Tell(short)
+        whyArea.tipTitle, whyArea.tipBody = info.name, long
 
-        -- Who it is judged on and how long it lasts only matter once it has an icon.
-        Shown(on.frame, tracked)
+        -- Who it is judged on, how long it lasts, how often it stacks and whose
+        -- copy counts only matter once it has an icon.
+        on.Enable(tracked)
         if tracked then
-            on.Set(kind == "buff" and "self" or (area and "all" or "target"))
-        end
-        if lasts then
-            Shown(lasts, tracked)
-            if tracked and not lasts:HasFocus() then
-                lasts:SetText(Short(duration))
-            end
-            lasts.tipBody = DURATION_WHY[Spells:DurationSource(info)]
-                .. " Type a number of seconds to change it, or empty the box to let the addon work it out."
+            local key = kind == "buff" and "self" or (area and "all" or "target")
+            on.Set(key)
+            onNote.Tell(ON_BY_KEY[key].note)
+        else
+            on.Set(nil)
+            onNote.Tell("The rest only matters for a skill that has an icon.")
         end
 
-        -- How often its effect stacks, and whether another player's copy of it
-        -- counts, are part of how it is judged too.
+        if lasts then
+            Try(lasts, "SetEnabled", tracked)
+            lasts:EnableMouse(tracked)
+            Dim(lasts, not tracked)
+            if not lasts:HasFocus() then
+                lasts:SetText(tracked and Short(duration) or "")
+            end
+            local from = DURATION_WHY[Spells:DurationSource(info)]
+            lasts.tipBody = from[2]
+                .. " Type a number of seconds to change it, or empty the box to let the addon work it out."
+            if pane.problemAt == "lasts" then
+                lastsNote.Tell(pane.problem, BAD)
+            else
+                lastsNote.Tell(tracked and from[1] or "")
+            end
+        else
+            lastsNote.Tell(tracked and ("/se duration " .. info.name .. " <seconds>") or "")
+        end
+
         if stacks then
-            Shown(stacks, tracked)
-            if tracked and not stacks:HasFocus() then
-                local most = Spells:Stacking(info)
-                -- A dash, in grey, for an effect that goes on once: most do.
-                local none = not most and not (user and type(user.stacks) == "number")
-                stacks:SetText(most and tostring(most) or (none and "-" or "1"))
-                if none then
+            Try(stacks, "SetEnabled", tracked)
+            stacks:EnableMouse(tracked)
+            Dim(stacks, not tracked)
+            local most = Spells:Stacking(info)
+            -- A dash, in grey, for an effect that goes on once: most do.
+            local once = not most and not (user and type(user.stacks) == "number")
+            if not stacks:HasFocus() then
+                stacks:SetText(tracked and (most and tostring(most) or (once and "-" or "1")) or "")
+                if once then
                     Try(stacks, "SetTextColor", 0.5, 0.5, 0.5)
                 else
                     Try(stacks, "SetTextColor", 1, 1, 1)
                 end
             end
             stacks.tipBody = StacksTip(info)
+            if pane.problemAt == "stacks" then
+                stacksNote.Tell(pane.problem, BAD)
+            elseif not tracked then
+                stacksNote.Tell("")
+            elseif most then
+                local from = STACKS_WHY[Spells:StackingSource(info)]
+                stacksNote.Tell(from and from[1] or "")
+            else
+                stacksNote.Tell(once and "Goes on once." or "You set this: it goes on once.")
+            end
+        else
+            stacksNote.Tell(tracked and ("/se stacks " .. info.name .. " <number>") or "")
         end
+
         -- Nobody else can put on you what a skill only ever puts on its caster.
-        local sharable = tracked and not (kind == "buff" and info.selfOnly == true)
-        Shown(shared.frame, sharable)
+        local alone = kind == "buff" and info.selfOnly == true
+        local sharable = tracked and not alone
+        shared.Enable(sharable)
         if sharable then
             local anyone = Spells:Shared(info)
             shared.Set(anyone)
             shared.frame.tipBody = SharedTip(info, anyone)
+            sharedNote.Tell((anyone and "Counted whoever cast it. " or "Only your own counts. ") .. SharedSource(info))
+        else
+            shared.Set(false)
+            shared.frame.tipBody = nil
+            sharedNote.Tell(tracked and "Only you can have this effect." or "")
         end
 
-        local short, long = WhyText(info, tracked, source, kind)
-        whyArea.tipTitle, whyArea.tipBody = info.name, long
-        if row.problem then
-            why:SetText(row.problem)
-            Colour(why, BAD)
-        else
-            why:SetText(short)
-            why:SetTextColor(0.5, 0.5, 0.5)
+        local yours = user ~= nil
+        Try(reset, "SetEnabled", yours)
+        if not reset.native then
+            Dim(reset, not yours)
         end
-        Fit(why, COL.nameRoom)
+        resetNote.Tell(yours and "You have changed this skill." or "Nothing changed: the addon decides.")
     end
 
-    row.icon, row.name, row.show, row.on, row.lasts, row.why, row.whyArea = icon, name, show, on, lasts, why, whyArea
-    row.stacks, row.shared = stacks, shared
-    return row
+    pane.icon, pane.name, pane.summary = icon, name, summary
+    pane.show, pane.showArea, pane.why, pane.whyArea = show, showArea, why, whyArea
+    pane.on, pane.onNote = on, onNote
+    pane.lasts, pane.lastsNote, pane.stacks, pane.stacksNote = lasts, lastsNote, stacks, stacksNote
+    pane.shared, pane.sharedNote, pane.reset, pane.resetNote = shared, sharedNote, reset, resetNote
+    return pane
 end
 
 local function BuildSpells(view, page)
@@ -2089,69 +2527,28 @@ local function BuildSpells(view, page)
     view.spells = list
 
     local intro = Text(page, "GameFontHighlightSmall",
-        "Every spell on your action bars. The addon works out which ones leave a status effect and how to "
-            .. "judge them. Change any it gets wrong.")
-    intro:SetPoint("TOPLEFT", page, "TOPLEFT", 16, -10)
-    intro:SetWidth(608)
-    FitLines(intro, 608, 2) -- the column headings start under its second line
+        "The skills on your action bars. Pick one to see how the addon judges it, and to change what it got wrong.")
+    intro:SetPoint("TOPLEFT", page, "TOPLEFT", L.left, -8)
+    intro:SetWidth(L.right - L.left)
+    FitLines(intro, L.right - L.left, 2) -- the list starts under its second line
     list.intro = intro
 
-    -- A row starts 12 in from the page's edge, and a heading where its column
-    -- does, with the room up to the next one. The last two columns are narrower
-    -- than their headings may be drawn, so those two are centred on what they
-    -- name: the last with the room left up to the page's edge, the one before
-    -- it with what is left up to that.
-    local sharedAt = 12 + COL.shared + CELL_TICK / 2
-    local sharedReach = L.right - sharedAt
-    local stacksAt = 12 + COL.stacks + STACKS_BOX / 2
-    local stacksReach = sharedAt - sharedReach - 6 - stacksAt
-    local headings = {
-        { "Spell", 16 }, { "Show an icon", 12 + COL.show }, { "Judged on", 12 + COL.on }, { "Lasts", 12 + COL.lasts },
-        { "Stacks", stacksAt - stacksReach, 2 * stacksReach }, { "Shared", sharedAt - sharedReach, 2 * sharedReach },
-    }
-    list.headings = {}
-    for i = 1, #headings do
-        local heading = Text(page, "GameFontNormalSmall", headings[i][1])
-        local room = headings[i][3]
-        if room then
-            heading:SetJustifyH("CENTER")
-            heading:SetPoint("TOP", page, "TOPLEFT", headings[i][2] + room / 2, -38)
-        else
-            heading:SetPoint("TOPLEFT", page, "TOPLEFT", headings[i][2], -38)
-            room = headings[i + 1][2] - headings[i][2] - 8
-        end
-        Fit(heading, room)
-        list.headings[i] = heading
-    end
-    local rule = page:CreateTexture(nil, "ARTWORK")
-    rule:SetPoint("TOPLEFT", page, "TOPLEFT", 12, -53)
-    rule:SetSize(612, 1)
-    rule:SetColorTexture(0.4, 0.4, 0.45, 1)
-
     for index = 1, L.rows do
-        list.rows[index] = BuildRow(view, page, index)
+        list.rows[index] = BuildListRow(view, page, index)
     end
+    local pane = BuildPane(view, page)
+    view.pane = pane
 
-    local empty = Text(page, "GameFontDisable", "No spells found on your action bars yet.")
-    empty:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.listTop - 8)
-    Fit(empty, L.right - 16)
+    local empty = Text(page, "GameFontDisable", "No skills found on your action bars yet.")
+    empty:SetPoint("TOPLEFT", page, "TOPLEFT", L.left, L.listTop - 8)
+    Fit(empty, L.right - L.left)
     empty:Hide()
     list.empty = empty
-
-    local count = Text(page, "GameFontDisableSmall")
-    count:SetPoint("TOPLEFT", page, "TOPLEFT", 16, L.listTop - L.rows * L.rowHeight - 12)
-    list.count = count
-    local more = Text(page, "GameFontDisableSmall", "Scroll for more.")
-    more:SetJustifyH("RIGHT")
-    more:SetPoint("TOPRIGHT", page, "TOPLEFT", L.right, L.listTop - L.rows * L.rowHeight - 12)
-    Fit(more, 130)
-    more:Hide()
-    list.more = more
 
     -- A scroll bar of its own: the list is short, and this one cannot go missing.
     local setting = false
     local bar = CreateFrame("Slider", nil, page)
-    bar:SetPoint("TOPLEFT", page, "TOPLEFT", 628, L.listTop)
+    bar:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft + L.listWidth + 4, L.listTop)
     bar:SetSize(6, L.rows * L.rowHeight)
     bar:EnableMouse(true)
     bar:SetOrientation("VERTICAL")
@@ -2168,40 +2565,53 @@ local function BuildSpells(view, page)
     bar:Hide()
     list.bar = bar
 
+    --- The spell that is picked: the one last clicked while it is still on the
+    --- bars, or else the first of the list.
+    local function Selected()
+        local items = list.items
+        for i = 1, #items do
+            if items[i].name == list.selected then
+                return items[i], i
+            end
+        end
+        list.selected = items[1] and items[1].name or nil
+        return items[1], 1
+    end
+
     local function Draw()
         local items = list.items
         local last = max(0, #items - L.rows)
         list.offset = max(0, min(last, list.offset))
-        local shown = 0
+        local selected = Selected()
         for index = 1, L.rows do
             local info = items[list.offset + index]
-            list.rows[index].Bind(info)
-            if info then
-                shown = shown + 1
-            end
+            list.rows[index].Bind(info, info ~= nil and info == selected)
         end
+        pane.Bind(selected)
 
-        local tracked = 0
+        local tracked, yours = 0, 0
         for i = 1, #items do
             if Spells:Tracking(items[i]) then
                 tracked = tracked + 1
             end
+            if ns.db.spells[items[i].name] then
+                yours = yours + 1
+            end
         end
         Shown(empty, #items == 0)
-        if #items == 0 then
-            count:SetText("")
-        else
-            -- It has the line to itself, but for "Scroll for more." at the far end.
-            Say(count, (#items == 1 and "1 spell" or (#items .. " spells")) .. " on your bars, "
-                .. tracked .. " with an icon.", L.right - 16 - 130 - 12)
-        end
-
-        Shown(more, last > 0)
         Shown(bar, last > 0)
         setting = true
         bar:SetMinMaxValues(0, last)
         bar:SetValue(list.offset)
         setting = false
+
+        if #items == 0 then
+            view.Foot("")
+        else
+            view.Foot((#items == 1 and "1 skill" or (#items .. " skills")) .. " on your bars, " .. tracked
+                .. " with an icon" .. (yours > 0 and (", " .. yours .. " changed by you.") or ".")
+                .. (last > 0 and " Scroll the list for more." or ""))
+        end
     end
 
     --- Moves the list by a number of rows.
@@ -2210,6 +2620,12 @@ local function BuildSpells(view, page)
         list.offset = list.offset + rows
         Draw()
         return list.offset ~= before
+    end
+
+    --- Picks a spell by name: the pane then shows it.
+    function view.Select(name)
+        list.selected = name
+        Draw()
     end
 
     bar:SetScript("OnValueChanged", function(_, value)
@@ -2226,7 +2642,7 @@ local function BuildSpells(view, page)
     end)
 
     --- Reads the bars again. The spells keep their places while the tab is open,
-    --- so that a row does not jump away under the mouse: those with an icon are
+    --- so that a line does not jump away under the mouse: those with an icon are
     --- only sorted to the top when the tab opens (`resort`) or the bars change.
     function view.RefreshSpells(resort)
         local found = ns.BarSpells()
@@ -2251,7 +2667,9 @@ local function BuildSpells(view, page)
             end
             list.items = items
             if resort then
-                list.offset = 0
+                -- The list opens with the spell that is picked in sight.
+                local _, at = Selected()
+                list.offset = max(0, (at or 1) - L.rows)
             end
         else
             -- The same spells, though the client may have described them afresh.
@@ -2274,24 +2692,67 @@ local function BuildSpells(view, page)
 end
 
 --------------------------------------------------------------------------------
--- The panel: tabs, and a page under each
+-- The panel: tabs, a page under each, and a strip along the bottom
 --------------------------------------------------------------------------------
 
+-- `ask` is the question before a tab is put back to how it started.
 local TABS = {
-    { key = "appearance", label = "Appearance", width = 92 },
-    { key = "spells", label = "Spells", width = 64 },
+    { key = "display", label = "Display", ask = "Put everything on the Display tab back to how it started?" },
+    { key = "icons", label = "Icons", ask = "Put the three icons back to how they started?" },
+    { key = "spells", label = "Skills", ask = "Forget your own choices for every skill?" },
+}
+local TAB_WIDTH = 84
+
+-- The names a tab goes by: its own, and the ones from before there were three.
+local TAB_KEYS = { display = "display", appearance = "display", icons = "icons", spells = "spells", skills = "spells" }
+Options.TAB_KEYS = TAB_KEYS
+
+-- How the Display tab starts out. (The same values as a new player's settings.)
+local DEFAULTS = { enabled = true, appear = "group", usableOnly = true, corner = "TOPLEFT", size = 0 }
+Options.DEFAULTS = DEFAULTS
+
+-- What the Defaults button does on each tab.
+local RESETS = {
+    display = function()
+        ns.SetEnabled(DEFAULTS.enabled)
+        ns.SetAppear(DEFAULTS.appear)
+        ns.SetUsableOnly(DEFAULTS.usableOnly)
+        ns.db.corner = DEFAULTS.corner
+        ns.db.size = DEFAULTS.size
+    end,
+    icons = function()
+        Icons.ResetAll()
+    end,
+    spells = function()
+        local byName = {}
+        local found = ns.BarSpells()
+        for i = 1, #found do
+            byName[found[i].name] = found[i]
+        end
+        local names = {}
+        for name in pairs(ns.db.spells) do
+            names[#names + 1] = name
+        end
+        for i = 1, #names do
+            Unchoose(names[i], byName[names[i]])
+        end
+        ns.MarkBarsDirty()
+    end,
 }
 
---- Fills `host` with the panel and returns a view.
---- `chrome` says where things go: { tabsOn, tabsX, tabsY, lineAt, pageTop }.
+--- Fills `host` with the panel and returns a view. `chrome` says where things
+--- go: { tabsOn, tabsX, tabsY, lineAt, backed, pageTop, defaultsX, defaultsY,
+--- defaultsHeight }.
 local function Build(host, chrome)
-    local view = { host = host, tab = "appearance", tabs = {}, pages = {} }
+    local view = { host = host, tab = "display", tabs = {}, pages = {} }
+    local asks = {}
 
     for index = 1, #TABS do
         local tab = TABS[index]
+        asks[tab.key] = tab.ask
         local button = CreateFrame("Button", nil, chrome.tabsOn)
-        button:SetSize(tab.width, 24)
-        button:SetPoint("TOPLEFT", chrome.tabsOn, "TOPLEFT", chrome.tabsX + (index - 1) * (TABS[1].width + 4), chrome.tabsY)
+        button:SetSize(TAB_WIDTH, 24)
+        button:SetPoint("TOPLEFT", chrome.tabsOn, "TOPLEFT", chrome.tabsX + (index - 1) * (TAB_WIDTH + 4), chrome.tabsY)
 
         local back = button:CreateTexture(nil, "BORDER")
         back:SetAllPoints(button)
@@ -2309,7 +2770,7 @@ local function Build(host, chrome)
 
         local label = Label(button, "OVERLAY", "GameFontNormal")
         label:SetPoint("CENTER", button, "CENTER", 0, 0)
-        Say(label, tab.label, tab.width - 10)
+        Say(label, tab.label, TAB_WIDTH - 10)
 
         button.back, button.line, button.label = back, line, label
         button:SetScript("OnClick", function()
@@ -2319,14 +2780,114 @@ local function Build(host, chrome)
         view.tabs[tab.key] = button
 
         local page = CreateFrame("Frame", nil, host)
-        page:SetSize(L.width, L.pageHeight)
+        page:SetSize(L.width, L.pageHeight - L.foot)
         page:SetPoint("TOPLEFT", host, "TOPLEFT", 0, chrome.pageTop)
         page:Hide()
         view.pages[tab.key] = page
     end
 
-    BuildAppearance(view, view.pages.appearance)
+    -- The strip along the bottom: a line about the tab that is open, or the
+    -- question before that tab is put back to how it started.
+    local foot = CreateFrame("Frame", nil, host)
+    foot:SetSize(L.width, L.foot)
+    foot:SetPoint("TOPLEFT", host, "TOPLEFT", 0, chrome.pageTop - (L.pageHeight - L.foot))
+    local rule = foot:CreateTexture(nil, "ARTWORK")
+    rule:SetPoint("TOPLEFT", foot, "TOPLEFT", 12, 0)
+    rule:SetSize(L.width - 24, 1)
+    rule:SetColorTexture(0.4, 0.4, 0.45, 0.7)
+    local footer = Text(foot, "GameFontDisableSmall")
+    footer:SetJustifyV("MIDDLE")
+    footer:SetPoint("LEFT", foot, "LEFT", L.left, 0)
+    view.foot, view.footer = foot, footer
+
+    --- Says something about the tab that is open, at the bottom of the panel.
+    function view.Foot(text)
+        Say(footer, text, L.right - L.left)
+    end
+
+    local confirm = CreateFrame("Frame", nil, foot)
+    confirm:SetAllPoints(foot)
+    confirm:Hide()
+    local no = PushButton(confirm, 90, 22, "Cancel")
+    no:SetPoint("RIGHT", confirm, "RIGHT", -(L.width - L.right), 0)
+    local yes = PushButton(confirm, 90, 22, "Reset")
+    yes:SetPoint("RIGHT", no, "LEFT", -6, 0)
+    local question = Text(confirm, "GameFontHighlight")
+    question:SetJustifyV("MIDDLE")
+    question:SetPoint("LEFT", confirm, "LEFT", L.left, 0)
+    local questionRoom = L.right - L.left - 90 - 6 - 90 - 12
+    view.question = question
+    view.confirm = { frame = confirm, yes = yes, no = no }
+
+    -- One question at a time: what a click on the first button would do.
+    local pending
+
+    --- Asks before something is thrown away, in place of the line at the
+    --- bottom. `what` names what is asked about (view.asking holds it while the
+    --- question is up), `label` goes on the button that does it, and `action`
+    --- is what that button does.
+    function view.Ask(what, text, label, action)
+        view.asking, pending = what, action
+        yes.SetLabel(label)
+        Say(question, text, questionRoom)
+        Shown(confirm, true)
+        Shown(footer, false)
+    end
+
+    --- Puts the question away unanswered. With `what`, only a question about that.
+    function view.Unask(what)
+        if what and view.asking ~= what then
+            return
+        end
+        view.asking, pending = nil, nil
+        Shown(confirm, false)
+        Shown(footer, true)
+    end
+
+    -- Defaults, where the game's own pages have theirs. It asks first.
+    local defaults = PushButton(chrome.tabsOn, DEFAULTS_WIDTH, chrome.defaultsHeight, "Defaults")
+    defaults:SetPoint("TOPLEFT", chrome.tabsOn, "TOPLEFT", chrome.defaultsX, chrome.defaultsY)
+    Tip(defaults, "Defaults", "Puts the tab that is open back to how it started. It asks first.")
+    OnClick(defaults, function()
+        local reset = RESETS[view.tab]
+        view.Ask(view.tab, asks[view.tab], "Reset", function()
+            view.editing = nil
+            Change(reset)
+        end)
+    end)
+    OnClick(no, function()
+        view.Unask()
+    end)
+    OnClick(yes, function()
+        local action = pending
+        view.Unask()
+        if action then
+            action()
+        end
+    end)
+    view.defaults = defaults
+
+    BuildDisplay(view, view.pages.display)
+    BuildIcons(view, view.pages.icons)
     BuildSpells(view, view.pages.spells)
+
+    --- Puts away whatever was half done when the panel closes or the tab changes.
+    function view.Settle()
+        view.Unask()
+        view.editing = nil
+        if view.input then
+            view.input:ClearFocus()
+        end
+        view.editor.problem = nil
+        local pane = view.pane
+        if pane.lasts then
+            pane.lasts:ClearFocus()
+        end
+        if pane.stacks then
+            pane.stacks:ClearFocus()
+        end
+        pane.problem, pane.problemAt = nil, nil
+    end
 
     function view.Refresh()
         for key, button in pairs(view.tabs) do
@@ -2343,14 +2904,17 @@ local function Build(host, chrome)
         end
         if view.tab == "spells" then
             view.RefreshSpells(false)
+        elseif view.tab == "icons" then
+            view.RefreshIcons()
         else
-            view.RefreshAppearance()
+            view.RefreshDisplay()
         end
     end
 
     --- Brings a tab to the front.
     function view.ShowTab(key)
-        if not view.pages[key] then
+        key = TAB_KEYS[key]
+        if not key then
             return
         end
         if key ~= view.tab then
@@ -2512,7 +3076,7 @@ local function BuildWindow(scrap)
     bar:SetHeight(L.bar - 1)
     bar:SetColorTexture(0.16, 0.16, 0.2, 1)
 
-    local tabsX = 150
+    local tabsX = 160
     local caption = Text(frame, "GameFontNormal", TITLE)
     caption:SetPoint("TOPLEFT", frame, "TOPLEFT", 12, -8)
     Fit(caption, tabsX - 12 - 8) -- the tabs start where it ends
@@ -2532,8 +3096,9 @@ local function BuildWindow(scrap)
     host:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
     host:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
 
+    -- Defaults sits in the title bar, before the button that closes the window.
     local view = Build(host, { tabsOn = host, tabsX = tabsX, tabsY = -(L.bar - 24), lineAt = "TOP", backed = true,
-        pageTop = -L.bar })
+        pageTop = -L.bar, defaultsX = L.width - 30 - DEFAULTS_WIDTH, defaultsY = -4, defaultsHeight = 20 })
     frame:SetScript("OnShow", function()
         ns.Guard(view.Opened)
     end)
@@ -2549,8 +3114,9 @@ local function BuildWindow(scrap)
     return frame
 end
 
---- Opens the settings window, on a tab if one is named ("appearance" or "spells").
+--- Opens the settings window, on a tab if one is named ("display", "icons" or "spells").
 function Options.Open(tab)
+    tab = tab and TAB_KEYS[tab] or nil
     if not window then
         local frame, problem = BuildSafely(BuildWindow)
         if not frame then
@@ -2615,7 +3181,7 @@ local function BuildHeading(host, page)
         title = Text(host, "GameFontHighlightHuge", TITLE)
         title:SetPoint("TOPLEFT", host, "TOPLEFT", 7, -22)
     end
-    Fit(title, L.width - 32)
+    Fit(title, L.right - DEFAULTS_WIDTH - 12 - 16) -- Defaults is at the far end of the same line
 
     local divider = host:CreateTexture(nil, "ARTWORK")
     divider:SetPoint("TOP", page, "TOP", 0, -50)
@@ -2631,7 +3197,9 @@ end
 
 local function BuildCanvas(host, page)
     local title, divider = BuildHeading(host, page)
-    local view = Build(host, { tabsOn = host, tabsX = 12, tabsY = -58, lineAt = "BOTTOM", pageTop = -L.canvasTop })
+    -- Defaults is where the game's own pages have theirs: at the far end of the heading.
+    local view = Build(host, { tabsOn = host, tabsX = 12, tabsY = -58, lineAt = "BOTTOM", pageTop = -L.canvasTop,
+        defaultsX = L.right - DEFAULTS_WIDTH, defaultsY = -16, defaultsHeight = 22 })
     view.title, view.divider = title, divider
     return view
 end
