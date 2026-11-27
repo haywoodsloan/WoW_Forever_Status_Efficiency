@@ -6749,9 +6749,11 @@ end)
 test("immune: a change on an enemy that died in the moment of the cast does not show that its kind takes the effect", function()
     local w, ns, first = Elemental({ saved = Seasoned() })
     first.immune = nil
-    -- Rend leaves nothing, and the elemental dies in that frame: all its
-    -- effects go, which a client that does not say what changed reports like
-    -- a cast landing.
+    -- Somebody else's effect is on the elemental. Rend leaves nothing, and
+    -- the elemental dies in that frame: all its effects go, which a client
+    -- that does not say what changed reports like a cast landing.
+    w:applyAura(first, "Corruption", 18, false)
+    w:advance(1)
     w:cast(REND, { miss = true, word = false })
     w:kill(first)
     w:advance(2)
