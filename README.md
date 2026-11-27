@@ -11,11 +11,12 @@ status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 | Red X | All of them already have it. Casting again changes nothing. | You already have it. Casting again changes nothing. |
 
 No icon means there is nothing to say: the spell applies no status effect, or
-it is a debuff and there is no enemy to judge. Out of the box the icons also
-stay away until you target an enemy, and from a skill you cannot use right now
-(too close, too far, the wrong stance). Both can be changed in the settings.
+it is a debuff and there is no enemy to judge and no fight going on. Out of the
+box the icons also stay away until you target an enemy or a fight starts, and
+from a skill you cannot use right now (too close, too far, the wrong stance).
+Both can be changed in the settings.
 
-Version 0.3.7 is an early draft. It loads and draws its icons in the real
+Version 0.3.8 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -43,7 +44,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: v0.3.7".
+first line of the reply gives the version, "Status Efficiency: v0.3.8".
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -61,10 +62,14 @@ not have the buff, a red X while you do. A buff you can also put on other
 people (a heal over time, a stamina buff) is judged on the friend you have
 targeted, and on you when your target is an enemy or nobody.
 
-The icons appear while you have an enemy targeted, buff icons included. If you
-would rather see them all the time (buffs at any time, debuffs whenever there
-is an enemy to check), or only during a fight, change **when the icons appear**
-in the settings or with `/se when`.
+The icons appear while you have an enemy targeted, buff icons included, and
+they stay on all through a fight whatever you have targeted: your target dying
+does not take them away. A fight is your own, or one that someone in your party
+or raid is in close by. While it lasts, a debuff with no enemy to judge it on
+shows the green check until you pick the next target. If you would rather see
+the icons all the time (buffs at any time, debuffs whenever there is an enemy
+to check), or only during a fight, change **when the icons appear** in the
+settings or with `/se when`.
 
 A skill you cannot use right now shows no icon either, whatever the icon would
 have said: the target is too close or too far, you are in the wrong stance, the
@@ -106,10 +111,14 @@ The **Appearance** tab:
 - **Show status icons** turns the icons on and off, like `/se on` and `/se off`.
 - **When the icons appear**, beside it:
   - **Always**: whenever there is something to judge, which is a buff at any
-    time and a debuff whenever there is an enemy to check.
-  - **When targeting an enemy** (the default): only while you have an enemy
-    targeted. Buff icons wait for one too.
+    time and a debuff whenever there is an enemy to check, and all through a
+    fight.
+  - **When targeting an enemy** (the default): while you have an enemy
+    targeted, and all through a fight. Buff icons wait for that too.
   - **When in combat**: only during a fight.
+
+  A fight is your own, or one that someone in your party or raid is in close
+  by. [Known limitations](#known-limitations) says what close by means.
 - **On which skills**, under it: **On every skill**, or **Only when the skill
   is usable** (the default), which leaves a skill bare while you cannot use it:
   too close or too far, in the wrong stance and the like. Being short of rage,
@@ -169,7 +178,7 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se` | Lists the commands. The first line gives the version of the addon. |
 | `/se options` | Opens or closes the settings window. `/se options spells` opens it on the Spells tab. |
 | `/se on`, `/se off` | Turns the icons on or off. |
-| `/se when <always\|target\|combat>` | When the icons appear: always, while an enemy is targeted (the default), or only in combat. |
+| `/se when <always\|target\|combat>` | When the icons appear: always, while an enemy is targeted and all through a fight (the default), or only during a fight. |
 | `/se usable <on\|off>` | `on` (the default) shows an icon only on a skill you can use right now. `off` shows it on every skill. |
 | `/se list` | Shows the spells on your bars and how each one is treated, and why. |
 | `/se track <spell>` | Always give this spell an icon. The reply says whether it is treated as a debuff or a buff. |
@@ -236,7 +245,8 @@ on your bars.
   game's soft targeting has picked).
 - A debuff that hits everything around you is judged against the enemies that
   are in the fight and have a nameplate showing, plus your target.
-- No such enemy: the icon is hidden.
+- No such enemy: the icon is hidden. During a fight it shows the green check
+  instead: nobody the skill could go to has its effect.
 - A buff is judged on you. One that can be cast on other people is judged on
   your target instead while that target is a living friend.
 
@@ -317,7 +327,10 @@ timings, and no character or account names.
 
 The same record says what the game answered about each skill being usable
 (`usable`) and which of the three ways of asking got the answer, in a fight and
-out of one (`usableFrom`). Next to it, under `panel`, is what the settings panel
+out of one (`usableFrom`), and what it said of your party or raid (`group`):
+how often that turned to someone fighting close by, someone fighting but nobody
+close by, nobody fighting, or the game not saying. Next to it, under `panel`, is
+what the settings panel
 found out about this client: which of the game's controls it kept, which fonts
 it had to replace, which labels were a tight fit, and how much room the Options
 window gave the page.
@@ -355,6 +368,14 @@ window gave the page.
     frame another of your effects ends shows a red X. And an effect renewed in
     its last tenth of a second, where the report comes a frame apart from the
     cast, shows a green check until the next cast.
+- **"Close by", for a fight that someone in your group is in, means close
+  enough for the game to show them to you**, which is about a hundred yards.
+  The game's own test for a group member being in range (about 40 yards)
+  answers addons with a hidden value, so it is only asked where the game will
+  not say whether it shows the member to you.
+  A member the game will not answer about is not counted: whether they are in
+  combat, or whether they are close by. `/se debug` says what was found, under
+  "Your group".
 - **An effect that ends early in combat is not noticed.** A debuff that is
   dispelled or used up, or a buff that is removed, keeps its red X until its
   timer runs out or the fight ends. The game says that an effect went from the

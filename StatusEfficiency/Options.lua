@@ -83,12 +83,15 @@ Options.POSITION_NAMES = POSITION_NAMES
 -- When the icons appear at all. `words` is how chat messages put it.
 local APPEAR_CHOICES = {
     { key = "always", label = "Always", width = 54, words = "always", tip = "Always",
-        body = "Whenever there is something to judge: a buff at any time, a debuff whenever there is an enemy to check." },
+        body = "Whenever there is something to judge: a buff at any time, a debuff whenever there is an enemy to check "
+            .. "and all through a fight." },
     { key = "target", label = "When targeting an enemy", width = 150, words = "when targeting an enemy",
         tip = "When targeting an enemy",
-        body = "Only while you have an enemy targeted. Buff icons wait for one too." },
+        body = "While you have an enemy targeted, and all through a fight: your own, or one that someone in your "
+            .. "group is in close by. Buff icons wait for that too." },
     { key = "combat", label = "When in combat", width = 104, words = "when in combat", tip = "When in combat",
-        body = "Only during a fight. Out of combat your buttons stay bare." },
+        body = "Only during a fight: your own, or one that someone in your group is in close by. Otherwise your "
+            .. "buttons stay bare." },
 }
 Options.APPEAR_CHOICES = APPEAR_CHOICES
 

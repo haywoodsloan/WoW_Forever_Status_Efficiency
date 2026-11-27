@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.3.7"
+ns.VERSION = "0.3.8"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -257,6 +257,85 @@ function ns.IsEngaged(unit)
         return fighting
     end
     return ns.InCombat()
+end
+
+--------------------------------------------------------------------------------
+-- Your group
+--
+-- The icons stay on all through a fight, and a fight is also one that someone
+-- in your party or raid is in close by. Whether a member is in combat is a
+-- plain answer in the client's documentation. How far away they are is not:
+-- the game's test for a group member being in range answers with secret
+-- values (UnitInRange). So "close by" is taken to be close enough for the
+-- game to show them to you, which is about a hundred yards (UnitIsVisible),
+-- and the range test is only asked where that one will not answer.
+--------------------------------------------------------------------------------
+
+local PARTY_TOKENS, RAID_TOKENS = {}, {}
+for i = 1, 4 do
+    PARTY_TOKENS[i] = "party" .. i
+end
+for i = 1, 40 do
+    RAID_TOKENS[i] = "raid" .. i
+end
+
+--- Whether a group member is close by. Nil when the game will not say.
+local function Near(unit)
+    local visible = Flag(UnitIsVisible, unit)
+    if visible ~= nil then
+        return visible
+    end
+    local ok, inRange, checked = pcall(UnitInRange, unit)
+    if ok and not IsSecret(inRange) and not IsSecret(checked) and checked then
+        return inRange and true or false
+    end
+    return nil
+end
+
+--- What the members behind a list of unit tokens are doing, added to what was
+--- found so far. See ns.GroupState for the words.
+local function Members(tokens, state)
+    for i = 1, #tokens do
+        local unit = tokens[i]
+        local fighting = Flag(UnitAffectingCombat, unit)
+        if fighting == true then
+            if not IsSelf(unit) then
+                local near = Near(unit)
+                if near == true then
+                    return "fighting"
+                elseif near == false then
+                    if state ~= "unsaid" then
+                        state = "far"
+                    end
+                else
+                    state = "unsaid"
+                end
+            end
+        elseif fighting == nil then
+            if ns.Exists(unit) and not IsSelf(unit) then
+                state = "unsaid"
+            end
+        elseif state == "alone" and ns.Exists(unit) and not IsSelf(unit) then
+            state = "quiet"
+        end
+    end
+    return state
+end
+
+--- What your party or raid is doing, in one word:
+---   "fighting"  someone in it is in combat close by
+---   "far"       someone is in combat, but nobody close by
+---   "quiet"     nobody in it is in combat
+---   "unsaid"    the game will not say it of someone: whether they are in
+---               combat, or whether they are close by
+---   "alone"     you are in no group
+--- Only the first makes a fight of yours out of theirs.
+function ns.GroupState()
+    local state = Members(PARTY_TOKENS, "alone")
+    if state ~= "fighting" and Flag(IsInRaid) ~= false then
+        state = Members(RAID_TOKENS, state)
+    end
+    return state
 end
 
 --------------------------------------------------------------------------------

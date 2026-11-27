@@ -5,16 +5,20 @@
 --   green check          none of the enemies the spell would hit has its effect
 --   yellow half circle   some of them have it
 --   red X                all of them have it, so casting again changes nothing
---   no icon              no enemy to judge
+--   no icon              no enemy to judge, and no fight going on
 --
 -- A spell that puts a buff on you, or on the friend you have targeted:
 --   green check          the buff is not there
 --   red X                the buff is there, so casting again changes nothing
 --
 -- A spell that applies no status effect gets no icon. Two settings say when the
--- icons appear at all: always, only while an enemy is targeted (the default), or
+-- icons appear at all: always, while an enemy is targeted (the default), or
 -- only during a fight; and on every skill, or only on one that can be used right
 -- now (the default).
+--
+-- A fight keeps the icons on from its first moment to its last, whatever is
+-- targeted: your own fight, or one that someone in your party or raid is in
+-- close by. A debuff with no enemy to judge it on shows the green check then.
 --
 -- In combat the client hides what effects a unit has, but still reports the
 -- moment they change. A cast only counts as applied once the unit it went to
@@ -59,7 +63,9 @@ local STANDARD_BUTTON = 45 -- an action button's width, for when one cannot be m
 ns.SIZE_MIN, ns.SIZE_MAX = SIZE_MIN, SIZE_MAX
 
 -- When the icons appear at all: "always" (whenever there is something to judge),
--- "target" (only while an enemy is targeted) or "combat" (only during a fight).
+-- "target" (while an enemy is targeted, and all through a fight) or "combat"
+-- (only during a fight). A fight is yours, or one that someone in your group is
+-- in close by.
 local APPEAR = { always = true, target = true, combat = true }
 local APPEAR_DEFAULT = "target"
 ns.APPEAR_DEFAULT = APPEAR_DEFAULT
@@ -1306,6 +1312,30 @@ local function TellDropped(name, kind, back, earned)
         name, casts - hits, casts, name))
 end
 
+local groupSaid -- what your group was last found doing
+
+--- Keeps, in the saved report, how often the answer to "what is your party
+--- or raid doing" turned to each of its words (see ns.GroupState). What a
+--- real client says of its members can then be read afterwards: whether they
+--- are in combat, and whether they are close by.
+local function NoteGroup(state)
+    if state == groupSaid then
+        return
+    end
+    groupSaid = state
+    local journal = Journal()
+    local group = journal.group
+    if type(group) ~= "table" then
+        group = {}
+        journal.group = group
+    end
+    group[state] = (group[state] or 0) + 1
+end
+
+-- With no enemy to go to, there is nobody a skill's reach could be judged to:
+-- it is asked as little as for a skill that goes to you.
+local NOBODY = "player"
+
 local function Refresh(now)
     PassOnChanges(now)
     for i = 1, #TOKEN_KINDS do
@@ -1371,9 +1401,16 @@ local function Refresh(now)
 
     -- Whether the icons may be on the buttons right now. Everything above goes
     -- on either way, so nothing is missed while they are away.
+    --
+    -- A fight keeps them on from its first moment to its last, whatever is
+    -- targeted: your own fight, or one that someone in your party or raid is
+    -- in close by. Tied to a living target alone, they went away each time
+    -- that target died and came back with the next one.
+    local group = ns.GroupState()
+    NoteGroup(group)
+    local fighting = ns.InCombat() or group == "fighting"
     local when = ns.db.appear
-    local appear = when == "always" or (when == "combat" and ns.InCombat())
-        or (when ~= "combat" and primaryUnit ~= nil)
+    local appear = when == "always" or fighting or (when ~= "combat" and primaryUnit ~= nil)
     local usableOnly = ns.db.usableOnly
 
     local wantSweep, wantBuffs, wantFriend, wantLearn = false, false, false, false
@@ -1400,6 +1437,13 @@ local function Refresh(now)
                     else
                         state = false
                     end
+                    if state == false and fighting then
+                        -- No enemy to judge it on in the middle of a fight:
+                        -- your target has just died, or the next one is not
+                        -- picked yet. Nobody the skill could go to has its
+                        -- effect, and that is the green check.
+                        state = "none"
+                    end
                     states[name] = state
                 end
                 if kind == "buff" then
@@ -1416,7 +1460,7 @@ local function Refresh(now)
             end
             if not appear then
                 state = nil
-            elseif state and usableOnly and not CanUse(entry, AimOf(info, kind)) then
+            elseif state and usableOnly and not CanUse(entry, AimOf(info, kind) or NOBODY) then
                 state = nil -- nothing to say about a skill that cannot be used right now
             end
             if samples then

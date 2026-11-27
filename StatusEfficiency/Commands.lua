@@ -575,6 +575,16 @@ local USABLE_SOURCES = {
     ["not asked yet"] = "not asked yet",
 }
 
+-- What ns.GroupState says of your party or raid, in words. A fight of theirs
+-- close by keeps the icons on like one of your own.
+local GROUP_WORDS = {
+    alone = "you are in no party or raid",
+    quiet = "nobody in it is in combat",
+    far = "someone in it is in combat, but nobody close by",
+    fighting = "someone close by is in combat, which keeps the icons on like a fight of your own",
+    unsaid = "the game will not say who in it is in combat, or who is close by",
+}
+
 function commands.debug()
     local now = ns.Now()
     local ok, version, build, _, interface = pcall(GetBuildInfo)
@@ -585,6 +595,7 @@ function commands.debug()
         tostring(ns.Plain(version)), tostring(ns.Plain(build)), tostring(ns.Plain(interface))))
     print(format("  Secret values: %s. Aura details hidden right now: %s. In combat: %s.",
         YesNo(ns.hasSecretValues), YesNo(ns.AurasSecret()), YesNo(ns.InCombat())))
+    print("  Your group: " .. (GROUP_WORDS[ns.GroupState()] or "nothing known") .. ".")
 
     local buttons, withSpell, showing = #ns.buttons, 0, 0
     for i = 1, buttons do

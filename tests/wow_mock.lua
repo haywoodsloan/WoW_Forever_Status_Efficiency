@@ -46,6 +46,16 @@
 --   combatIdentity true (default): NPC GUIDs stay readable in combat.
 --   secretFlags    true: UnitExists, UnitCanAttack and friends answer with
 --                  secret booleans in combat.
+--   raid           true: you are in a raid, not a party. world:addPartyMember
+--                  then gives out the names raid2, raid3, ... and raid1 is you.
+--   groupFlags     "secret": whether someone in your group is in combat, and
+--                  whether the client shows them to you, are answered with
+--                  secret booleans at all times. "combat": only the first of
+--                  the two is. Default: plainly, as the 12.1.5 documentation
+--                  has it.
+--   noVisible      true: UnitIsVisible does not exist. What is left for telling
+--                  how near a group member is, is UnitInRange, which answers
+--                  with secret values while details are hidden.
 --   byName         set of aura names the client still shows by name in combat.
 --   alwaysSecret   set of aura names whose details are secret at all times.
 --   noCSecrets     true: C_Secrets does not exist.
@@ -137,6 +147,7 @@ function Mock.new(options)
         effects = {}, -- delayed aura applications
         nextAura = 100,
         nextMob = 1,
+        nextMember = 1,
         nextCast = 1,
         errors = {},
     }
@@ -287,6 +298,9 @@ function Mock.new(options)
     end
 
     world.player = { guid = "Player-1-0001", name = "Tester", hostile = false, auras = {} }
+    if options.raid then
+        world.tokens.raid1 = world.player -- in a raid you have a raid name of your own
+    end
 
     local function Answer(value, unit)
         if FlagsHidden(unit) then
@@ -374,9 +388,54 @@ function Mock.new(options)
         return 1
     end
 
+    --- Whether a question about someone in your group is one this client
+    --- answers with a secret value.
+    local function GroupHidden(mob, what)
+        local hidden = options.groupFlags
+        return (hidden == "secret" or (hidden ~= nil and hidden == what)) and mob ~= nil and mob.grouped == true
+    end
+
     function env.UnitAffectingCombat(unit)
         local mob = Resolve(unit)
-        return Answer(mob ~= nil and mob.engaged == true, unit)
+        local fighting = mob ~= nil and mob.engaged == true
+        if mob == world.player then
+            fighting = world.combat == true
+        end
+        if GroupHidden(mob, "combat") then
+            return Secret(fighting)
+        end
+        return Answer(fighting, unit)
+    end
+
+    -- How near someone in your group is. The client shows a unit to you up to
+    -- about a hundred yards away, and says so plainly. Its test for a group
+    -- member being in range, forty yards, answers with secret values while
+    -- details are hidden.
+    if not options.noVisible then
+        function env.UnitIsVisible(unit)
+            local mob = Resolve(unit)
+            local visible = mob ~= nil and (mob.distance or 0) <= 100
+            if GroupHidden(mob) then
+                return Secret(visible)
+            end
+            return Answer(visible, unit)
+        end
+    end
+
+    function env.UnitInRange(unit)
+        local mob = Resolve(unit)
+        -- The second answer says whether the test was made at all. It is not
+        -- for someone outside your group, nor for a member marked `unchecked`.
+        local grouped = mob ~= nil and mob.grouped == true and not mob.unchecked
+        local inRange = grouped and (mob.distance or 0) <= 40
+        if GroupHidden(mob) or (options.secrets and world.combat) then
+            return Secret(inRange), Secret(grouped)
+        end
+        return inRange, grouped
+    end
+
+    function env.IsInRaid()
+        return options.raid == true
     end
 
     ----------------------------------------------------------------------------
@@ -2104,6 +2163,38 @@ function Mock.new(options)
         end
         self.mobs[#self.mobs + 1] = mob
         return mob
+    end
+
+    --- Puts someone in your party, or in your raid with options.raid: a
+    --- friendly player ten yards away who is not fighting. `fields` can say
+    --- otherwise: engaged = true (in combat), distance = how many yards away,
+    --- unchecked = true (the game's range test is not made for them).
+    --- A member is not one of world.mobs: nothing you cast lands on them by
+    --- itself, and they stay in their fight when you leave yours.
+    function world:addPartyMember(name, fields)
+        local member = {
+            name = name, guid = string.format("Player-1-%08d", 100 + self.nextMember),
+            hostile = false, npc = false, grouped = true, auras = {}, engaged = false, distance = 10,
+        }
+        self.nextMember = self.nextMember + 1
+        if fields then
+            for key, value in pairs(fields) do
+                member[key] = value
+            end
+        end
+        local prefix, first, last = "party", 1, 4
+        if self.options.raid then
+            prefix, first, last = "raid", 2, 40
+        end
+        for i = first, last do
+            local token = prefix .. i
+            if not self.tokens[token] then
+                self.tokens[token] = member
+                member.token = token
+                return member
+            end
+        end
+        error("the group is full")
     end
 
     function world:target(mob)

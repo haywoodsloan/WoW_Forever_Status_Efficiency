@@ -245,7 +245,7 @@ local OPTIONAL_READS = {
     issecretvalue = true, issecrettable = true, canaccesstable = true, C_Secrets = true, C_UnitAuras = true,
     Settings = true,
     InterfaceOptions_AddCategory = true, GetSpellTexture = true, SOUNDKIT = true, PlaySound = true,
-    IsUsableAction = true, IsActionInRange = true, C_Texture = true,
+    IsUsableAction = true, IsActionInRange = true, C_Texture = true, UnitIsVisible = true,
     -- Fonts, which the settings panel looks for before it borrows one.
     GameFontNormal = true, GameFontNormalLarge = true, GameFontNormalSmall = true, GameFontHighlight = true,
     GameFontHighlightSmall = true, GameFontHighlightHuge = true, GameFontDisable = true,
@@ -3817,9 +3817,11 @@ test("what is not shown is still followed", function()
     eq(w:icon("ActionButton1"), "cross")
     eq(w:icon("ActionButton2"), "check")
 
+    -- You walk away from the fight and let go of the boar.
+    w:leaveCombat()
     w:target(nil)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), nil, "no enemy targeted, no icons")
+    eq(w:icon("ActionButton1"), nil, "no enemy targeted and no fight, no icons")
     eq(w:icon("ActionButton2"), nil)
     w:cast(BLOCK)
     w:advance(0.5)
@@ -3868,12 +3870,325 @@ test("/se when combat shows the icons only during a fight", function()
 
     w:target(nil)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), nil, "nobody to judge Rend on")
+    eq(w:icon("ActionButton1"), "check", "nobody to judge Rend on, in the middle of a fight")
     eq(w:icon("ActionButton3"), "check", "the buff does not need an enemy")
 
     w:leaveCombat()
     w:advance(0.3)
-    eq(w:icon("ActionButton3"), nil, "the fight is over")
+    eq(w:icon("ActionButton1"), nil, "the fight is over")
+    eq(w:icon("ActionButton3"), nil)
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Through a fight
+--
+-- A fight keeps the icons on from its first moment to its last, whatever is
+-- targeted: your own fight, or one that someone in your party or raid is in
+-- close by.
+--------------------------------------------------------------------------------
+
+test("fight: the icons stay on when your target dies in the middle of a fight", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, HEROIC)
+    w:addButton("ActionButton3", 3, SHOUT)
+    w:addButton("ActionButton4", 4, CLAP)
+    local ns = w:install()
+    eq(ns.db.appear, "target", "the default: icons while an enemy is targeted")
+    local boar, wolf = w:addMob("Boar"), w:addMob("Wolf")
+    w:showPlate(boar)
+    w:showPlate(wolf)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    wolf.engaged = true -- the wolf joins in
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "Rend is on the boar")
+    eq(w:icon("ActionButton3"), "check")
+
+    -- The boar dies. Its corpse stays targeted, and the wolf fights on.
+    w:kill(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "Rend: nobody you have picked has it")
+    eq(w:icon("ActionButton2"), nil, "Heroic Strike still applies nothing")
+    eq(w:icon("ActionButton3"), "check", "Battle Shout stays where it was")
+    eq(w:icon("ActionButton4"), "check", "Thunder Clap is judged on the wolf")
+
+    -- Letting go of the corpse changes nothing.
+    w:target(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton3"), "check")
+
+    -- The next enemy is judged for what it carries.
+    w:target(wolf)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the wolf has no Rend")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "now it has")
+
+    -- The wolf dies and the fight is over: nothing targeted, nothing shown.
+    w:kill(wolf)
+    w:leaveCombat()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "no fight and no enemy")
+    eq(w:icon("ActionButton3"), nil)
+    eq(w:icon("ActionButton4"), nil)
+    Clean(w)
+end)
+
+test("fight: someone in your party fighting close by keeps the icons on", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton3", 3, SHOUT)
+    local ns = w:install()
+    local healer = w:addPartyMember("Healer")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "nobody is fighting and nothing is targeted")
+    eq(w:icon("ActionButton3"), nil)
+
+    healer.engaged = true
+    w:advance(0.3)
+    eq(w.combat, false, "you are not in combat yourself")
+    eq(w:icon("ActionButton1"), "check", "Rend, with nobody to judge it on yet")
+    eq(w:icon("ActionButton3"), "check", "Battle Shout, which you do not have")
+
+    healer.distance = 300
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "a fight far away is not yours")
+    eq(w:icon("ActionButton3"), nil)
+
+    healer.distance = 60
+    w:advance(0.3)
+    eq(w:icon("ActionButton3"), "check", "sixty yards is close by: the game still shows them to you")
+
+    healer.engaged = false
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "their fight is over")
+    eq(w:icon("ActionButton3"), nil)
+
+    -- What the game said of the group is kept for troubleshooting: how often
+    -- the answer turned to each word.
+    local group = ns.db.report.group
+    eq(group.alone, 1, "before anyone joined")
+    eq(group.quiet, 2)
+    eq(group.fighting, 2)
+    eq(group.far, 1)
+    eq(group.unsaid, nil)
+    Clean(w)
+end)
+
+test("fight: /se when combat counts the fight of someone in your group close by", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton3", 3, SHOUT)
+    w:load({ appear = "combat" })
+    local tank = w:addPartyMember("Tank", { engaged = true })
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:advance(0.3)
+    eq(w.combat, false, "you are not in combat yourself")
+    eq(w:icon("ActionButton1"), "check", "nobody picked yet")
+    eq(w:icon("ActionButton3"), "check")
+
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the boar has no Rend")
+    w:applyAura(boar, "Rend", 21, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "and now it has: an enemy you picked is judged for what it carries")
+
+    tank.engaged = false
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "nobody is fighting any more")
+    eq(w:icon("ActionButton3"), nil)
+    Clean(w)
+end)
+
+test("fight: in a raid, someone fighting close by counts and your own name does not", function()
+    local w = World({ raid = true })
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton3", 3, SHOUT)
+    local ns = w:install()
+    local mage = w:addPartyMember("Mage")
+    eq(mage.token, "raid2", "raid1 is you")
+    w:advance(0.3)
+    eq(w:icon("ActionButton3"), nil)
+
+    -- Your own fight shows under your raid name too. It is yours all the same.
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton3"), "check", "your fight keeps the icons on")
+    eq(ns.GroupState(), "quiet", "and is not taken for somebody else's")
+    w:kill(boar)
+    w:leaveCombat()
+    w:target(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton3"), nil)
+
+    mage.engaged = true
+    w:advance(0.3)
+    eq(ns.GroupState(), "fighting")
+    eq(w:icon("ActionButton1"), "check", "the mage's fight keeps them on")
+    eq(w:icon("ActionButton3"), "check")
+    eq(ns.db.report.group.fighting, 1, "counted once, for the mage")
+    Clean(w)
+end)
+
+test("fight: a client that will not say what your group is doing leaves it at your own fight", function()
+    local w = World({ groupFlags = "secret" })
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton3", 3, SHOUT)
+    local ns = w:install()
+    w:addPartyMember("Healer", { engaged = true })
+    w:advance(0.3)
+    eq(ns.GroupState(), "unsaid")
+    eq(w:icon("ActionButton3"), nil, "nothing is made of what cannot be read")
+
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    w:kill(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "your own fight still keeps the icons on")
+    eq(w:icon("ActionButton3"), "check")
+    eq(ns.db.report.group.unsaid, 1, "and the saved report says what the client kept back")
+    Clean(w)
+
+    -- Kept back only whether they are in combat: being close by is not enough.
+    w = World({ groupFlags = "combat" })
+    w:addButton("ActionButton3", 3, SHOUT)
+    ns = w:install()
+    w:addPartyMember("Healer", { engaged = true })
+    w:advance(0.3)
+    eq(ns.GroupState(), "unsaid", "nobody is taken to be fighting on no word of the game's")
+    eq(w:icon("ActionButton3"), nil)
+    Clean(w)
+end)
+
+test("fight: where the game will not say whether it shows someone to you, its range test is asked", function()
+    local w = World({ noVisible = true })
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton3", 3, SHOUT)
+    local ns = w:install()
+    local healer = w:addPartyMember("Healer", { engaged = true, distance = 30 })
+    w:advance(0.3)
+    eq(ns.GroupState(), "fighting", "thirty yards is in range")
+    eq(w:icon("ActionButton3"), "check")
+    healer.distance = 60
+    w:advance(0.3)
+    eq(ns.GroupState(), "far", "sixty is not")
+    eq(w:icon("ActionButton3"), nil)
+
+    -- A test the game did not make says nothing, whatever comes with it.
+    healer.unchecked = true
+    w:advance(0.3)
+    eq(ns.GroupState(), "unsaid", "not far: unknown")
+    eq(w:icon("ActionButton3"), nil)
+    healer.unchecked = nil
+
+    -- In a fight of your own that test answers with secret values. By then
+    -- the answer no longer matters: your fight keeps the icons on by itself.
+    healer.distance = 30
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(ns.GroupState(), "unsaid")
+    eq(w:icon("ActionButton3"), "check")
+    Clean(w)
+end)
+
+test("fight: with nobody to go to, a skill's reach is asked of no one", function()
+    -- A client that calls whatever is targeted out of reach, a corpse included,
+    -- must not take the icon away with it.
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    local ns = w:install()
+    eq(ns.db.usableOnly, true, "the default: an icon only on a skill that can be used")
+    local boar, wolf = w:addMob("Boar"), w:addMob("Wolf")
+    w:showPlate(boar)
+    w:showPlate(wolf)
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    wolf.engaged = true
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+
+    w:kill(boar)
+    w:setRange(1, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the corpse is out of reach, and nobody asked")
+
+    w:target(wolf)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "a living enemy out of reach hides it as before")
+    w:setRange(1, true)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("fight: set to always, a debuff with nobody to judge it on shows the green check only during a fight", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton4", 4, CLAP)
+    local ns = w:load()
+    eq(ns.db.appear, "always")
+    eq(w:icon("ActionButton1"), nil, "out of a fight there is nobody to judge Rend on")
+    eq(w:icon("ActionButton4"), nil, "nor Thunder Clap")
+
+    local boar = w:addMob("Boar")
+    w:target(boar)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:kill(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "in the middle of a fight")
+    eq(w:icon("ActionButton4"), "check", "and an area debuff with no enemy in sight likewise")
+
+    w:leaveCombat()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), nil, "and not after it")
+    eq(w:icon("ActionButton4"), nil)
+    Clean(w)
+end)
+
+test("fight: /se debug says what your group is doing", function()
+    local w = World()
+    w:addButton("ActionButton1", 1, REND)
+    w:install()
+    w:drain()
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("Your group: you are in no party or raid.", 1, true), "alone: " .. debug)
+
+    local healer = w:addPartyMember("Healer")
+    w:slash("debug")
+    debug = w:drain()
+    check(debug:find("Your group: nobody in it is in combat.", 1, true), "quiet: " .. debug)
+
+    healer.engaged = true
+    w:slash("debug")
+    debug = w:drain()
+    check(debug:find("Your group: someone close by is in combat, which keeps the icons on", 1, true),
+        "fighting: " .. debug)
+
+    healer.distance = 300
+    w:slash("debug")
+    debug = w:drain()
+    check(debug:find("Your group: someone in it is in combat, but nobody close by.", 1, true), "far: " .. debug)
     Clean(w)
 end)
 
