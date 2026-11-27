@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.4.1"
+ns.VERSION = "0.4.2"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -32,6 +32,9 @@ function ns.Log() end
 function ns.Note() end
 function ns.NoteOthers() end
 function ns.NoteLate() end
+function ns.NoteRefusal() end
+function ns.NoteImmune() end
+function ns.NoteTaken() end
 function ns.MarkDirty() end
 function ns.InSight()
     return true
@@ -487,6 +490,43 @@ function ns.UnitKey(unit)
     return plateKey or ownKey
 end
 
+--- What kind of creature a unit is, so that what is learned of one Fire
+--- Elemental holds for the next one. Returns the kind and the creature's name
+--- for showing, where that is told. The kind is "#" and the game's number
+--- for the creature: read out of `key` where that is the game's own name for
+--- the unit (see ns.UnitKey), which stays known after the client hides it,
+--- and asked for otherwise. Where no number is told, the creature's name
+--- stands in. Nil for a player, whose immunities are never their kind's, and
+--- for a unit the game will not name at all: the second answer is then
+--- "player" or "hidden".
+function ns.UnitKind(unit, key)
+    local name = PlainString((Call(UnitName, unit)))
+    if name == "" then
+        name = nil
+    end
+    local id
+    if type(key) == "string" then
+        local what, number = key:match("^(%a+)%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+        if what == "Creature" or what == "Vehicle" or what == "Pet" then
+            id = number
+        end
+    end
+    if not id then
+        local number = PlainNumber((Call(UnitCreatureID, unit)))
+        if number and number > 0 then
+            id = tostring(number)
+        end
+    end
+    if id then
+        return "#" .. id, name
+    end
+    local player = Flag(UnitIsPlayer, unit)
+    if name and player == false then
+        return name, name
+    end
+    return nil, player == true and "player" or "hidden"
+end
+
 --------------------------------------------------------------------------------
 -- Auras
 --------------------------------------------------------------------------------
@@ -912,6 +952,45 @@ function ns.WatchCasts(token, onCast)
         onCast(token, PlainNumber(spellID))
     end)
     castWatchers[token] = frame
+    return true
+end
+
+--------------------------------------------------------------------------------
+-- What the game says an attack did
+--
+-- For every unit the game announces what an attack or a spell just did to it:
+-- "WOUND", "MISS", "DODGE", "PARRY", "RESIST", "IMMUNE" and so on. Its own
+-- unit frames print that word over the portrait. Its documentation marks
+-- only the amount as hidden from addons in a fight, not the word. It is the
+-- one thing an addon is told about a unit being immune to something. Whose
+-- attack it was is not said. As with the change reports, one frame per unit
+-- token listens, so that whose unit it was never has to be read out of the
+-- event.
+--------------------------------------------------------------------------------
+
+local combatWatchers = {} -- unit token -> the frame listening for it
+
+--- Calls onWord(token, word, flag) whenever the game says what an attack or
+--- a spell did to the unit behind `token`. `word` is nil when the client
+--- keeps it secret, and `flag` is what it adds to some words ("CRITICAL",
+--- "GLANCING"), where it may be read. Returns false when the client will not
+--- allow the watch.
+function ns.WatchCombat(token, onWord)
+    if combatWatchers[token] then
+        return true
+    end
+    local ok, frame = pcall(CreateFrame, "Frame")
+    if not ok or type(frame) ~= "table" then
+        return false
+    end
+    local registered, answer = pcall(frame.RegisterUnitEvent, frame, "UNIT_COMBAT", token)
+    if not registered or answer == false then
+        return false
+    end
+    frame:SetScript("OnEvent", function(_, _, _, word, flag)
+        onWord(token, PlainString(word), PlainString(flag))
+    end)
+    combatWatchers[token] = frame
     return true
 end
 

@@ -44,6 +44,11 @@
 --                  is handed to another unit; "late": a frame after that.
 --   noSelfBuffAPI  true: C_Spell.IsSelfBuff does not exist.
 --   combatIdentity true (default): NPC GUIDs stay readable in combat.
+--                  false: an NPC's GUID, its name and its creature number
+--                  are secret values in combat. "names": its GUID and its
+--                  creature number are, and its name stays readable. "ids":
+--                  only its GUID is, and its creature number and its name
+--                  stay readable.
 --   secretFlags    true: UnitExists, UnitCanAttack and friends answer with
 --                  secret booleans in combat.
 --   raid           true: you are in a raid, not a party. world:addPartyMember
@@ -63,6 +68,16 @@
 --                  hidden (which is what the 12.1.5 documentation allows for).
 --                  "sealed": they are secret at all times. "none": nothing is
 --                  sent for anyone but you.
+--   combatWords    what the client says an attack or a spell did to a unit
+--                  (UNIT_COMBAT, see world:said). Default: the game's word for
+--                  it ("IMMUNE", "MISS" and so on) under each of the unit's
+--                  tokens, readable at all times, with only the amount a
+--                  secret value while details are hidden (which is what the
+--                  12.1.5 documentation says). "secret": the word is a secret
+--                  value too while details are hidden. "none": nothing is
+--                  sent. For a client that does not know the event at all,
+--                  name UNIT_COMBAT in unknownEvents.
+--   noCreatureID   true: UnitCreatureID does not exist.
 --   noApplications true: an aura does not say how many times over it is on
 --                  the unit.
 --   maxStacks      how the client answers when asked how many times over a
@@ -173,6 +188,8 @@ function Mock.new(options)
         effects = {}, -- delayed aura applications
         nextAura = 100,
         nextMob = 1,
+        nextKind = 1,
+        kinds = {}, -- creature name -> the game's number for that kind of creature
         nextMember = 1,
         nextCast = 1,
         errors = {},
@@ -250,6 +267,10 @@ function Mock.new(options)
     end
 
     local function IdentityHidden(mob)
+        return options.secrets and world.combat and options.combatIdentity ~= true and mob.npc
+    end
+
+    local function NameHidden(mob)
         return options.secrets and world.combat and not options.combatIdentity and mob.npc
     end
 
@@ -368,10 +389,29 @@ function Mock.new(options)
         if not mob then
             return nil
         end
-        if IdentityHidden(mob) then
+        if NameHidden(mob) then
             return Secret(mob.name)
         end
         return mob.name
+    end
+
+    if not options.noCreatureID then
+        --- The game's number for the kind of creature a unit is. A player has none.
+        function env.UnitCreatureID(unit)
+            local mob = Resolve(unit)
+            if not mob or not mob.npc then
+                return nil
+            end
+            if IdentityHidden(mob) and options.combatIdentity ~= "ids" then
+                return Secret(mob.kind)
+            end
+            return mob.kind
+        end
+    end
+
+    function env.UnitIsPlayer(unit)
+        local mob = Resolve(unit)
+        return Answer(mob ~= nil and not mob.npc, unit)
     end
 
     function env.UnitCanAttack(_, unit)
@@ -993,7 +1033,7 @@ function Mock.new(options)
         UNIT_SPELLCAST_SENT = true, UNIT_SPELLCAST_SUCCEEDED = true,
         UNIT_SPELLCAST_CHANNEL_START = true, UNIT_SPELLCAST_FAILED = true,
         UNIT_SPELLCAST_FAILED_QUIET = true, UNIT_SPELLCAST_INTERRUPTED = true,
-        GROUP_ROSTER_UPDATE = true,
+        GROUP_ROSTER_UPDATE = true, UNIT_COMBAT = true,
     }
     if options.unknownEvents then
         for event in pairs(options.unknownEvents) do
@@ -2255,10 +2295,21 @@ function Mock.new(options)
         end
     end
 
+    --- Adds an enemy. Creatures of one name are one kind of creature: they
+    --- share the game's number for it, which is part of each one's GUID.
+    --- `fields` can say otherwise (kind = number), and what the creature is
+    --- immune to: immune = true for everything, or a set of effect names.
     function world:addMob(name, fields)
+        local kind = (fields and fields.kind) or self.kinds[name]
+        if not kind then
+            kind = 1000 + self.nextKind
+            self.nextKind = self.nextKind + 1
+            self.kinds[name] = kind
+        end
         local mob = {
             name = name,
-            guid = string.format("Creature-0-1-2-3-%d-%010d", 1000 + self.nextMob, self.nextMob),
+            kind = kind,
+            guid = string.format("Creature-0-1-2-3-%d-%010d", kind, self.nextMob),
             hostile = true, npc = true, auras = {}, engaged = false,
         }
         self.nextMob = self.nextMob + 1
@@ -2489,6 +2540,53 @@ function Mock.new(options)
         self:leaveCombat()
     end
 
+    --- True for a unit that is immune to an effect by this name.
+    local function Immune(mob, name)
+        local immune = mob.immune
+        return immune == true or (type(immune) == "table" and immune[name] == true)
+    end
+
+    --- The game says what an attack or a spell just did to a unit: "IMMUNE",
+    --- "MISS", "DODGE", "WOUND" and so on, with a `flag` for some of them
+    --- ("CRITICAL"). It says so once for every unit token that points at
+    --- the unit, and never whose attack it was. What an addon may read of it
+    --- is options.combatWords.
+    function world:said(mob, word, flag)
+        local mode = options.combatWords
+        if mode == "none" then
+            return
+        end
+        local hidden = AurasHidden()
+        local secret = hidden and mode == "secret"
+        local tokens = {}
+        if mob == self.player then
+            tokens[#tokens + 1] = "player"
+        end
+        for token, other in pairs(self.tokens) do
+            if other == mob then
+                tokens[#tokens + 1] = token
+            end
+        end
+        table.sort(tokens)
+        world.wordsSent = (world.wordsSent or 0) + #tokens
+        for _, token in ipairs(tokens) do
+            for i = 1, #world.frames do
+                local frame = world.frames[i]
+                if frame.events.UNIT_COMBAT or frame.unitEvents.UNIT_COMBAT == token then
+                    local handler = frame.scripts.OnEvent
+                    if handler then
+                        local ok, err = pcall(handler, frame, "UNIT_COMBAT", secret and Secret(token) or token,
+                            secret and Secret(word) or word, secret and Secret(flag or "") or (flag or ""),
+                            hidden and Secret(0) or 0, 1)
+                        if not ok then
+                            world.errors[#world.errors + 1] = tostring(err)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     --- The player casts a spell.
     --- opts: miss = true (nothing lands), travel = seconds before the effect
     --- lands, early = seconds the effect shows on the unit before the cast is
@@ -2496,6 +2594,13 @@ function Mock.new(options)
     --- fail = true (the cast is sent and then fails), hits = list of mobs an
     --- area spell reaches (default: every engaged mob plus the target),
     --- quiet = true (does not start combat).
+    ---
+    --- A debuff that leaves nothing on an enemy has the game say why (see
+    --- world:said): "IMMUNE" for one that is immune to it (mob.immune), and
+    --- for a miss "MISS", or opts.word ("DODGE", "PARRY", "RESIST"; false for
+    --- no word at all). It says so in the frame of the cast, after the cast
+    --- is announced; opts.said = "first" has it say so before that, and
+    --- opts.said = seconds that much later.
     ---
     --- A spell's effect = { duration, name, area, extra, fromPlayer, buff,
     --- replaces, toggle, shared, stacks, party }. `shared` and `stacks` are as
@@ -2524,10 +2629,7 @@ function Mock.new(options)
         end
 
         local effect = data.effect
-        local function Land()
-            if not effect or opts.miss then
-                return
-            end
+        local function Victims()
             local victims
             if effect.buff then
                 local friend = target and not target.hostile and not target.dead
@@ -2546,8 +2648,33 @@ function Mock.new(options)
             else
                 victims = { opts.on or target }
             end
+            return victims
+        end
+        --- What the game says of the cast, for each enemy it left nothing on.
+        local function Words()
+            if not effect or effect.buff or opts.word == false then
+                return
+            end
+            local name = effect.name or data.name
+            local victims = Victims()
+            for i = 1, #victims do
+                local mob = victims[i]
+                if mob and not mob.dead and mob.hostile then
+                    if Immune(mob, name) then
+                        self:said(mob, "IMMUNE")
+                    elseif opts.miss then
+                        self:said(mob, opts.word or "MISS")
+                    end
+                end
+            end
+        end
+        local function Land()
+            if not effect or opts.miss then
+                return
+            end
+            local victims = Victims()
             for _, mob in ipairs(victims) do
-                if mob and not mob.dead then
+                if mob and not mob.dead and not (not effect.buff and Immune(mob, effect.name or data.name)) then
                     if effect.replaces then
                         self:removeAura(mob, effect.replaces)
                     end
@@ -2585,7 +2712,15 @@ function Mock.new(options)
             self:advance(opts.early)
         end
 
+        if opts.said == "first" then
+            Words()
+        end
         self:fire("UNIT_SPELLCAST_SUCCEEDED", "player", castID, shownID)
+        if type(opts.said) == "number" then
+            self.effects[#self.effects + 1] = { at = self.clock + opts.said, run = Words }
+        elseif opts.said ~= "first" then
+            Words()
+        end
 
         if opts.early then
             return
@@ -2679,7 +2814,11 @@ function Mock.new(options)
             local how = { shared = effect.shared, stacks = effect.stacks, caster = effect.caster, source = member }
             for _, mob in ipairs(victims) do
                 if mob and not mob.dead then
-                    self:applyAura(mob, name, lasts, false, nil, effect.buff, how)
+                    if not effect.buff and Immune(mob, name) then
+                        self:said(mob, "IMMUNE") -- the game does not say whose cast that was
+                    else
+                        self:applyAura(mob, name, lasts, false, nil, effect.buff, how)
+                    end
                 end
             end
         end
@@ -2688,6 +2827,9 @@ function Mock.new(options)
             Land()
         end
         SendCastEvent(member, castID, spellID)
+        if opts.miss and effect and not effect.buff and target and target.hostile and not target.dead then
+            self:said(target, opts.word or "MISS") -- the game's word for it, as for a miss of yours
+        end
         if opts.first == "effect" then
             return
         end

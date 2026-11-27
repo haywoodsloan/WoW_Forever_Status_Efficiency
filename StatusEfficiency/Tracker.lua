@@ -36,6 +36,12 @@
 --     else's. It is read off the unit where that is allowed. In a fight it is
 --     put in the books when the effects on a unit change in the very frame
 --     someone in your group is heard casting that spell.
+--   * The game says in a word what an attack or a spell did to a unit, and
+--     "immune" is one of them. Said of a unit in the very moment a cast of
+--     yours went to it, with nothing to show for the cast there and no other
+--     word that could be the cast's answer, it is that answer: the cast left
+--     nothing, and the unit is kept as immune to that spell. Nothing else
+--     passes for immunity, least of all silence.
 --
 -- The books do not care whether a unit is an enemy carrying your debuffs or
 -- you carrying your buffs: Core.lua decides which unit a spell is judged on.
@@ -51,7 +57,7 @@ ns.Tracker = Tracker
 
 local pairs, type, next = pairs, type, next
 local sort, remove = table.sort, table.remove
-local max, min = math.max, math.min
+local max, min, huge = math.max, math.min, math.huge
 
 local GRACE = 2.0 -- seconds after a cast in which its effect is expected to appear
 local EARLY = 0.3 -- a unit's effects can be seen to change this long before its cast is reported
@@ -65,6 +71,10 @@ local GUEST_TTL = 1 -- how long a cast by someone in your group is kept, for the
 local SLACK = 0.001 -- two times this close together are the same moment
 local ECHO = 0.6 -- how long after a cast that is held to its frame a change on the unit is still noted
 local FRAME = 0.05 -- a report this close to a cast being announced came in the frame of the cast, or the next one
+local MOMENT = FRAME + SLACK -- the same, for what the game says in a word: a time that was added up does not fall outside
+local IMMUNE_HOLD = 12 -- how long a unit the game called immune to a spell is taken to stay so, the first time
+local STALE = 600 -- what was learned of a unit that has not come up for this long is dropped
+local SWEEP = 30 -- how often that is looked into
 
 Tracker.GRACE = GRACE
 
@@ -116,6 +126,24 @@ local holders = {} -- unit key -> the cast it was put down to
 -- were heard under that name }
 local endings = {}
 local heard = {} -- kind of unit token -> true once it has reported a change while details were hidden
+-- What the game has said of a unit and a spell of yours (see "Immune units").
+-- immune[unit key][spell name] = { till, times, since }: it said "immune" as
+--     that spell was cast at the unit, which is taken to be immune to it
+--     until `till`: for a while the first time, and for as long as the unit
+--     is remembered once the game has said so again after that while.
+--     `since` is when it last said so in a way that was counted.
+-- taken[unit key][spell name] = true: the unit has carried that spell's
+--     effect, so it is not immune to it by nature. If the game calls it
+--     immune afterwards, that will pass, and nothing is kept of it.
+local immune = {}
+local taken = {}
+local touched = {} -- unit key -> when either of those was last added to or asked for
+local sweepAt = 0 -- when they are next looked through for units to drop
+local refusedAt = {} -- unit key -> when the game last called it immune
+local unheeded = {} -- unit key -> that moment, while no cast of yours has been found to go with it
+local turned = {} -- unit key -> when the game last said an attack left nothing there for another reason
+local turnedWord = {} -- unit key -> its word for that: "MISS", "DODGE", "RESIST" ...
+local lastCast = {} -- unit key -> your last cast that could leave a debuff there
 
 --------------------------------------------------------------------------------
 -- Records
@@ -239,6 +267,148 @@ local function Blur(key, when)
     if rec and rec.counted == when then
         rec.stacks = Count(rec.before, nil, holder.most, rec.sure)
     end
+end
+
+--------------------------------------------------------------------------------
+-- Immune units
+--
+-- The game says in a word what an attack or a spell just did to a unit, in a
+-- fight too, and "immune" is one of its words (see ns.WatchCombat). Said of a
+-- unit in the very moment a cast of yours went to it, with nothing to show
+-- for the cast there, it is taken as the cast's answer: the cast left
+-- nothing, and the unit is immune to that spell.
+--
+-- The game does not say whose attack its word is about, and in a group
+-- somebody else's may be called immune in the moment of your cast. So the
+-- word only stands as your cast's answer when nothing else in that moment
+-- could be it instead:
+--
+--   * The unit's effects changed in that moment. Then the cast may have
+--     landed and the word been about another attack, or the other way round.
+--     The landing stands in the books, and nothing is learned from the word.
+--   * The game also said "miss", "dodge", "resist" or the like of the unit
+--     in that moment. Then two attacks were turned away, and which of the two
+--     words was for the cast is not told: the cast is judged as if the word
+--     had not been said.
+--   * Two casts of yours went to the unit in that moment. Neither is held
+--     to be the one that was meant.
+--
+-- The word can come a frame behind the cast, or behind a change on the unit.
+-- So no cast at an enemy is judged before the moment of the cast is over, nor
+-- before the moment of a word said of one of its units is: only then is it
+-- known what else there was in that moment.
+--
+-- How long it is taken to stay immune: a while the first time, since some
+-- immunities pass (a shield, a banishment), and for as long as the unit is
+-- remembered once the game has said so again after that while. A unit that
+-- has carried the effect is not immune by nature, so nothing is kept of what
+-- the game says of it then. And a unit seen to carry the effect after all
+-- stops being immune at once.
+--
+-- Nothing else passes for immunity. A cast that showed nothing may as well
+-- have missed, and several in a row may as well have missed in a row: a red
+-- X that is wrong does more harm than a green check that is.
+--------------------------------------------------------------------------------
+
+--- Keeps one of the game's words for what was done to a unit in the moment of
+--- a cast, for the saved report.
+local function Word(unit, word)
+    local words = unit.words
+    if not words then
+        words = {}
+        unit.words = words
+    end
+    words[word] = true
+end
+
+--- True when the game's "immune" stands as the answer to a cast on this unit:
+--- it was said of the unit in the moment of the cast, with no other word and
+--- no other cast of yours in that moment that it could have been about. (A
+--- change on the unit in that moment is looked at when the cast is judged.)
+local function Answered(unit)
+    return unit.refused ~= nil and not unit.missed and not unit.shared
+end
+
+--- True while a unit a cast went to could still show the cast landing, by a
+--- change reported at `when`. One the game called immune to the cast can only
+--- until the moment of the cast is over: a change within it leaves open what
+--- the cast did, and a later one is something else that happened there.
+local function Open(cast, unit, when)
+    if not unit.watched or unit.signal or unit.settled then
+        return false
+    end
+    return not (when - cast.time > MOMENT and Answered(unit))
+end
+
+--- The game called a unit immune at `when`, in the moment of a cast of yours
+--- at it that has only now been announced: `unit` is the cast's entry for
+--- it. Another cast of yours that the word was put down to already shares it
+--- from now on. Returns true when there is one.
+local function Shared(key, unit, when)
+    local shared = false
+    for i = #pending, 1, -1 do
+        local other = pending[i].kind == "debuff" and pending[i].units[key]
+        if other and other.refused == when then
+            other.shared = true
+            unit.shared = true
+            shared = true
+        end
+    end
+    return shared
+end
+
+--- A unit was seen to carry a spell's effect, so it is not immune to it.
+local function Taken(key, name, when)
+    touched[key] = when
+    local marks = immune[key]
+    if marks and marks[name] then
+        marks[name] = nil
+        if next(marks) == nil then
+            immune[key] = nil
+        end
+    end
+    local set = taken[key]
+    if not set then
+        set = {}
+        taken[key] = set
+    end
+    if not set[name] then
+        set[name] = true
+        ns.NoteTaken(name, key)
+    end
+end
+
+--- The game called a unit immune to a cast of yours that showed nothing
+--- there. Says what was made of it: "passing" for a unit that has carried
+--- the effect before (nothing is kept), "once" the first time, "again" when
+--- it is said once more within that first while, and "twice" when it is said
+--- after it: from then on the unit stays immune.
+local function Refuse(key, name, when)
+    local set = taken[key]
+    if set and set[name] then
+        return "passing"
+    end
+    touched[key] = when
+    local marks = immune[key]
+    if not marks then
+        marks = {}
+        immune[key] = marks
+    end
+    local mark = marks[name]
+    if not mark then
+        marks[name] = { till = when + IMMUNE_HOLD, times = 1, since = when }
+        return "once"
+    end
+    if when - mark.since < IMMUNE_HOLD then
+        if mark.times < 2 then
+            mark.till = when + IMMUNE_HOLD
+        end
+        return "again"
+    end
+    mark.times = mark.times + 1
+    mark.since = when
+    mark.till = huge
+    return "twice"
 end
 
 --------------------------------------------------------------------------------
@@ -426,6 +596,27 @@ function Tracker:Succeeded(snapshot, spell, now)
                 end
             end
             cast.units[key] = unit
+            if cast.kind == "debuff" then
+                -- What the game said of the unit a moment before the cast
+                -- was announced is about the cast as well.
+                local at = refusedAt[key]
+                if at and now - at <= MOMENT then
+                    unit.refused = at
+                    unit.early = true
+                    Word(unit, "IMMUNE")
+                    if unheeded[key] == at then
+                        unheeded[key] = nil
+                    elseif Shared(key, unit, at) then
+                        ns.NoteRefusal("two", cast, at)
+                    end
+                end
+                at = turned[key]
+                if at and now - at <= MOMENT then
+                    unit.missed = true
+                    Word(unit, turnedWord[key])
+                end
+                lastCast[key] = cast
+            end
         end
     end
     if cast.trusted and spell.wait then
@@ -566,6 +757,7 @@ local function Welcome(guest, key, when, fresh)
     else
         rec.stacks = nil
     end
+    Taken(key, name, when)
     ns.NoteOthers("landed")
     ns.Log("%s: someone in your group cast it as the unit's effects changed, so theirs landed", name)
 end
@@ -599,8 +791,7 @@ function Tracker:Changed(key, when, fresh)
     for i = #pending, 1, -1 do
         local cast = pending[i]
         local unit = cast.units[key]
-        if unit and unit.watched and not unit.signal and not unit.settled and when >= cast.from
-            and when <= cast.ends then
+        if unit and Open(cast, unit, when) and when >= cast.from and when <= cast.ends then
             if not Judged(cast) then
                 spare = spare or cast
             elseif cast.time == when then
@@ -630,7 +821,7 @@ function Tracker:Changed(key, when, fresh)
         local unit = late.units[key]
         if unit and when > late.ends and when <= echo.till then
             remove(echoes, i)
-            if not late.shown and not late.hit and not unit.settled then
+            if not late.shown and not late.hit and not unit.settled and not unit.refused then
                 ns.NoteLate(late, when - late.time, fresh)
             end
         end
@@ -680,6 +871,57 @@ function Tracker:HasEchoes()
     return #echoes > 0
 end
 
+--- The game said what an attack or a spell just did to a unit, and that it
+--- left nothing there: `word` is its word for why, "IMMUNE", "MISS", "DODGE"
+--- and so on. It does not say whose attack it was. Said in the moment a cast
+--- of yours went to that unit, it is put down to the cast, for the cast to
+--- be judged by (see Finish). It is kept for that moment as well, for a cast
+--- that is only just about to be announced.
+---
+--- What became of an "IMMUNE" is passed on for the saved report (see
+--- ns.NoteRefusal): here when it cannot be any one cast's answer, and
+--- otherwise when the cast is judged.
+function Tracker:Said(key, when, word)
+    local refusal = word == "IMMUNE"
+    if refusal then
+        if refusedAt[key] == when then
+            return -- one word, heard once for every name the unit goes by
+        end
+        refusedAt[key] = when
+    else
+        turned[key] = when
+        turnedWord[key] = word
+    end
+    local found, two
+    for i = #pending, 1, -1 do
+        local cast = pending[i]
+        local unit = cast.kind == "debuff" and cast.units[key]
+        if unit and when - cast.time <= MOMENT and cast.time - when <= MOMENT then
+            Word(unit, word)
+            if not refusal then
+                unit.missed = true
+            else
+                unit.refused = when
+                if found then
+                    -- Two casts of yours in one moment at one unit: which of
+                    -- them it is about is not told, and it is held against
+                    -- neither.
+                    unit.shared = true
+                    found.units[key].shared = true
+                    two = true
+                else
+                    found = cast
+                end
+            end
+        end
+    end
+    if two then
+        ns.NoteRefusal("two", found, when)
+    elseif refusal and not found then
+        unheeded[key] = when
+    end
+end
+
 --- True when a cast that is judged by reports was announced in this very
 --- frame and is still waiting on this unit. A change reported in the frame of
 --- a cast is that cast landing far more often than it is anything else.
@@ -699,15 +941,15 @@ local function Announced(unit, when)
 end
 
 --- True while a cast that is judged by reports is waiting on this unit, and
---- would take a change reported there now for its own effect arriving.
-function Tracker:Judging(unit)
+--- would take a change reported there at `when` for its own effect arriving.
+function Tracker:Judging(unit, when)
     local buffs = unit .. "+buffs"
     for i = 1, #pending do
         local cast = pending[i]
         if Judged(cast) then
             for book = 1, 2 do
                 local waiting = cast.units[book == 1 and unit or buffs]
-                if waiting and waiting.watched and not waiting.signal and not waiting.settled then
+                if waiting and Open(cast, waiting, when) then
                     return true
                 end
             end
@@ -721,10 +963,10 @@ end
 local function Awaited(unit, when)
     local buffs = unit .. "+buffs"
     for i = 1, #pending do
-        local units = pending[i].units
+        local cast = pending[i]
         for book = 1, 2 do
-            local waiting = units[book == 1 and unit or buffs]
-            if waiting and waiting.watched and not waiting.signal and not waiting.settled then
+            local waiting = cast.units[book == 1 and unit or buffs]
+            if waiting and Open(cast, waiting, when) then
                 return true
             end
         end
@@ -968,6 +1210,7 @@ local function Finish(cast, now, engaged)
     local tally = {} -- how each unit came out, for the report: verdict -> units
     local delay -- how long after the cast a unit's effects were seen to change
     local unheard -- kinds of token that reported nothing, and never have
+    local said -- the game's words for what was done to the units in the moment of the cast
 
     for key, unit in pairs(cast.units) do
         local set = records[key]
@@ -983,9 +1226,22 @@ local function Finish(cast, now, engaged)
             delay = delay or (unit.signal - cast.time)
         end
 
+        if unit.words then
+            said = said or {}
+            for word in pairs(unit.words) do
+                said[word] = true
+            end
+        end
+
+        -- The game called the unit immune in the moment of the cast, and
+        -- nothing else it said then could be the cast's answer instead.
+        local answered = Answered(unit)
+        local refused = false -- and nothing showed of the cast there either
         local verdict = "unknown"
         if unit.settled then
             verdict = "seen" -- confirmed by its instance id, or read directly
+        elseif answered and not unit.signal then
+            refused = true
         elseif unit.observed then
             -- Its effects were countable before and after, and nothing new appeared.
             if unit.had or (not unit.direct and unit.observed.n > LiveCount(key, name, now)) then
@@ -997,6 +1253,10 @@ local function Finish(cast, now, engaged)
                     rec.weak = true
                 end
                 verdict = unit.signal and "changed" or "unclear"
+            elseif answered then
+                -- Whatever changed on the unit, it was not a new effect of
+                -- yours, and the game said why not.
+                refused = true
             else
                 -- Whatever changed on the unit, it was not a new effect of yours.
                 clean = true
@@ -1011,11 +1271,13 @@ local function Finish(cast, now, engaged)
                 verdict = "nothing new"
             end
         elseif unit.signal then
-            if unit.lost then
+            if unit.lost or answered then
                 -- It died or went out of sight while the cast waited. A dying
                 -- enemy's effects all go, and where the client does not tell
                 -- an effect going from one arriving, that is a change too:
-                -- nothing is learned about the spell from it.
+                -- nothing is learned about the spell from it. Nor from a
+                -- change in the very moment the game called the unit immune:
+                -- one of the two was not this cast, and which is not told.
                 blind = true
             else
                 signalled = true
@@ -1083,7 +1345,31 @@ local function Finish(cast, now, engaged)
                 end
             end
         end
+        if refused then
+            -- The cast left nothing there. That says nothing about the
+            -- spell, only about the unit: it is left out of what the cast
+            -- tells of the spell.
+            verdict = "immune"
+            if mine then
+                Drop(key, name) -- taken to land when it was cast, or when the unit changed
+            end
+            if cast.tracked then
+                ns.NoteImmune(name, key, unit.refused, Refuse(key, name, unit.refused))
+            end
+        end
         tally[verdict] = (tally[verdict] or 0) + 1
+        if unit.refused and not unit.shared then
+            -- What became of the game's word, for the saved report.
+            local how = (refused and "counted") or ((unit.settled or unit.signal) and "shown") or "mixed"
+            ns.NoteRefusal(how, cast, unit.refused, unit.early)
+        end
+        -- A unit that was seen to carry the effect is not immune to it. Not
+        -- one that was lost sight of, whose change may have been anything,
+        -- and not where the game said "immune" in the same breath.
+        if cast.tracked and cast.kind == "debuff"
+            and (verdict == "seen" or (verdict == "changed" and not unit.lost and not unit.refused)) then
+            Taken(key, name, now)
+        end
     end
 
     -- What is learned about the spell. Counting is proof either way. Reports
@@ -1115,7 +1401,7 @@ local function Finish(cast, now, engaged)
     elseif not unclear and not signalled and (clean or (reports and quiet and not blind)) then
         ns.Spells:Evidence(name, false, cast.kind)
     end
-    ns.Note(cast, tally, delay, unheard)
+    ns.Note(cast, tally, delay, unheard, said)
 end
 
 --- A unit went out of sight while a cast on it was still waiting, or is only
@@ -1123,8 +1409,8 @@ end
 --- change on it could now go unreported, so the cast is taken to have landed,
 --- as it is on a unit nobody reports on.
 local function Lose(cast, key, unit)
-    if not unit.trusted or unit.signal or unit.settled or not cast.tracked then
-        return
+    if not unit.trusted or unit.signal or unit.settled or Answered(unit) or not cast.tracked then
+        return -- (the game's "immune" leaves no doubt to give the benefit of)
     end
     if cast.area and not unit.engaged then
         return
@@ -1223,6 +1509,11 @@ function Tracker:Update(now, seen, engaged, direct)
         local cast = pending[i]
         local finishing = now >= cast.ends
         local waiting = false -- some unit could still show what the cast did
+        -- What the game says a cast did to an enemy can come a frame after
+        -- the cast is announced, and what a change or a silence there means
+        -- hangs on it. So no cast at an enemy is judged before that moment is
+        -- over, however soon it showed.
+        local held = cast.kind == "debuff" and now - cast.time <= MOMENT
         for key, unit in pairs(cast.units) do
             local sample = seen[key]
             if not unit.lost and (sample == nil or (unit.watched and not ns.InSight(key, unit.via))) then
@@ -1244,12 +1535,20 @@ function Tracker:Update(now, seen, engaged, direct)
             -- A cast that only gets the changes nobody else is waiting for is
             -- held a moment longer: the cast the change belongs to may not
             -- have been announced yet.
-            if not unit.settled and (countable or not unit.signal
-                or (not Judged(cast) and now < unit.signal + EARLY)) then
+            -- And one the game called immune to the cast has nothing more
+            -- to show. Its cast is kept until the moment of that word is
+            -- over as well: a cast of yours that is only announced then
+            -- would share the word, and it would be neither one's answer.
+            local open = not unit.signal and not Answered(unit)
+            if unit.refused and now - unit.refused <= MOMENT then
+                held = true
+            end
+            if not unit.settled and (countable or open
+                or (unit.signal and not Judged(cast) and now < unit.signal + EARLY)) then
                 waiting = true
             end
         end
-        if finishing or not waiting then
+        if not held and (finishing or not waiting) then
             Finish(cast, now, engaged)
             remove(pending, i)
         else
@@ -1306,6 +1605,38 @@ function Tracker:Update(now, seen, engaged, direct)
             endings[unit] = nil
         end
     end
+    for key, when in pairs(unheeded) do
+        if now - when > MOMENT then
+            -- No cast of yours was announced in that moment after all.
+            ns.NoteRefusal("nobody", lastCast[key], when)
+            unheeded[key] = nil
+        end
+    end
+    for key, when in pairs(refusedAt) do
+        if now - when > CHANGE_TTL then
+            refusedAt[key] = nil
+        end
+    end
+    for key, when in pairs(turned) do
+        if now - when > CHANGE_TTL then
+            turned[key], turnedWord[key] = nil, nil
+        end
+    end
+    for key, cast in pairs(lastCast) do
+        if now - cast.time > CHANGE_TTL then
+            lastCast[key] = nil
+        end
+    end
+    if now >= sweepAt then
+        sweepAt = now + SWEEP
+        for key, when in pairs(touched) do
+            if now - when > STALE then
+                touched[key] = nil
+                immune[key] = nil
+                taken[key] = nil
+            end
+        end
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -1349,6 +1680,9 @@ function Tracker:Observe(key, name, aura, now)
     rec.weak = nil
     rec.fresh = nil
     rec.pending = nil
+    if not key:find("+buffs", -6, true) then
+        Taken(key, name, now) -- whoever put it there, the unit is not immune to it
+    end
     -- Seen with our own eyes: a cast in flight has nothing left to prove,
     -- and nothing left to add to the count.
     for i = 1, #pending do
@@ -1424,6 +1758,66 @@ function Tracker:Stacks(key, name, now)
     return rec.stacks or 1
 end
 
+--- Is this unit taken to be immune to this spell right now, on the game's
+--- own word (see "Immune units")?
+function Tracker:IsImmune(key, name, now)
+    local marks = immune[key]
+    local mark = marks and marks[name]
+    if mark and now < mark.till then
+        touched[key] = now -- still about: what is known of it is kept
+        return true
+    end
+    return false
+end
+
+--- Takes back that a unit is immune to a spell: its kind is known to carry
+--- the effect, so what the game said of this one will pass.
+function Tracker:Pardon(key, name)
+    local marks = immune[key]
+    if marks and marks[name] then
+        marks[name] = nil
+        if next(marks) == nil then
+            immune[key] = nil
+        end
+    end
+end
+
+--- Forgets which units were called immune to one spell and which were seen
+--- to carry its effect, or all of that with no name given.
+function Tracker:ForgetImmune(name)
+    for book = 1, 2 do
+        local kept = book == 1 and immune or taken
+        for key, marks in pairs(kept) do
+            if name then
+                marks[name] = nil
+            end
+            if not name or next(marks) == nil then
+                kept[key] = nil
+            end
+        end
+    end
+end
+
+--- The units taken to be immune right now, for /se debug:
+--- { { key, name, left } ... }. `left` is nil for one that stays immune.
+function Tracker:Immunities(now)
+    local list = {}
+    for key, marks in pairs(immune) do
+        for name, mark in pairs(marks) do
+            if now < mark.till then
+                list[#list + 1] = { key = key, name = name, left = mark.till ~= huge and (mark.till - now) or nil }
+            end
+        end
+    end
+    sort(list, function(a, b)
+        if a.name ~= b.name then
+            return a.name < b.name
+        end
+        return a.key < b.key
+    end)
+    return list
+end
+
 --- Drops every record of one spell (it was just set to be ignored).
 function Tracker:Forget(name)
     for key, set in pairs(records) do
@@ -1456,6 +1850,9 @@ function Tracker:ForgetUnit(key)
     credited[key] = nil
     holders[key] = nil
     endings[Owner(key)] = nil -- kept under the unit, whichever book this is
+    immune[key], taken[key], touched[key] = nil, nil, nil
+    unheeded[key], refusedAt[key], lastCast[key] = nil, nil, nil
+    turned[key], turnedWord[key] = nil, nil
     for i = 1, #pending do
         pending[i].units[key] = nil
     end
@@ -1495,6 +1892,12 @@ function Tracker:Reset()
     for unit in pairs(endings) do
         endings[unit] = nil
     end
+    for _, tbl in pairs({ immune, taken, touched, unheeded, refusedAt, turned, turnedWord, lastCast }) do
+        for key in pairs(tbl) do
+            tbl[key] = nil
+        end
+    end
+    sweepAt = 0
 end
 
 --- Live records, for /se debug: { { key, name, left, how, stacks } ... }.

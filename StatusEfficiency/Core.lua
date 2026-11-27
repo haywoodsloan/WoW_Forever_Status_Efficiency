@@ -3,19 +3,26 @@
 --
 -- A spell that puts a debuff on enemies:
 --   green check          none of the enemies the spell would hit has its effect
---   yellow half circle   some of them have it, or it is there and can still
---                        be stacked higher
---   red X                all of them have it, as many times over as it goes,
---                        so casting again changes nothing
+--   yellow half circle   some of them have it and some do not
+--   red X                all of them have it, so casting again changes nothing
 --   no icon              no enemy to judge, and no fight going on
 --
 -- A spell that puts a buff on you, or on the friend you have targeted:
 --   green check          the buff is not there
---   yellow half circle   it is there and can still be stacked higher
 --   red X                the buff is there, so casting again changes nothing
+--
+-- An effect that stacks is only "there" once it is on as many times over as
+-- it goes: until then another cast still adds to it, and that is the green
+-- check. The yellow half circle is for a spell that hits several enemies when
+-- some of them carry it in full and others do not.
 --
 -- An effect that a unit carries only once, whoever put it there, counts when
 -- it is another player's: a second warrior's shout does what yours would.
+--
+-- An enemy that is immune to a spell's effect is not counted: it can never
+-- have it, so it is no reason to cast. With nobody left who could take the
+-- effect, that is the red X. An enemy is only taken to be immune on the
+-- game's own word (see "Immune enemies" below).
 --
 -- A spell that applies no status effect gets no icon. Two settings say when the
 -- icons appear at all: always, only while you are in combat, or while you or
@@ -103,6 +110,9 @@ local function Defaults()
         -- buffCasts, buffHits, buffDropped, duration, lag, timed, prompt, tardy,
         -- instant, due, late, told, stacks }
         learned = {},
+        -- The kinds of creature the game has called immune to a skill, by
+        -- spell name and kind: { seen, name, told, passes } (see Spells.lua)
+        immune = {},
     }
 end
 
@@ -868,7 +878,7 @@ local function Spared(token, now)
         return false
     end
     goneOn[key] = true
-    return Tracker:Judging(key)
+    return Tracker:Judging(key, now)
 end
 
 --- The client reported that the effects on the unit behind a token changed.
@@ -1086,7 +1096,7 @@ local function NoteSpell(info, kind, source)
     end
 end
 
-local VERDICTS = { "seen", "changed", "nothing new", "silent", "unproven", "unclear", "assumed", "unknown" }
+local VERDICTS = { "seen", "changed", "immune", "nothing new", "silent", "unproven", "unclear", "assumed", "unknown" }
 
 -- Whose changes each kind of unit token reports, for a line in chat.
 local WHOSE = {
@@ -1099,7 +1109,9 @@ local WHOSE = {
 --- The tracker has finished judging a cast. `tally` counts the units by how
 --- they came out, `delay` is how long after the cast one was seen to change,
 --- and `unheard` names the kinds of token that reported nothing and never have.
-function ns.Note(cast, tally, delay, unheard)
+--- `said` holds the game's words for what was done to those units in the
+--- moment of the cast, where it said any ("IMMUNE", "MISS", "DODGE").
+function ns.Note(cast, tally, delay, unheard, said)
     if unheard and cast.hidden then
         -- A client that reports nothing at all for a run of casts is taken not
         -- to report there. Waiting for it any longer would keep every icon
@@ -1165,6 +1177,16 @@ function ns.Note(cast, tally, delay, unheard)
     if delay then
         line = line .. format(", %.2fs after the cast", delay)
     end
+    if said then
+        -- Whose attack a word was about is not told: a swing of yours in
+        -- that moment has its word here as well.
+        local words = {}
+        for word in pairs(said) do
+            words[#words + 1] = word
+        end
+        table.sort(words)
+        line = line .. "; the game said " .. table.concat(words, ", ")
+    end
     local casts = journal.casts
     casts[#casts + 1] = line
     if #casts > REPORT_CASTS then
@@ -1201,6 +1223,291 @@ for i = 1, #plateTokens do
     listening[plateTokens[i]] = ns.WatchAuras(plateTokens[i], AuraChanged) or nil
 end
 ns.listening = listening
+
+--------------------------------------------------------------------------------
+-- Immune enemies
+--
+-- An enemy that is immune to a spell's effect can never have it, and so is no
+-- reason to cast: it is left out when the spell is judged. Nothing an addon
+-- may read says beforehand what a creature is immune to. What the game does
+-- say, in a fight too, is a word for what an attack or a spell just did to a
+-- unit, and "immune" is one of them (see ns.WatchCombat). Said of an enemy in
+-- the very moment a cast of yours went to it, with nothing to show for the
+-- cast and nothing else said that could be its answer, that is taken as the
+-- cast's answer (see "Immune units" in Tracker.lua for what is ruled out):
+--
+--   * that enemy is taken to be immune to the spell for a while, and for
+--     good once the game has said so again after that while (Tracker.lua);
+--   * its kind of creature is kept with the settings, and counted on once
+--     the game has said so twice of that kind (Spells.lua);
+--   * an enemy, or a kind, that is seen to carry the effect is not immune,
+--     whatever was said, and what was kept of it is dropped.
+--
+-- Nothing else passes for immunity. A cast that showed nothing may as well
+-- have missed, and several in a row may as well have missed in a row.
+--
+-- What the game said is counted in the saved report, so that it can be read
+-- there what a real client sends: whether it says anything of enemies in a
+-- fight, whether the word can be read, and whether an "immune" comes in the
+-- moment of the cast it is about.
+--------------------------------------------------------------------------------
+
+local KINDS_KEPT = 200 -- units whose kind is remembered before the list starts over
+local WORD_KINDS = 16 -- different words of the game's kept apart in the saved report
+-- The game's words for an attack that did something: a hit, a heal, and
+-- power given. Every other word is for one that left nothing behind.
+local DID = { WOUND = true, HEAL = true, ENERGIZE = true }
+
+local kindOf = {} -- unit key -> what kind of creature it is (see ns.UnitKind), false while that is not told
+local kindName = {} -- kind -> the creature's name, for showing
+local kindsKept = 0
+
+--- What the game said attacks did to enemies, for the saved report.
+--- `listening` is how many unit tokens it is listened for through: none on a
+--- client that will not allow it. Then how often something was heard
+--- through each kind of token (`heard`), how often of those with effect
+--- details hidden (`hidden`) and how often the word was kept secret
+--- (`unread`). Then the words themselves with how often each came, a line
+--- for every "immune" with what it was taken for, and a line for everything
+--- learned from them. `kinds` counts the enemies met by how the game named
+--- their kind of creature, with details open (`calm`) and hidden: by its
+--- number, by its name only, or not at all. What is learned of an enemy
+--- holds for its kind only where the game names one.
+local function Said()
+    local journal = Journal()
+    local said = journal.combat
+    if type(said) ~= "table" then
+        local listening = 0
+        for _ in pairs(ns.saying) do
+            listening = listening + 1
+        end
+        said = {
+            listening = listening,
+            target = { heard = 0, hidden = 0, unread = 0 },
+            softenemy = { heard = 0, hidden = 0, unread = 0 },
+            plate = { heard = 0, hidden = 0, unread = 0 },
+            words = {},
+            immune = {},
+            learned = {},
+            kinds = {
+                calm = { number = 0, name = 0, none = 0 },
+                hidden = { number = 0, name = 0, none = 0 },
+            },
+        }
+        journal.combat = said
+    end
+    return said
+end
+
+local function Keep(lines, text)
+    lines[#lines + 1] = text
+    if #lines > REPORT_NOTES then
+        table.remove(lines, 1)
+    end
+end
+
+--- Finds out what kind of creature a unit is, once: what is learned of one
+--- holds for the others of its kind.
+local function Know(unit, key)
+    local kind = kindOf[key]
+    if kind == false or (kind and kindName[kind]) then
+        return
+    end
+    local found, shown = ns.UnitKind(unit, key)
+    if kind == nil then
+        if kindsKept >= KINDS_KEPT then
+            ns.Wipe(kindOf) -- the ones still about are learned again at the next look
+            kindsKept = 0
+        end
+        kindsKept = kindsKept + 1
+        kindOf[key] = found or false
+        if found or shown ~= "player" then
+            local kinds = Said().kinds
+            local count = ns.AurasSecret() and kinds.hidden or kinds.calm
+            local how = (not found and "none") or (found:find("^#") and "number") or "name"
+            count[how] = count[how] + 1
+        end
+    end
+    if found and shown and not kindName[found] then
+        kindName[found] = shown
+        Spells:NameKind(found, shown)
+    end
+end
+
+--- The creature behind a unit key, in words for a line of text.
+local function Named(key)
+    local kind = kindOf[key]
+    if not kind then
+        return key:find("^Player%-") and "a player" or "an enemy the game does not name"
+    end
+    return kindName[kind] or ("creature " .. kind)
+end
+
+ns.EnemyName = Named
+
+--- Is the enemy behind this key immune to the spell, as far as is known: by
+--- the game's word of it, or of its kind of creature?
+local function ImmuneTo(key, name, now)
+    if Tracker:IsImmune(key, name, now) then
+        return true
+    end
+    local kind = kindOf[key]
+    return kind and Spells:KindImmune(name, kind) or false
+end
+
+--- The game said what an attack or a spell did to the unit behind a token.
+--- `word` is nil when the client keeps it secret.
+local function OnCombat(token, word)
+    if not ns.db.enabled then
+        return
+    end
+    local said = Said()
+    local count = said[TokenKind(token)]
+    count.heard = count.heard + 1
+    if ns.AurasSecret() then
+        count.hidden = count.hidden + 1
+    end
+    if not word then
+        count.unread = count.unread + 1
+        return
+    end
+    local words = said.words
+    local kept = word
+    if not words[kept] then
+        local kinds = 0
+        for _ in pairs(words) do
+            kinds = kinds + 1
+        end
+        if kinds >= WORD_KINDS then
+            kept = "others"
+        end
+    end
+    words[kept] = (words[kept] or 0) + 1
+    if DID[word] then
+        return -- says nothing of a cast that left nothing
+    end
+    if not Attackable(token) then
+        return -- no enemy: nothing of yours was turned away there
+    end
+    Tracker:Said(ns.UnitKey(token), ns.Now(), word)
+end
+
+local function CombatSaid(token, word)
+    Guard(OnCombat, token, word)
+end
+
+--- What became of an "immune" the game said of an enemy, for the saved
+--- report. `how` is "counted" when it was taken as the answer to `cast`
+--- (`early` when it was said before the cast was announced), "shown" when
+--- the enemy's effects changed in that same moment, as if the cast had
+--- landed, "mixed" when the game also said in that moment that an attack
+--- missed or was turned away there, "two" when two casts of yours were in
+--- that moment, and "nobody" with no cast of yours in it: `cast` is then
+--- your last one at that unit, if there was one lately.
+function ns.NoteRefusal(how, cast, when, early)
+    local text
+    if how == "counted" then
+        text = format("in the moment of %s, said just %s the cast was announced: taken as its answer", cast.name,
+            early and "before" or "after")
+    elseif how == "shown" then
+        text = format("in the moment of %s, which was seen to land there just then: left open", cast.name)
+    elseif how == "mixed" then
+        text = format("in the moment of %s, when another attack was turned away there too: left open", cast.name)
+    elseif how == "two" then
+        text = "in the moment of two casts of yours at that enemy: left open"
+    elseif cast then
+        local gap = when - cast.time
+        text = format("%.2fs %s %s, too far from it to be its answer", gap < 0 and -gap or gap,
+            gap < 0 and "before" or "after", cast.name)
+    else
+        text = "with no cast of yours at that enemy"
+    end
+    Keep(Said().immune, Stamp(when) .. " " .. text)
+end
+
+--- A cast of yours was answered with "immune". `how` is what the tracker
+--- made of it for that one enemy: "once", "again", "twice" or "passing" (see
+--- Refuse in Tracker.lua). Its kind of creature is told the same.
+function ns.NoteImmune(name, key, when, how)
+    local kind = kindOf[key] or nil
+    local text
+    if how == "again" then
+        text = "said again of the same enemy"
+    else
+        local known = kind and Spells:KindImmune(name, kind)
+        local sure, seen
+        if kind then
+            sure, seen = Spells:SawImmune(name, kind, kindName[kind], how == "passing")
+        end
+        if how == "passing" then
+            text = "it has carried the effect before, so this will pass: nothing kept"
+        elseif sure == "passing" then
+            Tracker:Pardon(key, name)
+            text = "its kind has carried the effect before, so this will pass: nothing kept"
+        elseif known then
+            text = nil -- nothing new: its kind was counted on as immune already
+        elseif not kind then
+            text = how == "twice" and "that one enemy is immune from now on" or "that one enemy is immune for now"
+        elseif sure then
+            text = format("its kind is counted on as immune from now on (said %d times)", seen)
+        else
+            text = "immune for now, and for good once it is said of its kind again"
+        end
+    end
+    if text then
+        Keep(Said().learned, format("%s %s on %s: %s", Stamp(when), name, Named(key), text))
+    end
+end
+
+--- An enemy was seen to carry a spell's effect: its kind is not immune to
+--- it by nature, whatever the game said of it before.
+function ns.NoteTaken(name, key)
+    local kind = kindOf[key]
+    if kind and Spells:Takes(name, kind) then
+        Keep(Said().learned, format("%s %s on %s: seen to carry it after all, so its kind is not counted as immune",
+            Stamp(ns.Now()), name, Named(key)))
+        stateDirty = true
+    end
+end
+
+--- Forgets what was learned of immune enemies, for one spell or for all of
+--- them with no name given. Returns how many kinds of creature were dropped.
+function ns.ForgetImmune(name)
+    local dropped = Spells:ForgetImmune(name)
+    Tracker:ForgetImmune(name)
+    stateDirty = true
+    return dropped
+end
+
+--- Marks the kind of creature you have targeted as immune to a spell, on
+--- your say-so. Returns its name. Or nil and why not: "target" when you
+--- have no enemy targeted, "player" when it is a player, who is no kind of
+--- creature, and "hidden" when the game will not say what kind it is.
+function ns.MarkImmune(name)
+    local unit = Attackable("target") and "target" or nil
+    if not unit then
+        return nil, "target"
+    end
+    local key = ns.UnitKey(unit)
+    local kind, shown = ns.UnitKind(unit, key)
+    if not kind then
+        return nil, shown
+    end
+    Spells:SetImmune(name, kind, shown)
+    stateDirty = true
+    return shown or ("creature " .. kind)
+end
+
+-- The same unit tokens that are listened to for changes: your target, your
+-- soft target and the nameplates.
+local saying = {}
+for i = 1, #MAIN_TOKENS do
+    saying[MAIN_TOKENS[i]] = ns.WatchCombat(MAIN_TOKENS[i], CombatSaid) or nil
+end
+for i = 1, #plateTokens do
+    saying[plateTokens[i]] = ns.WatchCombat(plateTokens[i], CombatSaid) or nil
+end
+ns.saying = saying
 
 -- What the client allowed the last time we looked, for /se debug: at an enemy's
 -- debuffs, and under `buffs` at your own buffs.
@@ -1314,6 +1621,9 @@ local function Look(unit, now, calm, kind, note)
     if seen[key] ~= nil then
         return key
     end
+    if kind == "debuff" then
+        Know(unit, key)
+    end
     local sample = Sample(unit, now, calm, kind)
     local answer = lastAnswer
     seen[key] = sample or false
@@ -1409,19 +1719,24 @@ local function HasEffect(unit, key, name, now, calm, kind, anyone)
     return Tracker:Has(key, name, now)
 end
 
---- How much of a spell's effect a unit carries: "none", "all", or "some" for
---- an effect that stacks and is not yet on it as many times as it goes
---- (`most`), which is when casting again still changes something.
+--- Whether a unit carries a spell's effect so that casting again changes
+--- nothing there: "all" when it does, "none" when it does not. An effect
+--- that stacks (`most` is how many times over it goes) only counts once it
+--- is on in full: below that another cast still adds a stack.
 local function Carries(unit, key, name, now, calm, kind, most, anyone)
     if not HasEffect(unit, key, name, now, calm, kind, anyone) then
         return "none"
     end
     if most and Tracker:Stacks(key, name, now) < most then
-        return "some"
+        return "none"
     end
     return "all"
 end
 
+--- A spell that hits every enemy in the fight, judged over the ones that
+--- could do with a cast. One that is immune and does not carry the effect is
+--- not counted either way: it never will carry it, and is no reason to cast.
+--- With nobody left who could take the effect, casting changes nothing.
 local function AreaState(name, now, calm, most, anyone)
     if fightSize == 0 then
         return false
@@ -1432,14 +1747,14 @@ local function AreaState(name, now, calm, most, anyone)
         local carries = Carries(enemy.unit, enemy.key, name, now, calm, "debuff", most, anyone)
         if carries == "all" then
             full = full + 1
-        elseif carries == "none" then
+        elseif not ImmuneTo(enemy.key, name, now) then
             bare = bare + 1
         end
     end
-    if bare == fightSize then
-        return "none"
-    elseif full == fightSize then
+    if bare == 0 then
         return "all"
+    elseif full == 0 then
+        return "none"
     end
     return "some"
 end
@@ -1607,6 +1922,9 @@ local function Refresh(now)
                         state = AreaState(name, now, calm, most, anyone)
                     elseif primaryKey then
                         state = Carries(primaryUnit, primaryKey, name, now, calm, kind, most, anyone)
+                        if state == "none" and ImmuneTo(primaryKey, name, now) then
+                            state = "all" -- it never will carry it: casting changes nothing
+                        end
                     else
                         state = false
                     end
@@ -1701,6 +2019,7 @@ local function Snapshot(info, area, now, late, kind)
     local unit = PrimaryEnemy()
     if unit then
         local key = ns.UnitKey(unit)
+        Know(unit, key)
         snapshot.primary = key
         snapshot.units[key] = Follow({
             pre = not late and Sample(unit, now, calm, kind) or nil,
@@ -1713,6 +2032,7 @@ local function Snapshot(info, area, now, late, kind)
             if Attackable(token) then
                 local key = ns.UnitKey(token)
                 if not snapshot.units[key] then
+                    Know(token, key)
                     snapshot.units[key] = Follow({
                         pre = not late and Sample(token, now, calm, kind) or nil,
                         engaged = ns.IsEngaged(token),
@@ -1873,13 +2193,16 @@ local function GuestSnapshot(token, name, area, kind, now)
     elseif area then
         local unit = PrimaryEnemy()
         if unit then
-            snapshot.units[ns.UnitKey(unit)] = Follow({}, unit)
+            local key = ns.UnitKey(unit)
+            Know(unit, key)
+            snapshot.units[key] = Follow({}, unit)
         end
         for i = 1, #plateTokens do
             local plate = plateTokens[i]
             if Attackable(plate) then
                 local key = ns.UnitKey(plate)
                 if not snapshot.units[key] then
+                    Know(plate, key)
                     snapshot.units[key] = Follow({}, plate)
                 end
             end
@@ -1887,7 +2210,9 @@ local function GuestSnapshot(token, name, area, kind, now)
     else
         local unit = Watched(token .. "target")
         if unit and Attackable(unit) then
-            snapshot.units[ns.UnitKey(unit)] = Follow({}, unit)
+            local key = ns.UnitKey(unit)
+            Know(unit, key)
+            snapshot.units[key] = Follow({}, unit)
         end
     end
     return snapshot
@@ -2075,6 +2400,7 @@ function ns.ResetSettings()
     end
     Tracker:Reset()
     Spells:Reset()
+    Spells:ForgetImmune()
     ns.Relayout()
     ns.MarkBarsDirty()
 end
@@ -2090,6 +2416,13 @@ local function NewFight()
     combatEpoch = combatEpoch + 1
     for _, state in pairs(sampling) do
         state.failures, state.blockedUntil = 0, 0
+    end
+    -- What kind of creature a unit is may be told now where it was not before.
+    for key, kind in pairs(kindOf) do
+        if kind == false then
+            kindOf[key] = nil
+            kindsKept = kindsKept - 1
+        end
     end
     lastSelfLook = -100
     stateDirty = true

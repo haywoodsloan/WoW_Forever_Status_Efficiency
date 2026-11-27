@@ -32,8 +32,9 @@ local _, ns = ...
 local Spells = {}
 ns.Spells = Spells
 
-local type, tonumber, pairs, next = type, tonumber, pairs, next
-local floor, max = math.floor, math.max
+local type, tonumber, tostring, pairs, next = type, tonumber, tostring, pairs, next
+local floor, max, min = math.floor, math.max, math.min
+local sort = table.sort
 
 local DEFAULT_DURATION = 12 -- seconds, when nothing better is known
 local MAX_DURATION = 3600
@@ -868,6 +869,240 @@ function Spells:ForgetCopies()
 end
 
 --------------------------------------------------------------------------------
+-- Creatures that are immune
+--
+-- When the game calls an enemy immune to a skill of yours (see "Immune units"
+-- in Tracker.lua), that is nearly always true of every creature of its kind:
+-- an elemental does not bleed. So it is kept by kind of creature, with the
+-- settings, and the next one of that kind is known for it before the first
+-- cast.
+--
+-- Not on one word, though. An immunity can be passing (a shield, a
+-- banishment), and the word can be about someone else's attack in the moment
+-- yours missed. A kind is counted on as immune once the game has said so on
+-- two occasions and no creature of that kind has been seen to carry the
+-- effect. A kind that was both called immune and seen to carry the effect
+-- has an immunity that comes and goes: that is kept too, and such a kind is
+-- never counted on as immune, in this session or a later one.
+--
+-- ns.db.immune[spell name][kind] = {
+--     seen    on how many occasions the game called that kind immune
+--     name    the creature's name, for showing
+--     told    true when you said so yourself (/se immune): that stands until
+--             you take it back
+--     passes  true for a kind whose immunity comes and goes
+-- }
+-- `kind` is what ns.UnitKind gives: "#" and the game's number for the
+-- creature, or its name where the game tells no number.
+--------------------------------------------------------------------------------
+
+local SURE = 2 -- occasions on which the game called a kind immune before that is counted on
+local SEEN_CAP = 99
+
+local takers = {} -- spell name -> { kind -> true }: seen to carry the spell's effect this session
+
+--- What is kept for a spell, by kind. With `create`, a table to add to.
+local function Kinds(name, create)
+    local saved = ns.db.immune
+    if type(saved) ~= "table" then
+        if not create then
+            return nil
+        end
+        saved = {}
+        ns.db.immune = saved
+    end
+    local kinds = saved[name]
+    if type(kinds) ~= "table" then
+        if not create then
+            return nil
+        end
+        kinds = {}
+        saved[name] = kinds
+    end
+    return kinds
+end
+
+--- How often a kind was called immune, as far as the saved entry says.
+local function Seen(entry)
+    return type(entry.seen) == "number" and entry.seen > 0 and entry.seen or 0
+end
+
+--- True for a saved entry that says its kind is, or may be, immune: one you
+--- named yourself, or one the game called immune that has not been seen to
+--- carry the effect since.
+local function Held(entry)
+    return type(entry) == "table" and (entry.told == true or (entry.passes ~= true and Seen(entry) > 0))
+end
+
+--- The game called a creature of this kind immune to a spell, on a new
+--- occasion (`shown` is the creature's name, where that is told). Returns
+--- "passing" when that kind has been seen to carry the effect, or when
+--- this very creature has (`carried`): its immunity comes and goes, which is
+--- what is kept of it. Otherwise whether the kind is counted on as immune
+--- now, and how many occasions that makes.
+function Spells:SawImmune(name, kind, shown, carried)
+    local kinds = Kinds(name, true)
+    local entry = kinds[kind]
+    if type(entry) ~= "table" then
+        entry = {}
+        kinds[kind] = entry
+    end
+    entry.name = shown or entry.name
+    local took = takers[name]
+    if carried or entry.passes == true or (took and took[kind]) then
+        if entry.told ~= true then
+            entry.passes = true
+            entry.seen = nil
+        end
+        return "passing"
+    end
+    entry.seen = min(SEEN_CAP, Seen(entry) + 1)
+    return entry.told == true or entry.seen >= SURE, entry.seen
+end
+
+--- A creature of this kind was seen to carry the spell's effect, so the kind
+--- is not immune to it by nature. Returns true when the game had called it
+--- immune before: what was kept of that is turned into "comes and goes".
+function Spells:Takes(name, kind)
+    local took = takers[name]
+    if not took then
+        took = {}
+        takers[name] = took
+    end
+    took[kind] = true
+    local kinds = Kinds(name)
+    local entry = kinds and kinds[kind]
+    if entry == nil then
+        return false -- nothing kept
+    end
+    if type(entry) ~= "table" then
+        kinds[kind] = nil -- not something this addon wrote
+        return false
+    end
+    if entry.told == true or not Held(entry) then
+        return false -- you said so yourself, or known for it already
+    end
+    entry.passes = true
+    entry.seen = nil
+    return true
+end
+
+--- Is this kind of creature counted on as immune to the spell?
+function Spells:KindImmune(name, kind)
+    local kinds = Kinds(name)
+    local entry = kinds and kinds[kind]
+    return type(entry) == "table" and (entry.told == true or (entry.passes ~= true and Seen(entry) >= SURE))
+end
+
+--- You said it yourself: this kind of creature is immune to the spell.
+function Spells:SetImmune(name, kind, shown)
+    local kinds = Kinds(name, true)
+    local entry = kinds[kind]
+    if type(entry) ~= "table" then
+        entry = { seen = 0 }
+        kinds[kind] = entry
+    end
+    entry.told = true
+    entry.passes = nil
+    entry.name = shown or entry.name
+end
+
+--- What is kept of the kinds of creature that are, or may be, immune to a
+--- spell, by name: { { kind, name, seen, told, sure } ... }. `sure` is true
+--- for one that is counted on, and `told` for one you named yourself. A kind
+--- whose immunity comes and goes is not among them.
+function Spells:ImmuneKinds(name)
+    local list = {}
+    local kinds = Kinds(name)
+    if kinds then
+        for kind, entry in pairs(kinds) do
+            if type(kind) == "string" and Held(entry) then
+                local told = entry.told == true
+                list[#list + 1] = {
+                    kind = kind,
+                    name = type(entry.name) == "string" and entry.name or tostring(kind),
+                    seen = Seen(entry),
+                    told = told or nil,
+                    sure = told or Seen(entry) >= SURE,
+                }
+            end
+        end
+    end
+    sort(list, function(a, b)
+        if a.name ~= b.name then
+            return a.name < b.name
+        end
+        return tostring(a.kind) < tostring(b.kind)
+    end)
+    return list
+end
+
+--- A kind of creature was found to go by this name: what is kept of it
+--- without one gets it, for showing.
+function Spells:NameKind(kind, shown)
+    local saved = ns.db.immune
+    if type(saved) ~= "table" then
+        return
+    end
+    for _, kinds in pairs(saved) do
+        local entry = type(kinds) == "table" and kinds[kind]
+        if type(entry) == "table" and entry.name == nil then
+            entry.name = shown
+        end
+    end
+end
+
+--- The names of the spells some kind of creature is, or may be, immune to
+--- as far as is kept, in order.
+function Spells:ImmuneSpells()
+    local names = {}
+    local saved = ns.db.immune
+    if type(saved) == "table" then
+        for name, kinds in pairs(saved) do
+            if type(name) == "string" and type(kinds) == "table" then
+                for kind, entry in pairs(kinds) do
+                    if type(kind) == "string" and Held(entry) then
+                        names[#names + 1] = name
+                        break
+                    end
+                end
+            end
+        end
+    end
+    sort(names)
+    return names
+end
+
+--- Forgets what is kept of immune creatures for one spell, or for every
+--- spell with no name given, and with it which kinds were seen to carry the
+--- effect. Returns how many kinds that were, or might have been, immune
+--- were dropped.
+function Spells:ForgetImmune(name)
+    local dropped = 0
+    local saved = ns.db.immune
+    if type(saved) == "table" then
+        for spell, kinds in pairs(saved) do
+            if not name or spell == name then
+                if type(kinds) == "table" then
+                    for kind, entry in pairs(kinds) do
+                        if type(kind) == "string" and Held(entry) then
+                            dropped = dropped + 1
+                        end
+                    end
+                end
+                saved[spell] = nil
+            end
+        end
+    end
+    if name then
+        takers[name] = nil
+    else
+        ns.Wipe(takers)
+    end
+    return dropped
+end
+
+--------------------------------------------------------------------------------
 -- How long a cast takes to show on its target
 --
 -- When the only thing the client reports is that a unit's effects changed, a
@@ -898,8 +1133,6 @@ end
 -- lines about it in the saved report, so that it can be checked afterwards
 -- that nothing was turned away that was a cast landing after all.
 --------------------------------------------------------------------------------
-
-local min = math.min
 
 local WAIT_MIN, WAIT_MAX = 0.5, 3.0 -- seconds
 local WAIT_NEAR = 1.5 -- for a spell used at arm's length that has not been timed yet
