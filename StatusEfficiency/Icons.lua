@@ -16,7 +16,9 @@ local RAID = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_"
 --- for what it tells you to do, so it reads the same for a debuff on enemies and
 --- for a buff on you. The middle one is for an effect that is there, but not on
 --- every enemy the spell would hit. "In full" is for an effect that stacks: it
---- only counts once it is on as many times over as it goes.
+--- only counts once it is on as many times over as it goes. An enemy that is
+--- immune is left out: with nobody else to judge the skill on, the last of
+--- the three is shown.
 Icons.STATES = {
     {
         key = "none",
@@ -33,7 +35,7 @@ Icons.STATES = {
     {
         key = "all",
         title = "No need to cast",
-        detail = "Everything it would land on already has the full effect.",
+        detail = "Everything it would land on already has the full effect, or is immune.",
         default = "cross",
     },
 }

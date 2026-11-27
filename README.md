@@ -19,7 +19,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.4.2 is an early draft. It loads and draws its icons in the real
+Version 0.5.0 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -47,7 +47,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: v0.4.2".
+first line of the reply gives the version, "Status Efficiency: v0.5.0".
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -202,9 +202,17 @@ one, and the pane beside the list shows everything about it:
   like your own. Untick it for an effect that every caster has one of, like a
   bleed. The same as `/se anyone` and `/se mine`. It is greyed out for a buff
   that only ever goes on its caster.
+- **Immune**: the kinds of creature the skill does nothing to, as far as the
+  addon has found (see [Immune enemies](#immune-enemies)): first the kinds it
+  counts on, then the ones heard of only once. Hover the list for all of them
+  and for which ones you added yourself. **Add target** marks the kind of
+  creature you have targeted as immune to the skill, like `/se immune <spell>`,
+  and says so when there is nothing it can add. **Forget all** drops what is
+  kept for this skill, like `/se immune forget <spell>`, and asks first.
 - **Reset this skill** forgets your own choices for the skill, so that the
   addon works it out by itself again. What it learned about the skill in play
-  stays. **Defaults** on this tab does the same for every skill at once.
+  stays, and so do the creatures found immune to it. **Defaults** on this tab
+  does the same for every skill at once.
 
 Beside each box, and under the tick, is where what it shows comes from: the
 skill's tooltip, the game, what was seen in play, or you. Pressing Enter in a

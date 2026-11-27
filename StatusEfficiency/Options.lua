@@ -85,8 +85,9 @@ local EDITOR_BOX = 240 -- the box for a texture of your own
 local LIST_ICON, PANE_ICON = 26, 36 -- a skill's picture in the list, and at the head of the pane
 local LASTS_BOX, STACKS_BOX = 60, 40
 local RESET_WIDTH, DEFAULTS_WIDTH = 150, 96
+local MARK_WIDTH, FORGET_WIDTH = 104, 104
 -- Where each row of the pane starts, from the pane's top.
-local PANE_ROWS = { show = -56, on = -112, lasts = -168, stacks = -198, shared = -228 }
+local PANE_ROWS = { show = -56, on = -112, lasts = -168, stacks = -198, shared = -228, immune = -288 }
 
 local GOLD = { 1, 0.82, 0 }
 local WARN = { 1, 0.6, 0.2 }
@@ -446,6 +447,11 @@ local function ShowTip(owner)
     if owner.tipBody then
         Try(tip, "AddLine", owner.tipBody, 1, 1, 1, true)
     end
+    if owner.tipLines then
+        for i = 1, #owner.tipLines do
+            Try(tip, "AddLine", owner.tipLines[i], 0.8, 0.8, 0.8, true)
+        end
+    end
     tip:Show()
 end
 
@@ -456,7 +462,8 @@ local function HideTip()
 end
 
 --- Gives a frame a tooltip: a title, and optionally a line or two under it.
---- Both can be changed later through frame.tipTitle and frame.tipBody.
+--- Both can be changed later through frame.tipTitle and frame.tipBody, and
+--- frame.tipLines adds a list under them, one line each.
 local function Tip(frame, title, body)
     frame.tipTitle, frame.tipBody = title, body
     frame:SetScript("OnEnter", ShowTip)
@@ -1929,8 +1936,8 @@ local function StacksTip(info)
     if Spells:Stacking(info) then
         local why = STACKS_WHY[Spells:StackingSource(info)]
         return (why and why[2] or "By what is known of the skill.")
-            .. " A unit only counts as having the effect once it has that many stacks."
-            .. " Type another number to change it, 1 if the effect does not stack," .. auto
+            .. " A unit only counts as having the effect once it has that many stacks: until then the skill stays "
+            .. "worth casting. Type another number to change it, 1 if the effect does not stack," .. auto
     elseif user and type(user.stacks) == "number" then
         return "You set this: the effect does not stack. Type the most stacks it can have to change it," .. auto
     end
@@ -1963,6 +1970,82 @@ local function SharedTip(info, shared)
     end
     return "Only an effect you put there yourself counts. Tick this if a unit carries the effect only once, whoever "
         .. "casts it, so that another player's copy counts like your own." .. source
+end
+
+local NO_KINDS = {}
+
+-- Why Add target could not add anything: what /se immune says then, in short.
+local MARK_WHY = {
+    target = "Target the creature first.",
+    player = "That is a player. Only creatures can be added.",
+    hidden = "The game will not say what kind of creature that is right now. Try again after the fight.",
+}
+local MARK_UNSAID = "That could not be added." -- for a reason this panel has no words for
+
+local IMMUNE_ROOM = 80 -- letters of kinds in the pane: three lines of it, also in a font a third wider
+local IMMUNE_NAMED = 6 -- at most this many names of either sort are tried
+local IMMUNE_LISTED = 30 -- kinds named in the tooltip
+
+--- The first `shown` names of a list of kinds, and how many it leaves out:
+--- "Fire Elemental, Rock Elemental and 3 more".
+local function Named(list, shown)
+    local names = {}
+    for i = 1, shown do
+        names[i] = list[i].name
+    end
+    local more = #list - shown
+    return concat(names, ", ") .. (more > 0 and (" and " .. more .. " more") or "")
+end
+
+--- The kinds of creature a skill does nothing to, as a line for the pane: the
+--- ones the addon counts on first, then the ones the game called immune only
+--- once. As many names as there is room for, the ones it counts on before
+--- the others.
+local function ImmuneLine(kinds)
+    if #kinds == 0 then
+        return "None known yet."
+    end
+    local sure, once = {}, {}
+    for i = 1, #kinds do
+        local into = kinds[i].sure and sure or once
+        into[#into + 1] = kinds[i]
+    end
+    local a, b = min(#sure, IMMUNE_NAMED), min(#once, IMMUNE_NAMED)
+    while true do
+        local line = a > 0 and (Named(sure, a) .. ".") or ""
+        if b > 0 then
+            line = line .. (a > 0 and " " or "") .. "Heard once: " .. Named(once, b) .. "."
+        end
+        if #line <= IMMUNE_ROOM or (a <= 1 and b <= 1) then
+            return line
+        end
+        if b > 1 then
+            b = b - 1
+        else
+            a = a - 1
+        end
+    end
+end
+
+--- The same as lines for a tooltip: every kind, and how the addon came by it.
+local function ImmuneLines(kinds)
+    local lines = {}
+    for i = 1, min(#kinds, IMMUNE_LISTED) do
+        local kind = kinds[i]
+        lines[i] = kind.name .. (kind.told and " (you said so)" or (kind.sure and "" or " (heard once)"))
+    end
+    if #kinds > IMMUNE_LISTED then
+        lines[#lines + 1] = "and " .. (#kinds - IMMUNE_LISTED) .. " more"
+    end
+    return lines
+end
+
+--- Greys a push button out and stops it taking clicks, or brings it back.
+local function Able(button, enabled)
+    Try(button, "SetEnabled", enabled)
+    if not button.native then
+        Dim(button, not enabled)
+    end
 end
 
 --- A length of time in a few characters: "21 s", "2 min", "1 hr+".
@@ -2114,8 +2197,8 @@ local function BuildListRow(view, page, index)
 end
 
 --- Everything about one spell: whether it gets an icon and why, who its effect
---- is judged on, how long that lasts, how often it stacks, and whether another
---- player's copy counts.
+--- is judged on, how long that lasts, how often it stacks, whether another
+--- player's copy counts, and which kinds of creature it does nothing to.
 local function BuildPane(view, page)
     local width = L.right - L.paneLeft
     local control = L.paneControl - L.paneLeft -- where the controls start, from the pane's left edge
@@ -2308,7 +2391,7 @@ local function BuildPane(view, page)
 
     RowLabel(pane, "Stacks up to", 0, PANE_ROWS.stacks, labelRoom,
         "How many times over the effect goes on one unit. A unit only counts as having the effect once it "
-            .. "has that many stacks.")
+            .. "has that many stacks: until then the skill stays worth casting.")
     local stacks
     built, stacks = pcall(Input, pane, STACKS_BOX)
     if built and stacks then
@@ -2376,6 +2459,57 @@ local function BuildPane(view, page)
     local sharedNote = Note(pane, wide, 2)
     sharedNote:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.shared - 24)
 
+    -- Which kinds of creature the skill does nothing to: what the addon has
+    -- found of that in play, and the two things /se immune does.
+    local immuneLabel = RowLabel(pane, "Immune", 0, PANE_ROWS.immune, labelRoom,
+        "Kinds of creature this skill does nothing to. The addon notes a kind when the game says \"Immune\" in a "
+            .. "fight, and counts on it from the second time: a creature of that kind is then left out when the "
+            .. "skill is judged.")
+    local mark = PushButton(pane, MARK_WIDTH, 22, "Add target")
+    mark:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.immune + 1)
+    -- The kinds, under the two buttons like the note of any other row. The
+    -- mouse on them lists every one.
+    local immuneNote = Note(pane, wide, 3)
+    immuneNote:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.immune - 25)
+    local immuneArea = CreateFrame("Frame", nil, pane)
+    immuneArea:SetSize(wide, 36)
+    immuneArea:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.immune - 24)
+    immuneArea:EnableMouse(true)
+    Tip(immuneArea, nil)
+
+    OnClick(mark, function()
+        local info = pane.info
+        if not info then
+            return
+        end
+        local added, why = ns.MarkImmune(info.name)
+        if added then
+            Settled()
+        else
+            pane.problem, pane.problemAt = MARK_WHY[why] or MARK_UNSAID, "immune"
+        end
+        Options.RefreshAll()
+    end)
+    Tip(mark, "Add target", "Says that the kind of creature you have targeted is immune to this skill. The same as "
+        .. "/se immune with the skill's name.")
+
+    local forget = PushButton(pane, FORGET_WIDTH, 22, "Forget all")
+    forget:SetPoint("TOPLEFT", pane, "TOPLEFT", control + MARK_WIDTH + 6, PANE_ROWS.immune + 1)
+    OnClick(forget, function()
+        local info = pane.info
+        if not info then
+            return
+        end
+        local name = info.name
+        view.Ask("immune", "Forget the creatures immune to " .. name .. "?", "Forget", function()
+            Settled()
+            ns.ForgetImmune(name)
+            Options.RefreshAll()
+        end)
+    end)
+    Tip(forget, "Forget all", "Forgets every kind of creature listed for this skill, also the ones you added "
+        .. "yourself. It asks first.")
+
     -- Back to what the addon works out by itself.
     local reset = PushButton(pane, RESET_WIDTH, 22, "Reset this skill")
     reset:SetPoint("BOTTOMRIGHT", pane, "BOTTOMRIGHT", 0, 4)
@@ -2399,6 +2533,7 @@ local function BuildPane(view, page)
         local name1, name2 = pane.info and pane.info.name, info and info.name
         if name1 ~= name2 then
             Settled()
+            view.Unask("immune") -- a question about the skill that was picked
             if lasts and lasts:HasFocus() then
                 lasts:ClearFocus()
             end
@@ -2506,11 +2641,25 @@ local function BuildPane(view, page)
             sharedNote.Tell(tracked and "Only you can have this effect." or "")
         end
 
-        local yours = user ~= nil
-        Try(reset, "SetEnabled", yours)
-        if not reset.native then
-            Dim(reset, not yours)
+        -- Only an effect that lands on enemies can meet an immune one.
+        local hostile = tracked and kind ~= "buff"
+        local kinds = hostile and Spells:ImmuneKinds(info.name) or NO_KINDS
+        Able(mark, hostile)
+        Able(forget, #kinds > 0)
+        if pane.problemAt == "immune" then
+            immuneNote.Tell(pane.problem, BAD)
+        elseif not tracked then
+            immuneNote.Tell("")
+        elseif not hostile then
+            immuneNote.Tell("Only enemies can be immune.")
+        else
+            immuneNote.Tell(ImmuneLine(kinds))
         end
+        immuneArea.tipTitle = #kinds > 0 and ("Immune to " .. info.name) or nil
+        immuneArea.tipLines = ImmuneLines(kinds)
+
+        local yours = user ~= nil
+        Able(reset, yours)
         resetNote.Tell(yours and "You have changed this skill." or "Nothing changed: the addon decides.")
     end
 
@@ -2519,6 +2668,8 @@ local function BuildPane(view, page)
     pane.on, pane.onNote = on, onNote
     pane.lasts, pane.lastsNote, pane.stacks, pane.stacksNote = lasts, lastsNote, stacks, stacksNote
     pane.shared, pane.sharedNote, pane.reset, pane.resetNote = shared, sharedNote, reset, resetNote
+    pane.immuneLabel, pane.immuneNote, pane.immuneArea = immuneLabel, immuneNote, immuneArea
+    pane.mark, pane.forget = mark, forget
     return pane
 end
 

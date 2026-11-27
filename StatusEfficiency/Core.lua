@@ -502,7 +502,7 @@ local function CanUse(entry, unit)
     return usable ~= false or lacking ~= false
 end
 
--- While the settings panel is open on its Appearance tab, and you are not in a
+-- While the settings panel is open on its Display or Icons tab, and you are not in a
 -- fight, every button that holds a spell shows a sample icon, the three results
 -- in turn, so the look can be judged on the real bars with nothing targeted.
 local SAMPLE_STATES = { "none", "some", "all" }

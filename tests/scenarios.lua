@@ -9809,7 +9809,7 @@ test("settings: each of the three results says what it means, for an effect that
     eq(view.names.some:GetText(), "Partly worth casting")
     eq(view.details.some:GetText(), "Some of what it would land on already has the full effect.")
     eq(view.names.all:GetText(), "No need to cast")
-    eq(view.details.all:GetText(), "Everything it would land on already has the full effect.")
+    eq(view.details.all:GetText(), "Everything it would land on already has the full effect, or is immune.")
     Clean(w)
 end)
 
@@ -10122,8 +10122,8 @@ panel("Skills tab: how many times an effect stacks", function(options)
     local title, says = Says(w, stacks)
     eq(title, "How many times the effect stacks")
     check(says:find("Taken from the skill's tooltip.", 1, true), "the box says where the number comes from: " .. says)
-    check(says:find("A unit only counts as having the effect once it has that many stacks.", 1, true),
-        "and what it does to the icon: " .. says)
+    check(says:find("A unit only counts as having the effect once it has that many stacks: until then the skill "
+        .. "stays worth casting.", 1, true), "and what it does to the icon: " .. says)
     Pane(w, view, "Battle Frenzy")
     eq(stacks:GetText(), "3", "a buff that stacks")
     Pane(w, view, "Rend")
@@ -10513,6 +10513,255 @@ test("settings: the list of the Skills tab and the pane beside it keep clear of 
         check(pane.resetNote.fitRoom + 8 <= pane.width - pane.reset.width, "and the words at its left end before it")
         Clean(w)
     end
+end)
+
+--------------------------------------------------------------------------------
+-- The settings panel: the Immune row of the Skills tab
+--------------------------------------------------------------------------------
+
+--- What an earlier session would have saved of creatures found immune: for
+--- Rend two kinds the game said twice or more and one it said once, and one
+--- kind for Sunder Armor.
+local function FoundImmune()
+    local saved = Proven()
+    saved.immune = {
+        Rend = {
+            ["#2001"] = { seen = 2, name = "Fire Elemental" },
+            ["#2002"] = { seen = 3, name = "Rock Elemental" },
+            ["#2003"] = { seen = 1, name = "Water Elemental" },
+        },
+        ["Sunder Armor"] = {
+            ["#2004"] = { seen = 2, name = "Mud Golem" },
+        },
+    }
+    return saved
+end
+
+--- The words on a push button.
+local function Words(button)
+    if button.native then
+        return button:GetText()
+    end
+    return button.label:GetText()
+end
+
+panel("Skills tab: the kinds of creature found immune to a skill", function(options)
+    options.saved = FoundImmune()
+    local w, ns = Party(options, REND, SUNDER, SHOUT, HEROIC, DEMO)
+    local view = w:openSettings().view
+    local pane = Pane(w, view, "Rend")
+    local title, says = Says(w, pane.immuneLabel)
+    eq(title, "Immune")
+    check(says:find("counts on it from the second time", 1, true), says)
+    check(says:find("left out when the skill is judged", 1, true), says)
+
+    -- The ones the addon counts on come first, then the ones the game said once.
+    eq(pane.immuneNote:GetText(), "Fire Elemental, Rock Elemental. Heard once: Water Elemental.")
+    eq(pane.mark:IsEnabled(), true)
+    eq(pane.forget:IsEnabled(), true)
+    local head, lines = w:hover(pane.immuneArea)
+    eq(head, "Immune to Rend")
+    eq(#lines, 3, "one line for each kind")
+    eq(lines[1], "Fire Elemental")
+    eq(lines[2], "Rock Elemental")
+    eq(lines[3], "Water Elemental (heard once)")
+    w:unhover(pane.immuneArea)
+
+    pane = Pane(w, view, "Sunder Armor")
+    eq(pane.immuneNote:GetText(), "Mud Golem.", "each skill has its own")
+
+    -- Nothing found yet: nothing to forget, and no tooltip with nothing in it.
+    pane = Pane(w, view, "Demoralizing Shout")
+    eq(pane.immuneNote:GetText(), "None known yet.")
+    eq(pane.mark:IsEnabled(), true, "a creature can still be added")
+    eq(pane.forget:IsEnabled(), false)
+    eq((w:hover(pane.immuneArea)), nil, "no tooltip over an empty list")
+    w:unhover(pane.immuneArea)
+
+    -- A skill that lands on you or your friends meets nothing immune.
+    pane = Pane(w, view, "Battle Shout")
+    eq(pane.immuneNote:GetText(), "Only enemies can be immune.")
+    eq(pane.mark:IsEnabled(), false)
+    eq(pane.forget:IsEnabled(), false)
+
+    -- And a skill without an icon has nothing to say about it.
+    pane = Pane(w, view, "Heroic Strike")
+    eq(pane.immuneNote:GetText(), "")
+    eq(pane.mark:IsEnabled(), false)
+    eq(pane.forget:IsEnabled(), false)
+    if options.noTemplates then
+        near(pane.mark:GetAlpha(), 0.35, "a greyed button of the addon's own drawing looks greyed")
+        near(pane.reset:GetAlpha(), 0.35, "Reset this skill too")
+        pane = Pane(w, view, "Rend")
+        near(pane.mark:GetAlpha(), 1, "and a live one live")
+    end
+    Clean(w)
+end)
+
+panel("Skills tab: a long list of immune creatures is cut short, in the pane and in its tooltip", function(options)
+    -- Thirty-two kinds: nine the game said twice, the rest once.
+    local kinds = {}
+    local first = { "Ashen Colossus", "Bog Lurker", "Cinder Wraith", "Dune Stalker", "Ember Sprite", "Frost Revenant",
+        "Gale Fury", "Hollow Shade", "Iron Sentinel" }
+    for i, name in ipairs(first) do
+        kinds["#" .. (3000 + i)] = { seen = 2, name = name }
+    end
+    for i = 1, 23 do
+        kinds["#" .. (3100 + i)] = { seen = 1, name = string.format("Mist Walker %02d", i) }
+    end
+    local saved = Proven()
+    saved.immune = { Rend = kinds }
+    options.saved = saved
+    local w, ns = Party(options, REND)
+    local view = w:openSettings().view
+    local pane = Pane(w, view, "Rend")
+    eq(pane.immuneNote:GetText(),
+        "Ashen Colossus, Bog Lurker and 7 more. Heard once: Mist Walker 01 and 22 more.",
+        "as many names as there is room for, and how many more")
+    local head, lines = w:hover(pane.immuneArea)
+    eq(head, "Immune to Rend")
+    eq(#lines, 31, "thirty kinds and a line for the rest")
+    eq(lines[1], "Ashen Colossus")
+    eq(lines[10], "Mist Walker 01 (heard once)")
+    eq(lines[31], "and 2 more")
+    w:unhover(pane.immuneArea)
+    Clean(w)
+end)
+
+panel("Skills tab: Add target says that the creature you have targeted is immune", function(options)
+    options.combatIdentity = false -- in a fight this client will not say what a newcomer is
+    local w, ns, boar = Party(options, REND, SUNDER)
+    local view = w:openSettings().view
+    local pane = Pane(w, view, "Rend")
+    local title, says = Says(w, pane.mark)
+    eq(title, "Add target")
+    check(says:find("/se immune", 1, true), says)
+    eq(Words(pane.mark), "Add target")
+    eq(pane.immuneNote:GetText(), "None known yet.")
+
+    -- Nothing targeted, then a player: it says why nothing was added.
+    w:target(nil)
+    w:click(pane.mark)
+    eq(pane.immuneNote:GetText(), "Target the creature first.")
+    Meet(w, "Uther", { npc = false, guid = "Player-1-00000777" })
+    w:click(pane.mark)
+    eq(pane.immuneNote:GetText(), "That is a player. Only creatures can be added.")
+    eq(pane.forget:IsEnabled(), false, "and nothing was added")
+    eq(#ns.Spells:ImmuneKinds("Rend"), 0)
+
+    -- The complaint does not wait for you at another skill and back.
+    Pane(w, view, "Sunder Armor")
+    pane = Pane(w, view, "Rend")
+    eq(pane.immuneNote:GetText(), "None known yet.")
+
+    -- It goes with the next thing that works, too.
+    w:target(nil)
+    w:click(pane.mark)
+    eq(pane.immuneNote:GetText(), "Target the creature first.")
+    w:target(boar)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "Rend is worth casting at the boar")
+    w:click(pane.mark)
+    eq(pane.immuneNote:GetText(), "Boar.", "counted on at once, on your say-so")
+    local _, lines = w:hover(pane.immuneArea)
+    eq(lines[1], "Boar (you said so)")
+    w:unhover(pane.immuneArea)
+    eq(pane.forget:IsEnabled(), true)
+    eq(ns.db.immune.Rend["#" .. boar.kind].told, true, "kept the way /se immune keeps it")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "and no longer at a boar")
+    eq(w:icon("ActionButton2"), "check", "the other skill has its own list")
+    pane = Pane(w, view, "Sunder Armor")
+    eq(pane.immuneNote:GetText(), "None known yet.")
+
+    -- /se immune does the same, and shows here at once.
+    w:slash("immune sunder armor")
+    w:drain()
+    eq(pane.immuneNote:GetText(), "Boar.")
+    eq(pane.forget:IsEnabled(), true)
+    w:slash("immune forget sunder armor")
+    w:drain()
+    eq(pane.immuneNote:GetText(), "None known yet.")
+    eq(pane.forget:IsEnabled(), false)
+
+    -- In a fight, a creature that walks in is one the game will not name.
+    Open(w)
+    Meet(w, "Fire Elemental")
+    w:click(pane.mark)
+    eq(pane.immuneNote:GetText(),
+        "The game will not say what kind of creature that is right now. Try again after the fight.")
+    eq(pane.forget:IsEnabled(), false)
+
+    -- A reason this panel has no words for gets a plain line.
+    ns.MarkImmune = function()
+        return nil, "asleep"
+    end
+    w:click(pane.mark)
+    eq(pane.immuneNote:GetText(), "That could not be added.")
+    Clean(w)
+end)
+
+panel("Skills tab: Forget asks first, and forgets the creatures found immune to one skill", function(options)
+    options.saved = FoundImmune()
+    local w, ns = Party(options, REND, SUNDER)
+    -- A fire elemental walks up: one of the kinds Rend is known to do nothing to.
+    Meet(w, "Fire Elemental", { kind = 2001 })
+    eq(w:icon("ActionButton1"), "cross", "Rend is no use on it")
+    eq(w:icon("ActionButton2"), "check")
+    local view = w:openSettings().view
+    local pane = Pane(w, view, "Rend")
+    local title, says = Says(w, pane.forget)
+    eq(title, "Forget all")
+    eq(Words(pane.forget), "Forget all")
+    check(says:find("It asks first.", 1, true), says)
+
+    w:click(pane.forget)
+    eq(view.confirm.frame:IsShown(), true, "it asks first")
+    eq(view.question:GetText(), "Forget the creatures immune to Rend?")
+    eq(Words(view.confirm.yes), "Forget", "the button says what a yes does")
+    eq(view.footer:IsShown(), false, "in place of the line at the bottom")
+    eq(pane.immuneNote:GetText(), "Fire Elemental, Rock Elemental. Heard once: Water Elemental.", "nothing is gone yet")
+    w:click(view.confirm.no)
+    eq(view.confirm.frame:IsShown(), false)
+    eq(view.footer:IsShown(), true)
+    eq(pane.forget:IsEnabled(), true, "Cancel leaves them alone")
+
+    -- The question is about one skill: picking another puts it away.
+    w:click(pane.forget)
+    pane = Pane(w, view, "Sunder Armor")
+    eq(view.confirm.frame:IsShown(), false, "the question went with the skill it was about")
+    eq(view.footer:IsShown(), true)
+    pane = Pane(w, view, "Rend")
+    eq(pane.forget:IsEnabled(), true, "and nothing was forgotten")
+
+    eq(w:icon("ActionButton1"), "cross", "the icons have not moved either")
+    w:click(pane.forget)
+    w:click(view.confirm.yes)
+    eq(view.confirm.frame:IsShown(), false)
+    eq(pane.immuneNote:GetText(), "None known yet.")
+    eq(pane.forget:IsEnabled(), false)
+    eq(#ns.Spells:ImmuneKinds("Rend"), 0)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "and Rend is worth a try on the elemental again")
+    pane = Pane(w, view, "Sunder Armor")
+    eq(pane.immuneNote:GetText(), "Mud Golem.", "the other skill keeps its own")
+
+    -- Defaults has its own word on the button, and its question stays while
+    -- you look at another skill: it is about all of them.
+    w:click(view.defaults)
+    eq(Words(view.confirm.yes), "Reset")
+    Pane(w, view, "Rend")
+    eq(view.confirm.frame:IsShown(), true, "the Defaults question is still there")
+    w:click(view.confirm.yes)
+    pane = Pane(w, view, "Sunder Armor")
+    eq(pane.immuneNote:GetText(), "Mud Golem.", "Defaults leaves the creatures found immune alone")
+
+    -- So does Reset this skill.
+    w:type(pane.lasts, "40")
+    w:click(pane.reset)
+    eq(ns.db.spells["Sunder Armor"], nil)
+    eq(pane.immuneNote:GetText(), "Mud Golem.")
+    Clean(w)
 end)
 
 panel("Skills tab: a long list scrolls, and the pane stays", function(options)
