@@ -101,6 +101,9 @@
 --                  (which is what the 12.1.5 documentation allows for).
 --                  "none": the call does not exist. "words": it answers
 --                  with the number written out as text.
+--   tracker        the game's own cooldown tracker, with what it has on
+--                  screen (see "The game's own cooldown tracker" below).
+--                  Without it the client has no such thing.
 --   refreshReplaces true: renewing an effect puts a new one in its place, and
 --                  the one report of it shows an effect going and one coming.
 --                  "twice": two reports of one moment, the old effect going
@@ -2122,11 +2125,368 @@ function Mock.new(options)
         }
     end
 
+
+    ----------------------------------------------------------------------------
+    -- The game's own cooldown tracker (the Cooldown Manager)
+    --
+    -- Made as the game's own code works (Blizzard_CooldownViewer on the
+    -- "forever" branch of the UI source): four viewers, each with a pool of
+    -- item frames; an item finds your effect by looking at you first and at
+    -- your target after that, and keeps what it found until it is told to
+    -- look again. It is told by a report of effects changing on you or your
+    -- target, and when the target changes if it is on the viewer's list for
+    -- that. A viewer only hears any of it while it is on screen. Being the
+    -- game's own, it reads effects in a fight as freely as out of one.
+    --
+    -- options.tracker = {
+    --     buffs = { spellID, ... }   the "Tracked Buffs" on screen, in order
+    --     bars, essential, utility   the same for the other three viewers
+    --     offered = { buffs = { spellID, ... }, ... }
+    --                                entries the game's data has for a viewer
+    --                                that are not on screen
+    --     hidden = true              no viewer is on screen, or { buffs = true }
+    --     unlinked = { [spellID] = true }
+    --                                the game's data for the entry does not
+    --                                lead to the effect: its item never lights
+    --     linked = { [spellID] = { spellID, ... } }
+    --                                other spells the game's data ties to the
+    --                                entry: its item lights for their effects
+    --                                as well
+    --     unranged = { [spellID] = true }
+    --                                a cooldown the game makes no range check
+    --                                for (it is not looked at again when the
+    --                                target changes)
+    --     seal = { unit, lit, id, info, registered, pool, visible = true }
+    --                                answers an addon gets as secret values
+    --                                (the table is looked at each time, so a
+    --                                scenario can seal one in mid-session)
+    --     late = true                it hears of an event after the addon does
+    --     api = false                the client has no C_CooldownViewer
+    --     available = "why not"      the game says the tracker is not available
+    --     setting = "0"              the console variable for it
+    -- }
+    -- world.tracker.viewers[key] is a viewer; world:trackerShow(key, shown),
+    -- world:trackerEdit(key, on) and world:trackerDeal(key) (the viewer lays
+    -- its items out anew and hands its frames round) drive it.
+    ----------------------------------------------------------------------------
+    if options.tracker then
+        local setup = options.tracker
+        local seal = setup.seal or {}
+        local KINDS = {
+            { key = "essential", frame = "EssentialCooldownViewer", category = 0, buff = false },
+            { key = "utility", frame = "UtilityCooldownViewer", category = 1, buff = false },
+            { key = "buffs", frame = "BuffIconCooldownViewer", category = 2, buff = true },
+            { key = "bars", frame = "BuffBarCooldownViewer", category = 3, buff = true },
+        }
+        local tracker = { viewers = {}, entries = {}, sets = {}, order = {} }
+        world.tracker = tracker
+        world.cvars.cooldownViewerEnabled = setup.setting or "1"
+
+        local nextID = 9001
+        local function Entry(spellID, kind)
+            local entry = { cooldownID = nextID, spellID = spellID, kind = kind }
+            nextID = nextID + 1
+            tracker.entries[entry.cooldownID] = entry
+            local set = tracker.sets[kind.category]
+            set[#set + 1] = entry.cooldownID
+            return entry
+        end
+
+        --- What the game's data says of an entry.
+        local function Info(entry)
+            local data = world.spells[entry.spellID]
+            local effect = data and data.effect
+            local linked = {}
+            for i, id in ipairs(setup.linked and setup.linked[entry.spellID] or {}) do
+                linked[i] = id
+            end
+            local info = {
+                cooldownID = entry.cooldownID, spellID = entry.spellID,
+                overrideSpellID = data and data.override or nil, linkedSpellIDs = linked,
+                selfAura = effect and effect.buff and true or false, hasAura = effect ~= nil,
+                charges = false, isKnown = true, flags = 0, category = entry.kind.category,
+            }
+            if seal.info then
+                info.spellID = Secret(info.spellID)
+                info.overrideSpellID = info.overrideSpellID and Secret(info.overrideSpellID) or nil
+            end
+            return info
+        end
+
+        --- The names of the effects an entry's item looks for.
+        local function Sought(entry)
+            local names = {}
+            if setup.unlinked and setup.unlinked[entry.spellID] then
+                return names
+            end
+            local data = world.spells[entry.spellID]
+            while data do
+                names[data.effect and data.effect.name or data.name] = true
+                data = data.override and world.spells[data.override] or nil
+            end
+            for _, id in ipairs(setup.linked and setup.linked[entry.spellID] or {}) do
+                local other = world.spells[id]
+                if other then
+                    names[other.effect and other.effect.name or other.name] = true
+                end
+            end
+            return names
+        end
+
+        local Item = {}
+        Item.__index = Item
+
+        function Item:GetCooldownID()
+            local id = self.entry and self.entry.cooldownID or nil
+            if seal.id and id then
+                return Secret(id)
+            end
+            return id
+        end
+
+        function Item:GetCooldownInfo()
+            return self.entry and Info(self.entry) or nil
+        end
+
+        function Item:GetAuraDataUnit()
+            if seal.unit and self.auraDataUnit then
+                return Secret(self.auraDataUnit)
+            end
+            return self.auraDataUnit
+        end
+
+        --- Buff items go dark when the effect they hold has run out, whether
+        --- or not they have been told that it went.
+        function Item:IsActive()
+            local lit = self.isActive
+            if lit and self.viewer.kind.buff and self.expires and self.expires > 0 and self.expires <= world.clock then
+                lit = false
+            end
+            if seal.lit then
+                return Secret(lit)
+            end
+            return lit
+        end
+
+        function Item:NeedsTargetUpdateRegistration()
+            local needs
+            if self.viewer.kind.buff then
+                needs = self.entry ~= nil and self.auraDataUnit ~= "player"
+            else
+                needs = (self.entry ~= nil and self.needsRangeCheck == true) or self.auraDataUnit == "target"
+            end
+            if seal.registered then
+                return Secret(needs)
+            end
+            return needs
+        end
+
+        --- Looks at you, then at your target, for an effect of yours that the
+        --- entry stands for, and keeps what it finds.
+        function Item:RefreshData()
+            self.auraDataUnit, self.expires = nil, nil
+            local sought = self.entry and Sought(self.entry) or {}
+            local now = world.clock
+            for _, unit in ipairs({ "player", "target" }) do
+                local mob = unit == "player" and world.player or world.tokens.target
+                if mob then
+                    -- Buffs on a friend, debuffs on anyone else: yours alone.
+                    local harmful = mob.hostile and true or false
+                    for i = 1, #mob.auras do
+                        local aura = mob.auras[i]
+                        if aura.fromPlayer and aura.harmful == harmful and sought[aura.name]
+                            and (aura.expirationTime == 0 or aura.expirationTime > now) then
+                            self.auraDataUnit, self.expires = unit, aura.expirationTime
+                            break
+                        end
+                    end
+                end
+                if self.auraDataUnit then
+                    break
+                end
+            end
+            if self.viewer.kind.buff then
+                self.isActive = self.entry ~= nil and self.auraDataUnit ~= nil
+            else
+                self.isActive = self.entry ~= nil
+            end
+            self.listed = self:PlainRegistration()
+        end
+
+        function Item:PlainRegistration()
+            if self.viewer.kind.buff then
+                return self.entry ~= nil and self.auraDataUnit ~= "player"
+            end
+            return (self.entry ~= nil and self.needsRangeCheck == true) or self.auraDataUnit == "target"
+        end
+
+        local Viewer = {}
+        Viewer.__index = Viewer
+
+        function Viewer:IsVisible()
+            if seal.visible then
+                return Secret(self.shown)
+            end
+            return self.shown
+        end
+        Viewer.IsShown = Viewer.IsVisible
+
+        function Viewer:IsEditing()
+            return self.editing == true
+        end
+
+        function Viewer:GetItemFrames()
+            local list = {}
+            for i = 1, #self.items do
+                list[i] = self.items[i]
+            end
+            return list
+        end
+
+        --- Lays the items out anew: every frame goes back to the pool and is
+        --- given out again, `turned` round the other way.
+        function Viewer:RefreshLayout(turned)
+            local frames = self.items
+            if turned then
+                local back = {}
+                for i = #frames, 1, -1 do
+                    back[#back + 1] = frames[i]
+                end
+                frames = back
+                self.items = frames
+            end
+            for i = 1, #frames do
+                local item = frames[i]
+                item.entry = self.entries[i] -- kept while the layout is edited, when nothing is heard
+                local unranged = item.entry and setup.unranged and setup.unranged[item.entry.spellID]
+                item.needsRangeCheck = item.entry ~= nil and not self.kind.buff and not unranged or nil
+                item:RefreshData()
+            end
+        end
+
+        for _, kind in ipairs(KINDS) do
+            tracker.sets[kind.category] = {}
+            local viewer = setmetatable({
+                kind = kind, items = {}, entries = {}, cooldownViewerCategory = kind.category,
+            }, Viewer)
+            local hidden = setup.hidden
+            viewer.shown = not (hidden == true or (type(hidden) == "table" and hidden[kind.key]))
+            for _, spellID in ipairs(setup[kind.key] or {}) do
+                viewer.entries[#viewer.entries + 1] = Entry(spellID, kind)
+                viewer.items[#viewer.items + 1] = setmetatable({ viewer = viewer }, Item)
+            end
+            for _, spellID in ipairs(setup.offered and setup.offered[kind.key] or {}) do
+                Entry(spellID, kind)
+            end
+            local function EnumerateActive()
+                local i = 0
+                return function()
+                    i = i + 1
+                    return viewer.items[i]
+                end
+            end
+            viewer.itemFramePool = setmetatable({}, {
+                __index = function(_, field)
+                    if seal.pool then
+                        error("attempt to index a forbidden table", 2)
+                    end
+                    return field == "EnumerateActive" and EnumerateActive or nil
+                end,
+            })
+            tracker.viewers[kind.key] = viewer
+            tracker.order[#tracker.order + 1] = viewer
+            env[kind.frame] = viewer
+            if viewer.shown then
+                viewer:RefreshLayout()
+            end
+        end
+
+        --- A viewer on screen hears that effects changed on you or your
+        --- target, and that the target changed.
+        function tracker:hear(event, token)
+            for _, viewer in ipairs(self.order) do
+                if viewer.shown and not viewer.editing then
+                    if event == "UNIT_AURA" and (token == "player" or token == "target") then
+                        for i = 1, #viewer.items do
+                            viewer.items[i]:RefreshData()
+                        end
+                    elseif event == "PLAYER_TARGET_CHANGED" then
+                        for i = 1, #viewer.items do
+                            local item = viewer.items[i]
+                            if item.listed then
+                                item.isActive = false
+                                item:RefreshData()
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        --- Puts a viewer on screen or takes it off: the tracker being switched
+        --- on or off, or set to show only in a fight.
+        function world:trackerShow(key, shown)
+            for _, viewer in ipairs(tracker.order) do
+                if key == nil or viewer.kind.key == key then
+                    local was = viewer.shown
+                    viewer.shown = shown and true or false
+                    if viewer.shown and not was then
+                        viewer:RefreshLayout()
+                    end
+                end
+            end
+        end
+
+        --- The player opens or closes the game's layout editor: the items
+        --- show samples while it is open.
+        function world:trackerEdit(key, on)
+            local viewer = tracker.viewers[key]
+            viewer.editing = on and true or false
+            viewer:RefreshLayout()
+        end
+
+        --- The viewer lays its items out anew and hands its frames round.
+        function world:trackerDeal(key)
+            tracker.viewers[key]:RefreshLayout(true)
+        end
+
+        if setup.api ~= false then
+            env.C_CooldownViewer = {
+                IsCooldownViewerAvailable = function()
+                    if setup.available ~= nil and setup.available ~= true then
+                        return false, tostring(setup.available)
+                    end
+                    return true, nil
+                end,
+                GetCooldownViewerCategorySet = function(category)
+                    local list = {}
+                    for i, id in ipairs(tracker.sets[category] or {}) do
+                        list[i] = id
+                    end
+                    return list
+                end,
+                GetCooldownViewerCooldownInfo = function(id)
+                    local entry = tracker.entries[id]
+                    return entry and Info(entry) or nil
+                end,
+            }
+        end
+    end
+
     ----------------------------------------------------------------------------
     -- Driving the world
     ----------------------------------------------------------------------------
 
+    --- Whether the game's own tracker hears of an event at this point: before
+    --- the addon does, or after it with options.tracker.late.
+    local function TrackerHears(late)
+        return world.tracker ~= nil and (options.tracker.late == true) == late
+    end
+
     function world:fire(event, ...)
+        if TrackerHears(false) then
+            self.tracker:hear(event, (...))
+        end
         for i = 1, #self.frames do
             local frame = self.frames[i]
             local unit = frame.unitEvents[event]
@@ -2140,6 +2500,9 @@ function Mock.new(options)
                     end
                 end
             end
+        end
+        if TrackerHears(true) then
+            self.tracker:hear(event, (...))
         end
     end
 
@@ -2202,6 +2565,9 @@ function Mock.new(options)
     --- the kind of change, which only the "lists" payload passes on.
     local function SendAuraEvent(token, what)
         if options.auraTokens and not options.auraTokens[TokenKind(token)] then
+            if world.tracker then
+                world.tracker:hear("UNIT_AURA", token) -- the game's own code is told all the same
+            end
             return
         end
         local hidden = AurasHidden()
@@ -2234,6 +2600,9 @@ function Mock.new(options)
             end
         end
         world.auraEventsSent = (world.auraEventsSent or 0) + 1
+        if TrackerHears(false) then
+            world.tracker:hear("UNIT_AURA", token)
+        end
         for i = 1, #world.frames do
             local frame = world.frames[i]
             if frame.events.UNIT_AURA or frame.unitEvents.UNIT_AURA == token then
@@ -2245,6 +2614,9 @@ function Mock.new(options)
                     end
                 end
             end
+        end
+        if TrackerHears(true) then
+            world.tracker:hear("UNIT_AURA", token)
         end
     end
 
@@ -2261,6 +2633,15 @@ function Mock.new(options)
     function world:auraChanged(mob, what)
         local mode = options.auraEvents
         if mode == false or (mode == "calm" and AurasHidden()) then
+            if self.tracker then
+                -- The game's own tracker is told all the same.
+                if mob == self.player then
+                    self.tracker:hear("UNIT_AURA", "player")
+                end
+                if self.tokens.target == mob then
+                    self.tracker:hear("UNIT_AURA", "target")
+                end
+            end
             return
         end
         if mob.owed then
@@ -3051,9 +3432,10 @@ function Mock.new(options)
     -- Looking at the result
     ----------------------------------------------------------------------------
 
-    local ICONS = { Check = "check", Partial = "partial", Cross = "cross" }
+    local ICONS = { Check = "check", Partial = "partial", Cross = "cross", Unsure = "unsure" }
 
-    --- What the addon is drawing on a button: "check", "partial", "cross" or nil.
+    --- What the addon is drawing on a button: "check", "partial", "cross",
+    --- "unsure" (its mark for not being able to tell) or nil.
     function world:icon(buttonName)
         local button = env[buttonName]
         for i = 1, #self.frames do

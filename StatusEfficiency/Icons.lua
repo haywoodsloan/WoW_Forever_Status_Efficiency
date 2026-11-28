@@ -44,6 +44,20 @@ Icons.STATES = {
     },
 }
 
+--- A fourth thing a button can show, which is not one of the results: the
+--- addon cannot tell which of them holds. It has the fields of a result, and
+--- one mark of its own that is not among the icons on offer, so that it can
+--- never be taken for one of the three. `fallback` is the game's own art,
+--- for a copy of the addon whose Media folder lacks the file.
+Icons.UNSURE = {
+    key = "unsure",
+    title = "Not sure",
+    detail = "The addon cannot tell whether the effect is there, usually because the game's signs about your last "
+        .. "cast contradict each other.",
+    texture = MEDIA .. "Unsure.tga",
+    fallback = READY .. "Waiting",
+}
+
 --- The icons on offer. The first ten ship with the addon (`own`); the rest are
 --- the game's own art.
 Icons.CHOICES = {
@@ -145,6 +159,9 @@ end
 --- The texture to draw for a result: a file path or a file id, or nil when the
 --- result is set to show no icon.
 function Icons.Texture(state)
+    if state == Icons.UNSURE.key then
+        return Icons.UNSURE.texture
+    end
     local key, custom = Icons.Current(state)
     if key == HIDDEN then
         return nil

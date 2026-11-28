@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draws the three status icons and writes them as TGA files the game can load.
+"""Draws the status icons and writes them as TGA files the game can load.
 
     python3 tools/make_icons.py
 
@@ -7,6 +7,7 @@ Needs Pillow. The client wants uncompressed 32-bit TGA with power-of-two sides,
 so the files are written by hand rather than trusting an encoder's defaults.
 """
 
+import math
 import struct
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ GREEN = (70, 222, 88, 255)
 RED = (240, 62, 52, 255)
 YELLOW = (255, 208, 40, 255)
 WHITE = (255, 255, 255, 255)
+GREY = (206, 210, 216, 255)
 OUTLINE = (0, 0, 0, 255)
 HOLLOW = (28, 28, 28, 235)
 
@@ -131,6 +133,25 @@ def ring():
     return finish(image)
 
 
+def unsure():
+    """A grey question mark: the game did not say which of two things happened."""
+    image, draw = canvas()
+    centre, radius = (32, 24), 12
+    # The hook: from the left of the bowl over the top and round to below
+    # the middle, then straight down to where the stem ends.
+    hook = []
+    for step in range(0, 25):
+        angle = math.radians(180 + step * 10)  # 180 (left) through 270 (top) to 420 (lower right)
+        hook.append((centre[0] + radius * math.cos(angle), centre[1] + radius * math.sin(angle)))
+    hook.append((32, 39))
+    hook.append((32, 41))
+    stroke(draw, hook, OUTLINE, STROKE - 2 + 2 * EDGE)
+    disc(draw, (32, 54), 5.5 + EDGE, OUTLINE)
+    stroke(draw, hook, GREY, STROKE - 2)
+    disc(draw, (32, 54), 5.5, GREY)
+    return finish(image)
+
+
 def write_tga(image, path):
     """Uncompressed true-colour TGA, 32 bits, rows stored bottom to top."""
     image = image.convert("RGBA")
@@ -170,6 +191,7 @@ def main():
         "Exclaim": exclaim(),
         "Stop": stop(),
         "Ring": ring(),
+        "Unsure": unsure(),
     }
     for name, image in icons.items():
         write_tga(image, media / (name + ".tga"))

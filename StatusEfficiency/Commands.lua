@@ -156,6 +156,8 @@ local HELP = {
     "    of them do, and the red X that all of them do.",
     "  For a buff, the green check means that you do not have it, and the red X that you do.",
     "  For an effect that stacks, the green check stays until all of its stacks are there.",
+    "  A grey question mark means that the addon cannot tell whether the effect is there, usually because the",
+    "    game's signs about your last cast contradict each other.",
     "  An icon never tells you to use a skill on an enemy that is immune to it. /se immune lists those enemies.",
     "  /se options - opens the settings window, where all of this can be set with clicks",
     "  /se on | off - turns the icons on or off",
@@ -172,6 +174,7 @@ local HELP = {
     "  /se duration <skill> <seconds | auto> - sets how long a skill's effect lasts",
     "  /se stacks <skill> <number | auto> - sets the most stacks a skill's effect can have",
     "  /se anyone <skill> | mine <skill> - counts another player's effect like your own, or ignores it",
+    "  /se tracker - says what the game's own Cooldown Manager can tell the addon about your skills",
     "  /se immune - lists the enemies that are immune to a skill",
     "  /se immune <skill> - adds the kind of enemy you have targeted to that list",
     "  /se immune forget [skill] - clears the list, for one skill or for all of them",
@@ -853,6 +856,63 @@ function commands.list()
     end
 end
 
+--- What the game's own Cooldown Manager can tell the addon, skill by skill.
+--- In a fight it is the one thing that reads the effects on your target (see
+--- "The game's own tracker" in Core.lua), and it only does so for a skill it
+--- has an item for on screen.
+function commands.tracker()
+    local probe = ns.TrackerProbe()
+    local frames, showing = 0, 0
+    for _, found in pairs(probe.viewers) do
+        if found ~= "missing" then
+            frames = frames + 1
+            if found:find("item", 1, true) then
+                showing = showing + 1
+            end
+        end
+    end
+    if frames == 0 then
+        Print("This game has no Cooldown Manager, so there is nothing the addon can ask about the effects on your "
+            .. "target during a fight.")
+        return
+    end
+    if showing == 0 then
+        Print("The game's Cooldown Manager is not showing right now: it is switched off, hidden, or open in the "
+            .. "game's layout editor. The addon asks it about your target and about you whenever it is on screen.")
+        return
+    end
+    Print("The game's Cooldown Manager is on screen. During a fight the addon asks it which of your effects are on "
+        .. "your target and on you:")
+    local list = ns.BarSpells()
+    local any = false
+    for i = 1, #list do
+        local name = list[i].name
+        if Spells:Tracking(list[i]) then
+            any = true
+            local viewer, loose = ns.TrackerItem(name)
+            if not viewer then
+                print(format("  %s has no item on screen there. %s", name, ns.TrackerLists(name)
+                    and "The game has an entry for it, so it can be added in the Cooldown Manager's own settings."
+                    or "The game has no entry for it either."))
+            elseif loose then
+                print(format("  %s is in its %s, but that item also lights up for %s, so the addon does not ask it "
+                    .. "about %s.", name, viewer, loose, name))
+            elseif ns.TrackerProven(name) then
+                print(format("  %s is in its %s, and the addon has seen that item show the effect in this session. "
+                    .. "What it shows of %s is believed.", name, viewer, name))
+            else
+                print(format("  %s is in its %s. When that item shows the effect, the addon believes it. When it "
+                    .. "shows none, the addon only believes that after it has seen the item show the effect in this "
+                    .. "session.", name, viewer))
+            end
+        end
+    end
+    if not any then
+        print("  None of the skills on your action bars has an icon, so there is nothing to ask it about.")
+    end
+end
+commands.cooldowns = commands.tracker
+
 local function Ago(now, when)
     if not when then
         return "not seen yet"
@@ -1095,6 +1155,29 @@ function commands.debug()
         local where = key == me and " on you" or (key:sub(-6) == "+buffs" and " on a friend" or "")
         print(format("    %s%s%s, %s (%s)", effects[i].name, stacks and format(" x%d", stacks) or "", where,
             left and (Span(left) .. " left") or "no end time", effects[i].how))
+    end
+
+    local tracker = ns.TrackerProbe()
+    local viewers = {}
+    for viewer, found in pairs(tracker.viewers) do
+        viewers[#viewers + 1] = viewer .. " " .. found
+    end
+    table.sort(viewers)
+    print(format("  The game's Cooldown Manager: %s. Its setting reads %s, and the game calls it %s.",
+        table.concat(viewers, ", "), tostring(tracker.setting),
+        tracker.available == nil and "nothing" or (tracker.available and "available" or "unavailable")))
+    local asked = {}
+    for i = 1, #effects do
+        local name = effects[i].name
+        if not asked[name] then
+            asked[name] = true
+            local viewer, loose = ns.TrackerItem(name)
+            if viewer then
+                print(format("    %s: an item in %s%s, %s", name, viewer,
+                    loose and (" (also lights for " .. loose .. ")") or "",
+                    ns.TrackerProven(name) and "seen to show the effect" or "not seen to show the effect yet"))
+            end
+        end
     end
 
     local options = ns.Options

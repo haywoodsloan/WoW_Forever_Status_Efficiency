@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.5.8"
+ns.VERSION = "0.5.9"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -1621,4 +1621,351 @@ function ns.ActionUsable(slot, unit, spellID, button)
         end
     end
     return usable, inRange, lacking, how, howRange
+end
+
+--------------------------------------------------------------------------------
+-- The game's own tracker
+--
+-- The game has a cooldown tracker of its own (the Cooldown Manager, the
+-- addon Blizzard_CooldownViewer). Among other things it can show your
+-- "tracked buffs": an item for a skill, lit while your effect of that skill
+-- is on you or on your target. Its code is the game's own, so it reads the
+-- effects on a unit in a fight, where an addon is refused. Each item finds
+-- your effect among the unit's (those you put there, and no one else's) by
+-- the spell numbers the game's data gives the item, looking at you first and
+-- at your target after that.
+--
+-- Its frames are ordinary frames, and an item answers plain questions about
+-- itself: which unit it found the effect on, and whether it is lit. Nothing
+-- here reads an effect: only what the game's own item says of it. Everything
+-- is asked inside pcall and checked for secret values, and whatever cannot
+-- be read is no answer. A later client may well seal these too.
+--
+-- What makes an answer worth having:
+--   * A viewer only listens while it is on screen. Hidden (the tracker is
+--     switched off, or set to hide), its items show what was there when it
+--     went. And while its layout is being edited they show samples.
+--   * An item that found nothing only knows that of your present target if
+--     it is looked over again when the target changes, which the tracked
+--     buffs always are and a cooldown's item is not always.
+--   * An item is lit for an effect on you before it looks at your target:
+--     one that is busy with the one says nothing of the other.
+--   * An item lights for every spell the game's data ties to its entry, and
+--     does not say which of them it found. Only an entry whose spells all
+--     go by the skill's own name is asked about that skill: one that also
+--     lights for something else (a "loose" one) could be showing that.
+--   * A viewer hears of a change through the same event an addon does, and
+--     which of the two hears first is not laid down. So the tracker is only
+--     to be asked between events (from the pass that runs every frame),
+--     never from inside the handling of one.
+-- Whether "nothing there" can be believed of a skill at all is left to
+-- whoever asks (see "The game's own tracker" in Core.lua).
+--------------------------------------------------------------------------------
+
+-- The tracker's viewers, with the game's name for what each one shows.
+local VIEWERS = {
+    { frame = "BuffIconCooldownViewer", name = "Tracked Buffs", category = 2 },
+    { frame = "BuffBarCooldownViewer", name = "Tracked Bars", category = 3 },
+    { frame = "EssentialCooldownViewer", name = "Essential Cooldowns", category = 0 },
+    { frame = "UtilityCooldownViewer", name = "Utility Cooldowns", category = 1 },
+}
+local TRACKER_SETTING = "cooldownViewerEnabled"
+local TRACKER_TTL = 1 -- seconds the list of its items is kept before it is made again
+local LINKED_MOST = 40 -- how many spells linked to one item are looked through
+
+-- skill name -> { { item, id, viewer, frame, loose } ... }: the items that could show its effect
+local trackerItems = {}
+local trackerViewers = {} -- viewer name -> what was found of it: "3 items", "hidden", "being edited", "missing"
+local trackerAt -- when that list was made
+local trackerWhy -- why a skill that is not on it has no item: "no tracker", "hidden", "unlisted"
+
+local function CollectItems(pool, into)
+    for item in pool:EnumerateActive() do
+        into[#into + 1] = item
+    end
+end
+
+--- The name of the spell with this number, or nil. A number that is there
+--- and cannot be put a name to gives "#" and the number, or "?" when the
+--- number itself cannot be read.
+local function LinkName(id)
+    if id == nil then
+        return nil
+    end
+    id = PlainNumber(id)
+    if not id then
+        return "?"
+    elseif id <= 0 then
+        return nil
+    end
+    return ns.SpellName(id) or ("#" .. id)
+end
+
+--- What one entry of the tracker's data stands for: the names its skill
+--- goes by (the skill, and what stands in for it), as a set; and the other
+--- names its item also lights for, as text ("Deep Wounds, Bleed"), or nil
+--- when it lights for nothing but the skill's own. An effect often has
+--- another number than the skill that leaves it and the same name, which
+--- is no other name.
+local function EntryNames(info)
+    local names = {}
+    local base = LinkName(Field(info, "spellID"))
+    local stand = LinkName(Field(info, "overrideSpellID"))
+    if not base or base:sub(1, 1) == "#" or base == "?" then
+        return names, nil -- not a spell that can be named: nobody's entry
+    end
+    names[base] = true
+    if stand and stand:sub(1, 1) ~= "#" and stand ~= "?" then
+        names[stand] = true
+    end
+    local others, seen = {}, {}
+    local function Also(id)
+        local name = LinkName(id)
+        if name and not names[name] and not seen[name] then
+            seen[name] = true
+            others[#others + 1] = name
+        end
+    end
+    Also(Field(info, "overrideTooltipSpellID"))
+    Also(Field(info, "linkedSpellID"))
+    local linked = Field(info, "linkedSpellIDs")
+    if type(linked) == "table" then
+        for i = 1, LINKED_MOST do
+            local id = Field(linked, i)
+            if id == nil then
+                break
+            end
+            Also(id)
+        end
+        if Field(linked, LINKED_MOST + 1) ~= nil then
+            others[#others + 1] = "more" -- than were looked through
+        end
+    elseif linked ~= nil then
+        others[#others + 1] = "?"
+    end
+    table.sort(others)
+    return names, #others > 0 and table.concat(others, ", ") or nil
+end
+
+--- Whether a viewer's items are worth asking, and why not.
+local function ViewerListens(viewer)
+    if Flag(Field(viewer, "IsVisible"), viewer) ~= true then
+        return false, "hidden"
+    end
+    if Flag(Field(viewer, "IsEditing"), viewer) == true then
+        return false, "being edited"
+    end
+    return true
+end
+
+--- Makes the list of the tracker's items anew.
+local function ListItems(now)
+    trackerAt = now
+    ns.Wipe(trackerItems)
+    ns.Wipe(trackerViewers)
+    local frames, listening = 0, 0
+    for i = 1, #VIEWERS do
+        local viewer = _G[VIEWERS[i].frame]
+        local found = "missing"
+        if type(viewer) == "table" then
+            frames = frames + 1
+            local listens, why = ViewerListens(viewer)
+            found = why
+            if listens then
+                listening = listening + 1
+                local items = {}
+                local pool = Field(viewer, "itemFramePool")
+                if type(pool) == "table" then
+                    pcall(CollectItems, pool, items)
+                end
+                local held = 0
+                for j = 1, #items do
+                    local item = items[j]
+                    local id = type(item) == "table" and PlainNumber(Call(Field(item, "GetCooldownID"), item))
+                    local info = id and Call(Field(item, "GetCooldownInfo"), item)
+                    if type(info) == "table" then
+                        held = held + 1
+                        local names, loose = EntryNames(info)
+                        for name in pairs(names) do
+                            local list = trackerItems[name]
+                            if not list then
+                                list = {}
+                                trackerItems[name] = list
+                            end
+                            list[#list + 1] = { item = item, id = id, viewer = VIEWERS[i].name, frame = viewer,
+                                loose = loose }
+                        end
+                    end
+                end
+                found = held == 1 and "1 item" or (held .. " items")
+            end
+        end
+        trackerViewers[VIEWERS[i].name] = found
+    end
+    trackerWhy = (frames == 0 and "no tracker") or (listening == 0 and "hidden") or "unlisted"
+end
+
+--- What one item says of a unit ("player" or "target"): true when it shows
+--- your effect there, false when it shows that there is none, and nil with
+--- the reason when it says neither.
+local function ItemSays(item, unit)
+    local where, known = Call(Field(item, "GetAuraDataUnit"), item)
+    if not known or (where ~= nil and type(where) ~= "string") then
+        return nil, "unread"
+    end
+    if where == unit then
+        local lit = Flag(Field(item, "IsActive"), item)
+        if lit == nil then
+            return nil, "unread"
+        end
+        return lit -- one that has run out and not been cleared away yet is not lit
+    elseif where ~= nil then
+        return nil, "busy"
+    end
+    if unit == "target" and Flag(Field(item, "NeedsTargetUpdateRegistration"), item) ~= true then
+        return nil, "stale"
+    end
+    return false
+end
+
+--- Asks the game's own tracker whether your effect of a skill is on a unit:
+--- "player" or "target", the two it watches. True when one of its items
+--- shows it there, false when it has an item for the skill and that shows
+--- none, and nil when it has no answer. The second return then says why:
+--- "no tracker" (the client has none), "hidden" (it is not on screen),
+--- "unlisted" (it has no item for the skill on screen), "loose", "busy",
+--- "stale" or "unread" (see above).
+---
+--- Only to be asked between events: see above.
+function ns.GameTracker(name, unit)
+    local now = GetTime()
+    if not trackerAt or now < trackerAt or now - trackerAt > TRACKER_TTL then
+        ListItems(now)
+    end
+    local list = trackerItems[name]
+    if not list then
+        return nil, trackerWhy
+    end
+    local answer, why
+    for i = 1, #list do
+        local entry = list[i]
+        -- The viewers hand their frames round: one that has been given
+        -- another entry since the list was made is not asked.
+        if PlainNumber(Call(Field(entry.item, "GetCooldownID"), entry.item)) ~= entry.id then
+            trackerAt = nil
+            why = why or "stale"
+        elseif not ViewerListens(entry.frame) then
+            -- Taken off the screen since the list was made: its items show
+            -- what was there when it went.
+            trackerAt = nil
+            why = why or "hidden"
+        elseif entry.loose then
+            why = why or "loose"
+        else
+            local says, reason = ItemSays(entry.item, unit)
+            if says == true then
+                return true
+            elseif says == false then
+                answer = false
+            else
+                why = why or reason
+            end
+        end
+    end
+    if answer == nil then
+        return nil, why or "unread"
+    end
+    return answer
+end
+
+--- Which of the tracker's viewers has an item on screen for a skill, for
+--- /se debug and the saved report: the game's name for it, or nil. The
+--- second return is what else that item lights for, when it does.
+function ns.TrackerItem(name)
+    local list = trackerItems[name]
+    local first = list and list[1]
+    if not first then
+        return nil
+    end
+    return first.viewer, first.loose
+end
+
+--- What the client has of the tracker at all, for the saved report:
+--- { api, available, reason, setting, viewers = { name -> what was found } }.
+function ns.TrackerProbe()
+    ListItems(GetTime())
+    local viewers = {}
+    for name, found in pairs(trackerViewers) do
+        viewers[name] = found
+    end
+    local probe = { api = C_CooldownViewer ~= nil, viewers = viewers }
+    local ask = C_CooldownViewer and C_CooldownViewer.IsCooldownViewerAvailable
+    if type(ask) == "function" then
+        local ok, available, reason = pcall(ask)
+        if ok then
+            probe.available = Plain(available)
+            probe.reason = PlainString(reason)
+        end
+    end
+    probe.setting = PlainString(Call(C_CVar and C_CVar.GetCVar or GetCVar, TRACKER_SETTING))
+    return probe
+end
+
+local trackerLists -- skill name -> where the game's data lists it, made once
+
+--- Where the game's data for the tracker lists a skill, whether or not it
+--- is on screen: the names of the viewers it can be put in, with "has an
+--- effect" where the data says the skill leaves one and what else its item
+--- would light for. Nil when it is listed nowhere, or the client will not
+--- say.
+function ns.TrackerLists(name)
+    if not trackerLists then
+        local set = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCategorySet
+        local get = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+        if type(set) ~= "function" or type(get) ~= "function" then
+            return nil
+        end
+        local lists = {}
+        local read = false
+        for i = 1, #VIEWERS do
+            local ids = Call(set, VIEWERS[i].category, true)
+            if type(ids) == "table" then
+                read = true
+                for j = 1, 400 do
+                    local id = Field(ids, j)
+                    if id == nil then
+                        break
+                    end
+                    local info = Call(get, id)
+                    if type(info) == "table" then
+                        local where = VIEWERS[i].name
+                        local names, loose = EntryNames(info)
+                        local notes = {}
+                        if Field(info, "hasAura") == true or Field(info, "selfAura") == true then
+                            notes[#notes + 1] = "has an effect"
+                        end
+                        if loose then
+                            notes[#notes + 1] = "also lights for " .. loose
+                        end
+                        if #notes > 0 then
+                            where = where .. " (" .. table.concat(notes, "; ") .. ")"
+                        end
+                        for spell in pairs(names) do
+                            local known = lists[spell]
+                            if not known then
+                                lists[spell] = where
+                            elseif not known:find(where, 1, true) then
+                                lists[spell] = known .. ", " .. where
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if not read then
+            return nil -- nothing came back: ask again another time
+        end
+        trackerLists = lists
+    end
+    return trackerLists[name]
 end

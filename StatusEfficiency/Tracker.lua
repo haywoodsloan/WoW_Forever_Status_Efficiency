@@ -47,10 +47,18 @@
 --     of yours at it, with nothing to show for the cast there in that moment,
 --     it is the cast's answer as well: the cast left nothing, whatever would
 --     have been assumed of it, a change on the unit later on is something
---     else, and the miss is not held against the spell. Where the unit's
---     effects did change in that moment, the cast is taken to have landed
---     all the same: the word does not say whose attack it was about, and it
---     is far more often somebody else's, or a swing of yours.
+--     else, and the miss is not held against the spell.
+--   * Where the unit's effects did change in that moment, the game has said
+--     two things at once: the cast landed and the word was about somebody
+--     else's attack or a swing of yours, or the cast was turned away and
+--     the change was something else. Which, it does not tell. Nothing is
+--     made up in its place: the effect is put in the books as one that is
+--     in doubt, and the icon says neither that it is there nor that it is
+--     not (see "Two answers at once").
+--   * The game keeps watch on your effects itself, in its own cooldown
+--     tracker, and reads them where an addon may not. Where that shows your
+--     effect of a spell on your target, or shows that there is none, that
+--     is how it is, whatever the books made of the casts (see Tracker:Shown).
 --
 -- The books do not care whether a unit is an enemy carrying your debuffs or
 -- you carrying your buffs: Core.lua decides which unit a spell is judged on.
@@ -86,6 +94,7 @@ local BRACKET = 4 -- a hit this soon before the game's "immune" and one this soo
 local WORDS_TTL = 30 -- how long the last hit on a unit and its last "immune" are kept
 local STALE = 600 -- what was learned of a unit that has not come up for this long is dropped
 local SWEEP = 30 -- how often that is looked into
+local CLEAN = 1 -- a landing seen this short a while ago is one the game's own tracker should be showing
 
 Tracker.GRACE = GRACE
 
@@ -114,6 +123,20 @@ Tracker.GRACE = GRACE
 --               it was, the count is made again
 --     theirs    another player's, as far as is known: your own effects, when
 --               they are counted, do not include it
+--     doubt     whether the cast that put it there, or started its timer
+--               over, landed at all is not known: the game said two things
+--               about that cast at once (see "Two answers at once")
+--     clash     in doubt because the game's own tracker showed none of it
+--               just after it was seen to land (see Tracker:Unsettle)
+--     sureTill  until when it is on the unit whatever became of that cast:
+--               the end of the timer the cast started over
+--     had       how many times over it is on the unit if that cast left
+--               nothing, for an effect that stacks
+--     shown     when the game's own tracker last showed it on the unit
+--     unbound   known from the game's own tracker alone: when it got there,
+--               and so when it ends, is not known. It is there for as long
+--               as the tracker shows it, and after that it is in doubt for
+--               as long as one could last.
 -- }
 local records = {}
 local pending = {} -- casts inside their grace period, oldest first
@@ -180,7 +203,10 @@ local missedAt = {} -- unit key -> when it last said that an attack did not reac
 local MISSES = { MISS = true, DODGE = true, PARRY = true, RESIST = true, EVADE = true, DEFLECT = true, REFLECT = true }
 -- What is kept of a timer that a cast started over, for a cast the game then
 -- says did not reach the unit.
-local OLD = { "applied", "duration", "expires", "endless", "exact", "stacks", "counted", "before", "sure" }
+local OLD = {
+    "applied", "duration", "expires", "endless", "exact", "stacks", "counted", "before", "sure", "doubt", "sureTill",
+    "had", "clash",
+}
 local lastCast = {} -- unit key -> your last cast that could leave a debuff there
 
 --------------------------------------------------------------------------------
@@ -696,6 +722,87 @@ local function PutDown(unit, when)
     return false
 end
 
+--- True for a cast that is judged by what the unit reports. The others are
+--- only credited with a change nobody else is waiting for: a spell taken to
+--- land anyway, and one with no icon that is only being learned about.
+local function Judged(cast)
+    return cast.tracked and not cast.forced
+end
+
+--------------------------------------------------------------------------------
+-- Two answers at once
+--
+-- A change on the unit in the moment of a cast says the cast landed. The
+-- game's word in that same moment that an attack missed the unit, was dodged
+-- or parried, or that the unit is immune, says it did not. With both, one of
+-- the two was about something else: the word about somebody else's attack or
+-- a swing of yours, or the change about an effect of somebody else's, of the
+-- unit's own, or one of yours that another attack left. The game does not
+-- tell which, and nothing an addon may read in a fight does.
+--
+-- Either guess is wrong often enough to matter. In a group both come every
+-- few seconds: taking the change for the landing showed the red X after
+-- casts that had been dodged, and taking the word for the answer would keep
+-- the green check up on an enemy that carries the effect. So no guess is
+-- made. The effect is put in the books as if the cast had landed, and marked
+-- as in doubt (`doubt`). Tracker:Doubt says so to whoever asks, with what
+-- would be on the unit if the cast left nothing, and the icon shows neither
+-- of the two (see Carries in Core.lua).
+--
+-- A cast that came on top of the same effect leaves less in doubt: the
+-- effect is on the unit either way until the timer that was running would
+-- have ended (`sureTill`), and that many times over (`had`).
+--
+-- What ends the doubt: a later cast that is seen to land with nothing said
+-- against it, the effect being read off the unit or shown by the game's own
+-- tracker, and the end of its timer. The cast is counted neither for nor
+-- against its spell.
+--
+-- For an effect that stacks, a later cast that plainly lands ends the doubt
+-- about the effect being there, and not the doubt about how many times over:
+-- that stays one more or one less (`had` is then the lesser count, and
+-- `sureTill` the end of the new timer), until the two come to the same.
+--------------------------------------------------------------------------------
+
+--- True when the game gave two answers about a cast at a unit: its effects
+--- were seen to change for the cast, and in the moment of the cast the game
+--- said that an attack did not reach the unit, or that the unit is immune.
+--- (A word about a spell that had not reached the unit yet is not kept as
+--- one that could be about the cast: see Unreached.)
+local function Clashes(unit)
+    return unit.signal ~= nil and (unit.miss ~= nil or unit.refused ~= nil)
+end
+
+--- Marks what a cast left in the books on a unit as in doubt, once the game
+--- has given two answers about it. Only for a cast that is judged by what
+--- the unit reports: one that is taken to land on your say-so is not put in
+--- doubt by a word, and one with no icon leaves nothing in the books.
+local function Torn(cast, key, unit)
+    if not Clashes(unit) or not Judged(cast) or unit.settled then
+        return
+    end
+    local set = records[key]
+    local rec = set and set[cast.name]
+    if not rec or rec.clash or unit.torn then
+        return
+    end
+    unit.torn = true
+    rec.doubt = true
+    rec.exact = nil -- when it ends, if it is there at all, is not known to the moment
+    -- What the cast came on top of is there either way, for as long as it
+    -- would have been.
+    local old = unit.old
+    local till = old and ((old.doubt and old.sureTill) or (not old.doubt and old.expires)) or nil
+    if till and till > unit.signal then
+        rec.sureTill = till
+        rec.had = old.doubt and old.had or old.stacks
+    else
+        rec.sureTill, rec.had = nil, nil
+    end
+    ns.Log("%s: the unit's effects changed, and the game said an attack left nothing there: not known which",
+        cast.name)
+end
+
 --- The effects on a watched unit changed while a cast of yours was on its way
 --- there: take the cast as having landed at that moment. `fresh` is what the
 --- report showed of the change (see Count).
@@ -713,7 +820,26 @@ local function Witness(cast, key, unit, when, fresh)
         if new then
             rec = Start(key, name, when, cast.duration)
             rec.fresh = cast
+        elseif not unit.old then
+            -- What the timer was, for a cast the game turns out to have
+            -- given two answers about.
+            local old = {}
+            for i = 1, #OLD do
+                old[OLD[i]] = rec[OLD[i]]
+            end
+            unit.old = old
         end
+        if unit.least == nil then
+            -- How many times over it is on the unit if a cast that is in
+            -- doubt left nothing, for an effect that stacks: this landing
+            -- comes on top of that many, or of one more.
+            unit.least = false
+            if rec.doubt and cast.most then
+                unit.least = rec.sureTill and when < rec.sureTill and (rec.had or 1) or 0
+            end
+        end
+        rec.doubt, rec.sureTill, rec.had, rec.clash = nil, nil, nil, nil
+        rec.unbound = nil
         rec.applied = when
         rec.duration = cast.duration
         rec.expires = when + cast.duration
@@ -728,16 +854,19 @@ local function Witness(cast, key, unit, when, fresh)
         rec.moot = nil
         rec.theirs = nil -- yours is on it now, whoever's it was
         Stack(cast, unit, rec, before, fresh, when)
+        if unit.least and rec.stacks then
+            local least = min(cast.most, unit.least + 1)
+            if least < rec.stacks then
+                -- It is there, and one of two counts.
+                rec.doubt = true
+                rec.sureTill = rec.expires
+                rec.had = least
+            end
+        end
+        Torn(cast, key, unit) -- the game may have said already that an attack left nothing there
     end
     ns.Spells:Landed(name, when - cast.time)
     ns.Log("%s: the unit's effects changed %.2fs after the cast, so it landed", name, when - cast.time)
-end
-
---- True for a cast that is judged by what the unit reports. The others are
---- only credited with a change nobody else is waiting for: a spell taken to
---- land anyway, and one with no icon that is only being learned about.
-local function Judged(cast)
-    return cast.tracked and not cast.forced
 end
 
 --- A cast went off.
@@ -964,6 +1093,7 @@ local function Welcome(guest, key, when, fresh)
     rec.expires = when + guest.duration
     rec.endless = nil
     rec.weak = nil
+    rec.doubt, rec.sureTill, rec.had, rec.unbound, rec.clash = nil, nil, nil, nil, nil
     rec.signal = true
     -- How long their copy lasts is not known the way yours is, so its ending
     -- is neither waited for nor held for or against the spell.
@@ -1143,6 +1273,7 @@ function Tracker:Said(key, when, word)
                     found = cast
                 end
             end
+            Torn(cast, key, unit) -- its effects may have been seen to change for the cast already
         end
     end
     if two then
@@ -1419,6 +1550,7 @@ local function Confirm(cast, key, unit, gained, sample, now)
     rec.weak = nil
     rec.fresh = nil
     rec.theirs = nil
+    rec.doubt, rec.sureTill, rec.had, rec.unbound, rec.clash = nil, nil, nil, nil, nil -- counted: it is there
     Stack(cast, unit, rec, before)
     if type(gained) == "number" then
         if not rec.id or not sample.ids[rec.id] then
@@ -1524,18 +1656,27 @@ local function Finish(cast, now, engaged)
                 verdict = "nothing new"
             end
         elseif unit.signal then
-            if unit.lost or answered then
+            verdict = "changed" -- the books were brought up to date when it was seen
+            if Clashes(unit) then
+                -- The game said in the moment of the cast that an attack
+                -- left nothing on the unit, too. One of the two was not this
+                -- cast, and which is not told: nothing is learned about the
+                -- spell, and what the cast left in the books is in doubt
+                -- (see "Two answers at once").
+                blind = true
+                if Judged(cast) then
+                    Torn(cast, key, unit)
+                    verdict = "unsure"
+                end
+            elseif unit.lost then
                 -- It died or went out of sight while the cast waited. A dying
                 -- enemy's effects all go, and where the client does not tell
                 -- an effect going from one arriving, that is a change too:
-                -- nothing is learned about the spell from it. Nor from a
-                -- change in the very moment the game called the unit immune:
-                -- one of the two was not this cast, and which is not told.
+                -- nothing is learned about the spell from it.
                 blind = true
             else
                 signalled = true
             end
-            verdict = "changed" -- the books were brought up to date when it was seen
         else
             -- Nothing was seen of this cast on the unit. What that says depends
             -- on whether a change there would have been reported.
@@ -1972,6 +2113,7 @@ function Tracker:Observe(key, name, aura, now)
     rec.weak = nil
     rec.fresh = nil
     rec.pending = nil
+    rec.doubt, rec.sureTill, rec.had, rec.unbound, rec.clash = nil, nil, nil, nil, nil -- read off the unit: it is there
     if not key:find("+buffs", -6, true) then
         Taken(key, name, now) -- whoever put it there, the unit is not immune to it
     end
@@ -1984,6 +2126,142 @@ function Tracker:Observe(key, name, aura, now)
             unit.settled = true
         end
     end
+end
+
+--- The game's own tracker answered for a unit and one of your spells (see
+--- "The game's own tracker" in Compat.lua): `there` is true when it shows
+--- your effect of that spell on the unit, and false when it shows that there
+--- is none. It reads the effects themselves, which no addon may in a fight,
+--- so its answer stands whatever the books made of your casts. It says
+--- neither when the effect got there nor when it ends: the timer in the
+--- books is kept, and the tracker's next answers put it right.
+---
+--- `lasts` is how long the spell's effect lasts at most, when that is known:
+--- an effect the books knew nothing of is kept no longer than that after the
+--- tracker last showed it. `shared` is true when another player's copy of the
+--- effect may be on the unit in place of yours (the unit carries it once, and
+--- you are in a group): "none of yours" then only tells of a cast of yours
+--- that was not known to have landed.
+---
+--- Returns what that did to the books, for the saved report: "added" for an
+--- effect they did not have, "settled" for one that was in doubt or only
+--- assumed, "dropped" for one they had that is not there, and nil when they
+--- agreed already. "clashed" when it shows none of an effect the books have
+--- from a cast that was seen to land a moment before, with nothing said
+--- against it: nothing is changed then, and the caller says which of the two
+--- is believed (see Unsettle). "shared" when none of yours left the books as
+--- they were because another player's may be there. "early" when a cast of
+--- the spell at the unit is so new that the answer may be from before it:
+--- it is to be asked again in a moment.
+function Tracker:Shown(key, name, there, now, lasts, shared)
+    -- While the moment of a cast of that spell at the unit is not over, what
+    -- the tracker shows may still be from before the cast.
+    for i = 1, #pending do
+        local cast = pending[i]
+        if cast.name == name and cast.units[key] and now - cast.time <= MOMENT then
+            return "early"
+        end
+    end
+    local set = records[key]
+    local rec = set and set[name]
+    local live = rec ~= nil and IsLive(rec, now)
+    if not there then
+        -- Not there. Another player's copy is not among the effects the
+        -- tracker shows, and a cast still waiting may be on its way, unless
+        -- it is of a spell that reaches its target the moment it is cast.
+        local flying = rec and rec.pending and not rec.pending.atOnce
+        if live and not flying and not rec.theirs and not rec.clash then
+            -- Does the effect in the books rest on a cast of yours that is
+            -- not known to have landed?
+            local open = rec.doubt or rec.weak
+            if shared and not open then
+                -- Yours was there, and another player's may have taken its
+                -- place since: the unit carries the effect once.
+                return "shared"
+            end
+            if rec.signal == true and not rec.doubt and not rec.weak and now - rec.applied <= CLEAN then
+                -- Put there by a landing seen a moment ago, with nothing
+                -- said against it: the tracker and the unit's own report
+                -- disagree. What becomes of it is the caller's to say (see
+                -- Unsettle).
+                return "clashed"
+            end
+            if shared and rec.doubt and rec.sureTill and now < rec.sureTill then
+                -- The cast in doubt left nothing. What it came on top of is
+                -- not yours either, or the tracker would show it: another
+                -- player's, there for as long as it was going to be.
+                rec.theirs = true
+                rec.id = nil
+                rec.expires = rec.sureTill
+                rec.stacks = rec.had
+                rec.doubt, rec.sureTill, rec.had = nil, nil, nil
+                rec.exact = nil
+                ns.Log("%s: the game's own tracker shows none of yours on the unit: your cast left nothing", name)
+                return "dropped"
+            end
+            Drop(key, name)
+            ns.Log("%s: the game's own tracker shows none of yours on the unit, so it is not there", name)
+            return "dropped"
+        end
+        return nil
+    end
+    local what
+    if not live then
+        -- The books had nothing. If your last cast at the unit was of this
+        -- spell, that is the likeliest way it got there: its timer is taken
+        -- from that cast. Otherwise nothing is known of when it ends, only
+        -- that it is there while the tracker shows it.
+        local cast = lastCast[key]
+        if cast and cast.name == name and cast.duration and now < cast.time + cast.duration then
+            rec = Start(key, name, cast.time, cast.duration)
+            rec.stacks = cast.most and 1 or nil
+        else
+            rec = Start(key, name, now, lasts or FOREVER)
+            rec.endless = not lasts or nil
+            rec.unbound = true
+        end
+        what = "added"
+        ns.Log("%s: the game's own tracker shows yours on the unit, so it is there", name)
+    elseif rec.doubt and rec.sureTill and now < rec.sureTill then
+        -- In doubt, and there either way for now: that the tracker shows it
+        -- says nothing of the cast in doubt.
+        what = nil
+    elseif rec.doubt or rec.weak or rec.theirs then
+        what = "settled"
+    end
+    if not (rec.doubt and rec.sureTill and now < rec.sureTill) then
+        rec.doubt, rec.sureTill, rec.had, rec.clash = nil, nil, nil, nil
+    end
+    rec.weak = nil
+    rec.fresh = nil
+    rec.theirs = nil -- the tracker only shows your own
+    rec.shown = now
+    if rec.unbound and lasts and rec.expires < now + lasts then
+        -- From here on it can last no longer than a whole one does.
+        rec.expires = now + lasts
+    end
+    if rec.expires < now + HOLD then
+        -- Still there, whatever the timer says.
+        rec.expires = now + HOLD
+        rec.exact = nil
+    end
+    if not key:find("+buffs", -6, true) then
+        Taken(key, name, now) -- the unit is not immune to it
+    end
+    -- A cast in flight at a unit that did not have the effect has nothing
+    -- left to prove. (One that came on top of the effect has: the tracker
+    -- shows the effect either way.)
+    for i = 1, #pending do
+        local cast = pending[i]
+        local unit = cast.name == name and cast.units[key]
+        if unit and not unit.had then
+            unit.settled = true
+            if rec.pending == cast then
+                rec.pending = nil
+            end
+        end
+    end
+    return what
 end
 
 --- The unit was read and has no effect with this spell's name.
@@ -2048,6 +2326,51 @@ function Tracker:Stacks(key, name, now)
         return 0
     end
     return rec.stacks or 1
+end
+
+--- The game's own tracker shows none of an effect the books have from a
+--- landing seen a moment ago (Shown said "clashed"). Two answers that each
+--- deserve belief: the effect is in doubt from here on, until a later cast,
+--- a look at the unit's effects or the tracker showing it settles it. What
+--- the tracker goes on saying of it is not asked for again.
+function Tracker:Unsettle(key, name, now)
+    local rec = Live(key, name, now)
+    if not rec then
+        return
+    end
+    rec.doubt = true
+    rec.clash = true
+    rec.sureTill, rec.had = nil, nil -- the tracker shows no older one either
+    rec.exact = nil
+    ns.Log("%s: seen to land, and the game's own tracker shows none: left in doubt", name)
+end
+
+--- Whether what Has and Stacks say of this unit and this spell is in doubt.
+--- Returns nil when it is not. Otherwise, how many times over the effect is
+--- on the unit if things are the other way: 0 for not at all, and math.huge
+--- for as many times as it goes.
+---
+--- Two things put an effect in doubt: a cast the game gave two answers about
+--- (see "Two answers at once"), and an effect known from the game's own
+--- tracker alone once that has stopped showing it at this very moment (it
+--- can only be asked about your target, and not at all while it is hidden).
+function Tracker:Doubt(key, name, now)
+    local rec = Live(key, name, now)
+    if not rec then
+        return nil
+    end
+    if rec.unbound then
+        -- Shown right now: it is there, but not how many times over. Not
+        -- shown any more: nothing is known of it.
+        return rec.shown == now and huge or 0
+    end
+    if not rec.doubt then
+        return nil
+    end
+    if rec.sureTill and now < rec.sureTill then
+        return rec.had or 1
+    end
+    return 0
 end
 
 --- Is this unit taken to be immune to this spell right now, on the game's
@@ -2206,6 +2529,12 @@ function Tracker:Describe(now)
                     how = "another player's"
                 elseif rec.id then
                     how = "matched to the real effect"
+                elseif rec.clash then
+                    how = "in doubt: seen to land, and the game's own tracker shows none"
+                elseif rec.doubt then
+                    how = "in doubt: the game said two things about the cast"
+                elseif rec.unbound then
+                    how = "shown by the game's own tracker"
                 elseif rec.weak then
                     how = "assumed"
                 elseif rec.signal then

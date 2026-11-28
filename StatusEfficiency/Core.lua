@@ -373,7 +373,10 @@ local function SetState(entry, state)
     end
     entry.state, entry.art = state, art
     if art then
-        entry.texture:SetTexture(art)
+        if entry.texture:SetTexture(art) == false and state == Icons.UNSURE.key then
+            -- A copy of the addon without that file: the game's own mark.
+            entry.texture:SetTexture(Icons.UNSURE.fallback)
+        end
         entry.overlay:Show()
     elseif entry.overlay then
         entry.overlay:Hide()
@@ -1109,8 +1112,8 @@ local function NoteSpell(info, kind, source)
 end
 
 local VERDICTS = {
-    "seen", "changed", "immune", "missed", "nothing new", "silent", "out of reach", "unproven", "unclear", "assumed",
-    "unknown",
+    "seen", "changed", "unsure", "immune", "missed", "nothing new", "silent", "out of reach", "unproven", "unclear",
+    "assumed", "unknown",
 }
 
 -- Whose effects each kind of unit token reports changes to, for a line in chat.
@@ -1771,8 +1774,146 @@ local function AddToFight(unit, key)
     enemy.unit, enemy.key = unit, key
 end
 
+--------------------------------------------------------------------------------
+-- The game's own tracker
+--
+-- In a fight nothing an addon may read says which effects an enemy carries
+-- (see Tracker.lua). The game knows, and one part of its own interface shows
+-- it: the cooldown tracker, which can list a skill among its tracked effects
+-- and then keeps watch on your effect of that skill on you and on your
+-- target (see "The game's own tracker" in Compat.lua). What it shows is read
+-- off the effects themselves. So it is asked about every skill that is
+-- judged on your target or on you, and its answer stands above the books.
+--
+-- It can only answer for a skill it has an item for, while it is on screen,
+-- and for your target and you: not for the other enemies an area skill hits.
+--
+-- "There" is believed whenever it is said: the item found your effect on the
+-- unit. "None there" is only believed of an item that has shown this skill's
+-- effect before, in this session: one that lists the skill under a spell
+-- number its effect does not carry would say "none" for ever. And for a
+-- skill whose effect a unit carries only once, whoever casts it, "none of
+-- yours" says less while you are in a group: someone else's may be there in
+-- its place. It still tells of a cast of yours that was not known to have
+-- landed, and nothing more (see Tracker:Shown).
+--
+-- "None there" just after a cast was seen to land, with nothing said against
+-- it, is two answers that each deserve belief. The effect is left in doubt
+-- then, and the icon says so. The second time running that happens with a
+-- skill it is the tracker that is no longer believed of it, until it next
+-- shows the effect.
+--
+-- What it said and what that changed in the books is kept in the saved
+-- report by skill, with what the game's tracker lists at all. On a client
+-- nobody has looked at yet, that is how it is found out afterwards.
+--
+-- It is asked from the pass that runs every frame and from nowhere else:
+-- inside the handling of an event it may not have heard of that event yet.
+--------------------------------------------------------------------------------
+do
+    local proven = {} -- skill -> true once the tracker has shown its effect in this session
+    local clashes = {} -- skill -> how often running it said "none" of a landing that had just been seen
+    local CLASHES = 2
+
+    --- The report's line for a skill, made on first use: where the game's
+    --- data lists it, and which of the tracker's items is on screen for it.
+    local function Line(name)
+        local journal = Journal()
+        local tracker = journal.tracker
+        if type(tracker) ~= "table" then
+            tracker = { game = ns.TrackerProbe(), skills = {} }
+            journal.tracker = tracker
+        end
+        local line = tracker.skills[name]
+        if not line then
+            line = { listed = ns.TrackerLists(name) or "nowhere" }
+            tracker.skills[name] = line
+        end
+        local item, loose = ns.TrackerItem(name)
+        if item then
+            line.item = loose and (item .. ", which also lights for " .. loose) or item
+        end
+        return line
+    end
+
+    local function Count(line, what)
+        line[what] = (line[what] or 0) + 1
+    end
+
+    --- Asks the game's own tracker about a skill on a unit, and brings the
+    --- books in line with an answer that can be believed.
+    function ns.AskTracker(unit, key, name, kind, anyone, now)
+        local which
+        if kind == "buff" then
+            which = unit == "player" and "player" or nil
+        elseif unit == "target" or ns.SameUnit(unit, "target") == true then
+            which = "target"
+        end
+        if not which then
+            return -- it watches nobody else
+        end
+        local shown, why = ns.GameTracker(name, which)
+        local line = Line(name)
+        if shown == nil then
+            Count(line, why or "unread")
+            return
+        end
+        if shown then
+            Count(line, "there")
+            proven[name] = true
+            clashes[name] = nil
+        else
+            Count(line, "none")
+            if not proven[name] then
+                Count(line, "unproven")
+                return
+            end
+        end
+        local info = barInfo[name]
+        local lasts, shared
+        if shown then
+            if info then
+                local _, _, duration = Spells:Tracking(info)
+                lasts = duration
+            end
+        elseif anyone and ns.GroupState() ~= "alone" then
+            -- Another player's copy may be there in place of yours, unless
+            -- it is a buff nobody else can put on you.
+            shared = not (kind == "buff" and info and info.selfOnly == true)
+        end
+        local did = Tracker:Shown(key, name, shown, now, lasts, shared)
+        if did == "early" then
+            ns.MarkDirty() -- asked again as soon as the moment of the cast is over
+            return
+        end
+        if did then
+            Count(line, did)
+        end
+        if did == "clashed" then
+            -- It shows none of a cast that had just been seen to land.
+            clashes[name] = (clashes[name] or 0) + 1
+            if clashes[name] >= CLASHES then
+                -- The second time running: it is the tracker that is not
+                -- believed of this skill, and the landing stands.
+                proven[name] = nil
+                clashes[name] = nil
+                Count(line, "doubted")
+            else
+                Tracker:Unsettle(key, name, now)
+            end
+        end
+    end
+
+    --- Whether the tracker's "none" is believed of a skill right now, for
+    --- /se debug.
+    function ns.TrackerProven(name)
+        return proven[name] == true
+    end
+end
+
 --- Does this unit have the spell's effect? While details are hidden, an effect
---- the client still shows by name is read directly and overrides the books.
+--- the client still shows by name is read directly and overrides the books,
+--- and so does what the game's own tracker shows of it.
 --- With `anyone` set, another player's effect of that name counts as well.
 local function HasEffect(unit, key, name, now, calm, kind, anyone)
     if not calm then
@@ -1803,6 +1944,9 @@ local function HasEffect(unit, key, name, now, calm, kind, anyone)
         elseif aura == false and readable[name] == combatEpoch then
             Tracker:Absent(key, name)
         end
+        if not aura then
+            ns.AskTracker(unit, key, name, kind, anyone, now)
+        end
     end
     return Tracker:Has(key, name, now)
 end
@@ -1811,14 +1955,24 @@ end
 --- nothing there: "all" when it does, "none" when it does not. An effect
 --- that stacks (`most` is how many times over it goes) only counts once it
 --- is on in full: below that another cast still adds a stack.
+---
+--- "unsure" when that cannot be told: the books hold the effect in doubt
+--- (see "Two answers at once" in Tracker.lua), and the answer would be the
+--- other one if the doubt went the other way.
 local function Carries(unit, key, name, now, calm, kind, most, anyone)
-    if not HasEffect(unit, key, name, now, calm, kind, anyone) then
-        return "none"
+    local carries = "none"
+    if HasEffect(unit, key, name, now, calm, kind, anyone)
+        and not (most and Tracker:Stacks(key, name, now) < most) then
+        carries = "all"
     end
-    if most and Tracker:Stacks(key, name, now) < most then
-        return "none"
+    local other = Tracker:Doubt(key, name, now)
+    if other ~= nil then
+        local otherwise = (other > 0 and not (most and other < most)) and "all" or "none"
+        if otherwise ~= carries then
+            return "unsure"
+        end
     end
-    return "all"
+    return carries
 end
 
 --------------------------------------------------------------------------------
@@ -2524,6 +2678,7 @@ local function AreaState(info, name, now, calm, most, anyone)
     local reach = Spells:Reach(info)
     local full, bare, near = 0, 0, 0 -- of the ones it may get to
     local farFull, farBare = 0, 0 -- of the ones out of reach
+    local open, farOpen = 0, 0 -- the ones of whom it is not known which they are
     for i = 1, fightSize do
         local enemy = fight[i]
         local carries = Carries(enemy.unit, enemy.key, name, now, calm, "debuff", most, anyone)
@@ -2531,6 +2686,8 @@ local function AreaState(info, name, now, calm, most, anyone)
         if reach and Reach.Beyond(enemy.unit, enemy.key, reach) then
             if carries == "all" then
                 farFull = farFull + 1
+            elseif wants and carries == "unsure" then
+                farOpen = farOpen + 1
             elseif wants then
                 farBare = farBare + 1
             end
@@ -2538,6 +2695,8 @@ local function AreaState(info, name, now, calm, most, anyone)
             near = near + 1
             if carries == "all" then
                 full = full + 1
+            elseif wants and carries == "unsure" then
+                open = open + 1
             elseif wants then
                 bare = bare + 1
             end
@@ -2546,12 +2705,18 @@ local function AreaState(info, name, now, calm, most, anyone)
     local nobody = near == 0
     Reach.Leaves(name, near < fightSize)
     if nobody then
-        full, bare = farFull, farBare
+        full, bare, open = farFull, farBare, farOpen
         if Reach.blind == true then
             -- No nameplates to go by: whoever stands next to you cannot be
             -- seen, so the skill is not taken to have nobody in its reach.
             nobody = false
         end
+    end
+    if open > 0 and (bare == 0 or full == 0) then
+        -- With some who carry it and some who do not it is the half circle
+        -- whatever the others turn out to be. Short of that, the ones in
+        -- doubt decide it, and nothing is said.
+        return "unsure", nobody
     end
     if bare == 0 then
         return "all", nobody
@@ -2567,13 +2732,23 @@ end
 --- may go to next. With every one of them carrying its effect or immune to
 --- it, there is nobody to use it for, which is the red X. With one that
 --- could do with it, and with none of them in sight, it is the green check.
+---
+--- With nobody known to do with it, and one of whom it is not known whether
+--- it carries the effect, neither is said.
 local function Unaimed(name, now, calm, kind, most, anyone)
+    local open = false
     for i = 1, fightSize do
         local enemy = fight[i]
-        if Carries(enemy.unit, enemy.key, name, now, calm, kind, most, anyone) ~= "all"
-            and not ImmuneTo(enemy.key, name, now) then
-            return "none"
+        local carries = Carries(enemy.unit, enemy.key, name, now, calm, kind, most, anyone)
+        if carries ~= "all" and not ImmuneTo(enemy.key, name, now) then
+            if carries == "none" then
+                return "none"
+            end
+            open = true
         end
+    end
+    if open then
+        return "unsure"
     end
     return fightSize > 0 and "all" or "none"
 end
@@ -2757,7 +2932,7 @@ local function Refresh(now)
                         state, Reach.nobody[name] = AreaState(info, name, now, calm, most, anyone)
                     elseif primaryKey then
                         state = Carries(primaryUnit, primaryKey, name, now, calm, kind, most, anyone)
-                        if state == "none" and ImmuneTo(primaryKey, name, now) then
+                        if state ~= "all" and ImmuneTo(primaryKey, name, now) then
                             state = "all" -- it never will carry it: casting changes nothing
                         end
                     elseif fighting then

@@ -301,6 +301,9 @@ local OPTIONAL_READS = {
     GameFontDisable = true, GameFontDisableSmall = true,
     -- The picture on an action slot, which stands in for a spell's own picture.
     GetActionTexture = true,
+    -- The game's own cooldown tracker, which a client may not have at all.
+    C_CooldownViewer = true, EssentialCooldownViewer = true, UtilityCooldownViewer = true,
+    BuffIconCooldownViewer = true, BuffBarCooldownViewer = true,
 }
 
 --- Fails the scenario if the addon wrote a global of its own, or read one that
@@ -1322,11 +1325,12 @@ test("kinds: one report of effects going answers for every effect of yours that 
 end)
 
 test("kinds: a recast that misses in the very frame the old effect ends stays green", function()
-    -- The old Rend goes in the frame the new one is dodged. Timing alone gives
-    -- a change in the frame of a cast to the cast, which is wrong here and
-    -- right far more often. Where the game says an effect went, it is right
-    -- both times: once with the cast announced first, once with the report.
-    for payload, icon in pairs({ lists = "check", sealed = "cross" }) do
+    -- The old Rend goes in the frame the new one is dodged. Where the game
+    -- says an effect went, that is plain both times: once with the cast
+    -- announced first, once with the report. Where it only says that
+    -- something changed, the change and the game's word for the miss are two
+    -- answers to one cast, and neither a check nor an X would be honest.
+    for payload, icon in pairs({ lists = "check", sealed = "unsure" }) do
         for _, first in ipairs({ "cast", "report" }) do
             local w, ns, boar = Simple({ saved = Timed(), auraPayload = payload })
             w:cast(REND)
@@ -1341,7 +1345,7 @@ test("kinds: a recast that misses in the very frame the old effect ends stays gr
             w:advance(0.3)
             eq(w:icon("ActionButton1"), icon, payload .. ", the " .. first .. " first: nothing took the old Rend's place")
             w:advance(4)
-            eq(ns.db.learned.Rend.hits, payload == "lists" and 5 or 6, payload .. ", the " .. first .. " first")
+            eq(ns.db.learned.Rend.hits, 5, payload .. ", the " .. first .. " first: not counted as a landing")
             if payload == "lists" then
                 eq(ns.db.learned.Rend.due, 5, "the " .. first .. " first: and the old Rend's ending was heard on time")
             end
@@ -4197,6 +4201,7 @@ test("every command answers in whole sentences", function()
         "size", "size 24", "size auto", "corner", "corner tr", "corner center",
         "icons", "icon", "icon green plus", "icon green none", "icon green default", "icon red 136243",
         "icon red nonsense", "icon red default",
+        "tracker", "cooldowns",
         "log", "log", "plain", "plain", "list", "debug", "reset",
     }
     for i = 1, #commands do
@@ -7324,16 +7329,17 @@ test("immune: an enemy that changed in the moment it was called immune leaves op
             w:said(boar, "IMMUNE")
         end
         w:advance(0.3)
-        eq(w:icon("ActionButton1"), "cross", "the landing stands, " .. first .. " first")
-        check(Booked(ns, "Rend"), "Rend is taken to be on the boar")
+        eq(w:icon("ActionButton1"), "unsure", "neither a check nor an X, " .. first .. " first")
+        check(Booked(ns, "Rend"), "Rend is in the books, in doubt")
         eq(next(ns.db.immune), nil, "and nothing is learned from the word")
         eq(#ns.Tracker:Immunities(ns.Now()), 0)
         local report = ns.db.report
         check(Last(report.combat.immune):find("in the moment of Rend, which was seen to land there just then: left open",
             1, true), Last(report.combat.immune))
-        check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast; the "
+        check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): unsure, 0.00s after the cast; the "
             .. "game said IMMUNE", 1, true), Last(report.casts))
         eq(report.verdicts.immune, nil)
+        eq(report.verdicts.unsure, 1)
         local learned = ns.db.learned.Rend
         eq(learned and learned.casts or 0, 0, "nor is the cast counted for Rend or against it, " .. first .. " first")
 
@@ -7362,7 +7368,7 @@ test("immune: a change a frame after the cast still leaves it open, and one afte
     check(Last(report.combat.immune):find("in the moment of Rend, which was seen to land there just then: left open",
         1, true), Last(report.combat.immune))
     eq(next(ns.db.immune), nil, "nothing is learned")
-    eq(w:icon("ActionButton1"), "cross", "and the change passes for the landing, as it would without the word")
+    eq(w:icon("ActionButton1"), "unsure", "and whether the change was the landing is not known")
     Clean(w)
 
     -- Two frames after: the game's word was the answer, and this is something else.
@@ -7392,12 +7398,12 @@ test("immune: called immune a frame after its effects changed with your cast, an
     w:advance(0.04, 0.02)
     w:said(boar, "IMMUNE")
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "cross", "the landing stands")
-    check(Booked(ns, "Rend"), "Rend is taken to be on the boar")
+    eq(w:icon("ActionButton1"), "unsure", "neither a check nor an X")
+    check(Booked(ns, "Rend"), "Rend is in the books, in doubt")
     local report = ns.db.report
     check(Last(report.combat.immune):find("in the moment of Rend, which was seen to land there just then: left open",
         1, true), Last(report.combat.immune))
-    check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast; the "
+    check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): unsure, 0.00s after the cast; the "
         .. "game said IMMUNE", 1, true), Last(report.casts))
     eq(next(ns.db.immune), nil, "nothing is learned from the word")
     eq(report.verdicts.immune, nil)
@@ -8124,10 +8130,13 @@ test("miss words: a change on the enemy after a cast the game called a miss is n
     Clean(w)
 end)
 
-test("miss words: a change in the very moment of the miss still passes for the cast landing", function()
+test("miss words: a change in the very moment of the miss leaves the cast in doubt", function()
     for _, first in ipairs({ "cast", "word" }) do
         local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
-        -- Your Rend lands in the very moment someone else's attack on the boar is dodged.
+        -- Your Rend lands in the very moment someone else's attack on the boar
+        -- is dodged. The game does not say whose attack was dodged: this looks
+        -- just like your Rend being dodged while something else changed on
+        -- the boar, so neither a check nor an X is shown.
         if first == "word" then
             w:said(boar, "DODGE")
         end
@@ -8136,28 +8145,33 @@ test("miss words: a change in the very moment of the miss still passes for the c
             w:said(boar, "DODGE")
         end
         w:advance(0.3)
-        eq(w:icon("ActionButton1"), "cross", "the landing stands, " .. first .. " first")
-        check(Booked(ns, "Rend"), "Rend is taken to be on the boar")
+        eq(w:icon("ActionButton1"), "unsure", "not known, " .. first .. " first")
+        check(Booked(ns, "Rend"), "Rend is in the books, in doubt")
         local report = ns.db.report
-        check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast; the "
+        check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): unsure, 0.00s after the cast; the "
             .. "game said DODGE", 1, true), Last(report.casts))
         eq(report.verdicts.missed, nil)
-        eq(report.verdicts.changed, 1)
-        eq(ns.db.learned.Rend.hits, 13, "and the cast counts as one that landed, " .. first .. " first")
-        w:advance(21.5)
-        eq(w:icon("ActionButton1"), "check", "until Rend runs out")
+        eq(report.verdicts.changed, nil)
+        eq(report.verdicts.unsure, 1)
+        eq(ns.db.learned.Rend.casts, 12, "the cast is not counted against Rend, " .. first .. " first")
+        eq(ns.db.learned.Rend.hits, 12, "nor for it")
+        w:advance(20)
+        eq(w:icon("ActionButton1"), "unsure", "for as long as the Rend would run")
+        w:advance(1.5)
+        eq(w:icon("ActionButton1"), "check", "after that there is none either way")
         Clean(w)
     end
 end)
 
-test("miss words: a change a frame after the miss leaves the cast landed, and one after that is too late to", function()
+test("miss words: a change a frame after the miss leaves the cast in doubt, and one after that is too late to", function()
     local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
     w:cast(REND, { miss = true })
     w:advance(0.05)
     w:applyAura(boar, "Mortal Wounds", 10, false)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "cross", "the change passes for the landing, as it would without the word")
+    eq(w:icon("ActionButton1"), "unsure", "the word and the change are two answers to one cast")
     eq(ns.db.report.verdicts.missed, nil)
+    eq(ns.db.report.verdicts.unsure, 1)
     Clean(w)
 
     -- Two frames after: the game's word was the answer, and this is something else.
@@ -14958,6 +14972,1251 @@ test("the saved report says what was seen of nameplates in each kind of place", 
     w:leaveCombat()
     eq(dungeon.n, 3)
     eq(dungeon.off, 1)
+    Clean(w)
+end)
+
+test("/se tracker says what the game's own Cooldown Manager can tell the addon, skill by skill", function()
+    -- A client without one.
+    local w = Talkative()
+    Replies(w, "tracker", "This game has no Cooldown Manager, so there is nothing the addon can ask about the effects "
+        .. "on your target during a fight.")
+    Clean(w)
+
+    -- One that is switched off.
+    w = Talkative({ tracker = { buffs = { REND }, hidden = true } })
+    Replies(w, "tracker", "The game's Cooldown Manager is not showing right now: it is switched off, hidden, or open "
+        .. "in the game's layout editor. The addon asks it about your target and about you whenever it is on screen.")
+    Clean(w)
+
+    -- On screen: Rend among its tracked buffs, Thunder Clap as a cooldown
+    -- that also lights for Rend, an entry for Sunder Armor that is not on
+    -- screen, and nothing for the two buffs.
+    local ns, boar
+    w, ns, boar = Talkative({ saved = Proven(), tracker = { buffs = { REND }, essential = { CLAP },
+        linked = { [CLAP] = { REND } }, offered = { buffs = { SUNDER } } } })
+    local function Lines()
+        local text = Answer(w, "tracker")
+        local lines = {}
+        for line in text:gmatch("[^\n]+") do
+            lines[#lines + 1] = line
+        end
+        return lines
+    end
+    local lines = Lines()
+    eq(lines[1], SAID .. "The game's Cooldown Manager is on screen. During a fight the addon asks it which of your "
+        .. "effects are on your target and on you:")
+    eq(lines[2], "  Battle Shout has no item on screen there. The game has no entry for it either.")
+    eq(lines[3], "  Rend is in its Tracked Buffs. When that item shows the effect, the addon believes it. When it "
+        .. "shows none, the addon only believes that after it has seen the item show the effect in this session.")
+    eq(lines[4], "  Shield Block has no item on screen there. The game has no entry for it either.")
+    eq(lines[5], "  Sunder Armor has no item on screen there. The game has an entry for it, so it can be added in the "
+        .. "Cooldown Manager's own settings.")
+    eq(lines[6], "  Thunder Clap is in its Essential Cooldowns, but that item also lights up for Rend, so the addon "
+        .. "does not ask it about Thunder Clap.")
+    eq(#lines, 6, "Heroic Strike has no icon, and is not spoken of")
+    for i = 2, #lines do
+        check(lines[i]:find("^  %u") and lines[i]:find("%.$"), "a whole sentence: " .. lines[i])
+    end
+    w:cast(REND)
+    w:advance(1)
+    w:drain()
+    lines = Lines()
+    eq(lines[3], "  Rend is in its Tracked Buffs, and the addon has seen that item show the effect in this session. "
+        .. "What it shows of Rend is believed.")
+    -- /se debug has it in its own terms.
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("The game's Cooldown Manager: Essential Cooldowns 1 item, Tracked Bars 0 items, Tracked Buffs 1 "
+        .. "item, Utility Cooldowns 0 items. Its setting reads 1, and the game calls it available.", 1, true), debug)
+    check(debug:find("Rend: an item in Tracked Buffs, seen to show the effect", 1, true), debug)
+    Clean(w)
+
+    -- No skill with an icon on the bars.
+    w = Bar({ tracker = { buffs = { REND } } }, HEROIC)
+    w:drain()
+    local text = Answer(w, "tracker")
+    check(text:find("\n  None of the skills on your action bars has an icon, so there is nothing to ask it about.", 1,
+        true), text)
+    Clean(w)
+end)
+
+test("/se help explains the grey question mark and names /se tracker", function()
+    local w = Talkative()
+    local text = Answer(w, "help")
+    check(text:find("A grey question mark means that the addon cannot tell whether the effect is there, usually "
+        .. "because the\n    game's signs about your last cast contradict each other.", 1, true), text)
+    check(text:find("/se tracker - says what the game's own Cooldown Manager can tell the addon about your skills", 1,
+        true), text)
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Not sure: the game said two things about one cast
+--------------------------------------------------------------------------------
+
+test("not sure: a later cast that lands with nothing said against it ends the doubt", function()
+    for _, truth in ipairs({ "landed", "missed" }) do
+        local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+        w:said(boar, "DODGE")
+        if truth == "landed" then
+            w:cast(REND)
+        else
+            -- Your Rend is dodged, and somebody else's effect lands in the same moment.
+            w:cast(REND, SILENT_MISS)
+            w:applyAura(boar, "Mortal Wounds", 10, false)
+        end
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "unsure", "the two look the same: it " .. truth)
+        eq(w:icon("ActionButton2"), "check", "Sunder Armor has nothing to do with it")
+        w:advance(3)
+        w:cast(REND)
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "cross", "this one is plain, whether the last one " .. truth .. " or not")
+        w:advance(20)
+        eq(w:icon("ActionButton1"), "cross", "and its own 21 seconds are known")
+        w:advance(1.5)
+        eq(w:icon("ActionButton1"), "check")
+        eq(ns.db.report.verdicts.unsure, 1)
+        eq(ns.db.report.verdicts.changed, 1)
+        Clean(w)
+    end
+end)
+
+test("not sure: a later cast the game calls a miss leaves the doubt where it was", function()
+    local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "unsure")
+    w:cast(REND, { miss = true })
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "unsure", "a miss says nothing of the cast before it")
+    eq(ns.db.report.verdicts.missed, 1)
+    w:advance(17.5)
+    eq(w:icon("ActionButton1"), "unsure", "for as long as the first Rend would run")
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "and no longer: the cast that missed started no timer")
+    Clean(w)
+end)
+
+test("not sure: a doubtful cast on top of a running effect keeps the red X for as long as the old one lasts", function()
+    local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:cast(REND)
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "cross")
+    w:said(boar, "PARRY")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "renewed or not, Rend is on the boar for another 11 seconds")
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "cross", "to the end of the first one's time")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "unsure", "from here on it is only there if the second cast landed")
+    w:advance(9.5)
+    eq(w:icon("ActionButton1"), "unsure")
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "and after the second one's time it is gone either way")
+    Clean(w)
+end)
+
+test("not sure: with an effect that stacks, the doubt only shows where one stack decides the icon", function()
+    local w, ns, boar = Party(nil, SUNDER, REND)
+    for _ = 1, 3 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    eq(Stacks(ns, "Sunder Armor"), 3)
+    -- The fourth cast is in doubt: three or four, another cast still adds one.
+    w:said(boar, "DODGE")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "three stacks or four: the answer is the same")
+    -- The next is plain. Four or five now: that decides it.
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "unsure", "four stacks or five: not known")
+    eq(Stacks(ns, "Sunder Armor"), 5, "the books hold the greater count, in doubt")
+    -- And one more: five either way.
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "five stacks whichever it was")
+    w:advance(27)
+    eq(w:icon("ActionButton1"), "cross", "for the 30 seconds of the last cast")
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("not sure: the first stack in doubt leaves the count in doubt until the last stack is on either way", function()
+    local w, ns, boar = Party(nil, SUNDER, REND)
+    w:said(boar, "DODGE")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "none or one of five: another cast does something either way")
+    for cast = 2, 4 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+        eq(w:icon("ActionButton1"), "check", (cast - 1) .. " or " .. cast .. " of five")
+    end
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "unsure", "four or five of five")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "five either way")
+    Clean(w)
+end)
+
+test("not sure: out of the fight the enemy's effects are read, and that ends the doubt", function()
+    for _, truth in ipairs({ "landed", "missed" }) do
+        local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+        w:said(boar, "DODGE")
+        if truth == "landed" then
+            w:cast(REND)
+        else
+            w:cast(REND, SILENT_MISS)
+            w:applyAura(boar, "Mortal Wounds", 10, false)
+        end
+        w:advance(1)
+        eq(w:icon("ActionButton1"), "unsure")
+        w:leaveCombat()
+        w:advance(1)
+        eq(w:icon("ActionButton1"), truth == "landed" and "cross" or "check", "read off the boar: it " .. truth)
+        Clean(w)
+    end
+end)
+
+test("not sure, area: an enemy in doubt only shows where it decides the icon", function()
+    local w, ns, mobs = Pack({ saved = Seasoned() })
+    w:addPartyMember("Warrior", { target = mobs[1] })
+    w:advance(0.3)
+    -- The clap lands on all three, and in that moment someone's attack on
+    -- the first kobold is dodged.
+    w:said(mobs[1], "DODGE")
+    w:cast(CLAP, { hits = mobs })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "two carry it; whether the third does decides between the X and the half")
+    -- One of the others loses it: now it is the half circle whatever the first one carries.
+    w:kill(mobs[2])
+    local fresh = w:addMob("Kobold 4")
+    fresh.engaged = true
+    w:showPlate(fresh)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "one carries it and one does not, whatever became of the cast at the first")
+    Clean(w)
+end)
+
+test("not sure: with no enemy targeted, one in doubt decides only when nobody is known to do with the skill", function()
+    local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.5)
+    w:target(nil)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "the one enemy of the fight may or may not carry Rend")
+    local wolf = w:addMob("Wolf")
+    wolf.engaged = true
+    w:showPlate(wolf)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "the wolf has none: there is somebody to use it on")
+    Clean(w)
+end)
+
+test("not sure: the mark is the addon's own picture, and the game's waiting mark where that is missing", function()
+    local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure")
+    local texture = ns.Icons.Texture("unsure")
+    check(texture:find("StatusEfficiency\\Media\\Unsure", 1, true), tostring(texture))
+    eq(ns.Icons.UNSURE.key, "unsure")
+    eq(ns.Icons.UNSURE.title, "Not sure")
+    eq(ns.Icons.UNSURE.detail, "The addon cannot tell whether the effect is there, usually because the game's signs "
+        .. "about your last cast contradict each other.")
+    for _, state in ipairs(ns.Icons.STATES) do
+        check(state.key ~= "unsure", "it is not one of the three results a player picks an icon for")
+    end
+    Clean(w)
+
+    -- A copy of the addon without that picture.
+    local options = { saved = Seasoned(), missingTextures = { [texture] = true } }
+    w, ns, boar = Party(options, REND, SUNDER)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unknown:" .. ns.Icons.UNSURE.fallback, "the game's own mark for waiting")
+    check(ns.Icons.UNSURE.fallback:find("ReadyCheck-Waiting", 1, true), ns.Icons.UNSURE.fallback)
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- The game's own cooldown tracker
+--------------------------------------------------------------------------------
+
+--- What the addon noted in the saved report of the game's tracker and a skill.
+local function Noted(ns, name)
+    local tracker = ns.db.report.tracker
+    return tracker and tracker.skills[name] or {}
+end
+
+--- A world like Party's, with the game's own tracker on screen and Rend
+--- among its tracked buffs. `tracker` says otherwise.
+local function Tracked(tracker, options, ...)
+    options = options or {}
+    options.saved = options.saved or Seasoned()
+    options.tracker = tracker or { buffs = { REND } }
+    if select("#", ...) == 0 then
+        return Party(options, REND, SUNDER)
+    end
+    return Party(options, ...)
+end
+
+--- A Rend that plainly lands and runs its time: after that the tracker has
+--- shown that it sees Rend on your target.
+local function ShowsRend(w)
+    w:cast(REND)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(21)
+    eq(w:icon("ActionButton1"), "check")
+end
+
+test("game tracker: it says which way a cast went that the game gave two answers about", function()
+    for _, late in ipairs({ false, true }) do
+        for _, truth in ipairs({ "landed", "missed" }) do
+            local w, ns, boar = Tracked({ buffs = { REND }, late = late })
+            ShowsRend(w)
+            local noted = Noted(ns, "Rend")
+            local dropped = noted.dropped or 0
+            w:said(boar, "DODGE")
+            if truth == "landed" then
+                w:cast(REND)
+            else
+                w:cast(REND, SILENT_MISS)
+                w:applyAura(boar, "Mortal Wounds", 10, false)
+            end
+            w:advance(0.3)
+            eq(w:icon("ActionButton1"), truth == "landed" and "cross" or "check", "the tracker shows that it " .. truth)
+            eq(ns.db.report.verdicts.unsure, 1, "the cast itself stays one the game gave two answers about")
+            eq(noted.listed, "Tracked Buffs (has an effect)")
+            eq(noted.item, "Tracked Buffs")
+            if truth == "landed" then
+                eq(noted.settled, 1)
+                eq(noted.dropped or 0, dropped)
+                w:advance(20)
+                eq(w:icon("ActionButton1"), "cross")
+                w:advance(1.5)
+                eq(w:icon("ActionButton1"), "check", "after its 21 seconds")
+            else
+                eq(noted.dropped, dropped + 1)
+                eq(noted.settled, nil)
+            end
+            Clean(w)
+        end
+    end
+end)
+
+test("game tracker: a tracker that has not shown the skill's effect yet is believed when it shows it, and not when it shows none", function()
+    for _, truth in ipairs({ "landed", "missed" }) do
+        local w, ns, boar = Tracked()
+        w:said(boar, "DODGE")
+        if truth == "landed" then
+            w:cast(REND)
+        else
+            w:cast(REND, SILENT_MISS)
+            w:applyAura(boar, "Mortal Wounds", 10, false)
+        end
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), truth == "landed" and "cross" or "unsure",
+            "an item that never lit for Rend may be one that cannot")
+        local noted = Noted(ns, "Rend")
+        if truth == "missed" then
+            check(noted.unproven and noted.unproven > 0, "noted as not believed yet")
+            eq(noted.dropped, nil)
+        end
+        check(not ns.TrackerProven("Rend") == (truth == "missed"))
+        Clean(w)
+    end
+end)
+
+test("game tracker: the green check does not stay up over an effect that is on your target", function()
+    for _, late in ipairs({ false, true }) do
+        -- Somebody's attack is dodged as you cast, and your Rend shows on the
+        -- boar a little later than a Rend does: the books take the word for
+        -- the cast's answer.
+        local w, ns, boar = Tracked({ buffs = { REND }, late = late })
+        w:said(boar, "DODGE")
+        w:cast(REND, { travel = 0.2 })
+        w:advance(0.5)
+        eq(ns.db.report.verdicts.missed, 1, "by the game's word the cast missed")
+        eq(w:icon("ActionButton1"), "cross", "and the tracker shows Rend on the boar")
+        eq(Noted(ns, "Rend").added, 1)
+        w:advance(20)
+        eq(w:icon("ActionButton1"), "cross", "its time is counted from the cast")
+        w:advance(1)
+        eq(w:icon("ActionButton1"), "check")
+        Clean(w)
+
+        -- The same without the tracker, as it was: the check stays.
+        w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+        w:said(boar, "DODGE")
+        w:cast(REND, { travel = 0.2 })
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "check")
+        Clean(w)
+    end
+end)
+
+test("game tracker: the red X does not stay on a cast that left nothing, on a client that reports no changes", function()
+    -- A client known not to report in a fight: every cast is taken to land.
+    local function Silent()
+        return { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    end
+    local w, ns, boar = Tracked(nil, { auraEvents = false, saved = Silent() })
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    check(ns.TrackerProven("Rend"), "shown by the tracker")
+    w:advance(22)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(REND, SILENT_MISS)
+    w:advance(0.1)
+    for _ = 1, 100 do
+        w:advance(0.05)
+        eq(w:icon("ActionButton1"), "check", "the tracker shows none, and it has shown Rend before")
+    end
+    check(Noted(ns, "Rend").dropped > 0, "taken to land, and taken off the books again")
+    -- And one that lands shows at once.
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+
+    -- Without the tracker the miss is not known.
+    w, ns, boar = Party({ auraEvents = false, saved = Silent() }, REND, SUNDER)
+    w:cast(REND)
+    w:advance(22)
+    w:cast(REND, SILENT_MISS)
+    w:advance(5)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("game tracker: a skill that has to fly to its target is not judged by the tracker while it is on its way", function()
+    local function Silent()
+        return { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    end
+    local w, ns, boar = Tracked({ buffs = { FROSTBOLT } }, { auraEvents = false, saved = Silent() }, FROSTBOLT)
+    w:cast(FROSTBOLT, { travel = 0.2 })
+    w:advance(9)
+    check(ns.TrackerProven("Frostbolt"))
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(FROSTBOLT, { travel = 1 })
+    for _ = 1, 19 do
+        w:advance(0.05)
+        eq(w:icon("ActionButton1"), "cross", "in flight, and taken to land: the tracker's none says nothing yet")
+    end
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "cross", "landed, and shown")
+    Clean(w)
+end)
+
+test("game tracker: an effect that ends early goes when the tracker stops showing it", function()
+    local w, ns, boar = Tracked(nil, { auraPayload = "sealed" })
+    w:cast(REND)
+    w:advance(5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:removeAura(boar, "Rend") -- cleansed
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(Noted(ns, "Rend").dropped, 1)
+    Clean(w)
+end)
+
+test("game tracker: it is not asked while it is off the screen, and is again once it is back", function()
+    local w, ns, boar = Tracked({ buffs = { REND }, hidden = true })
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "unsure", "nothing to go by")
+    local noted = Noted(ns, "Rend")
+    check(noted.hidden and noted.hidden > 0, "noted as hidden")
+    eq(noted.there, nil)
+    eq(ns.db.report.tracker.game.viewers["Tracked Buffs"], "hidden")
+    w:trackerShow(nil, true)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "on screen, it shows the Rend")
+
+    -- Taken off the screen in the middle of things, its items keep showing
+    -- what was there: the Rend that is cleansed now still looks lit.
+    w:trackerShow(nil, false)
+    w:removeAura(boar, "Mortal Wounds")
+    w:advance(0.3)
+    eq(w.tracker.viewers.buffs.items[1]:GetAuraDataUnit(), "target", "the item is as it was left")
+    Clean(w)
+end)
+
+test("game tracker: an item being laid out in the game's editor is not asked", function()
+    local w, ns, boar = Tracked()
+    ShowsRend(w)
+    w:trackerEdit("buffs", true)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "unsure")
+    w:trackerEdit("buffs", false)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("game tracker: an item that is lit for an effect on you says nothing of your target", function()
+    for _, viewer in ipairs({ "buffs", "essential" }) do
+        local w, ns, boar = Tracked({ [viewer] = { REND } })
+        ShowsRend(w)
+        -- An effect of the same name on yourself: the item looks at you first.
+        w:applyAura(w.player, "Rend", 60, true, nil, true)
+        w:said(boar, "DODGE")
+        w:cast(REND, SILENT_MISS)
+        w:applyAura(boar, "Mortal Wounds", 10, false)
+        w:advance(1.5)
+        eq(w:icon("ActionButton1"), "unsure", viewer .. ": lit for you, that is neither there nor none on the boar")
+        check(Noted(ns, "Rend").busy and Noted(ns, "Rend").busy > 0, viewer)
+        w:removeAura(w.player, "Rend")
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), "check", viewer .. ": free again, it shows none on the boar")
+        Clean(w)
+    end
+end)
+
+test("game tracker: a cooldown's item only answers for the present target where the game looks again at every change of target", function()
+    for _, ranged in ipairs({ true, false }) do
+        local tracker = { essential = { REND } }
+        if not ranged then
+            tracker.unranged = { [REND] = true }
+        end
+        local w, ns, boar = Tracked(tracker)
+        ShowsRend(w)
+        local wolf = Meet(w, "Wolf")
+        w:said(wolf, "DODGE")
+        w:cast(REND, SILENT_MISS)
+        w:applyAura(wolf, "Mortal Wounds", 10, false)
+        w:advance(1.5)
+        if ranged then
+            eq(w:icon("ActionButton1"), "check", "looked at again when the wolf was targeted: none there")
+        else
+            eq(w:icon("ActionButton1"), "unsure", "not looked at since the boar: it says nothing of the wolf")
+            check(Noted(ns, "Rend").stale and Noted(ns, "Rend").stale > 0)
+        end
+        eq(Noted(ns, "Rend").item, "Essential Cooldowns")
+        -- What it shows as there is believed either way.
+        w:advance(21)
+        w:said(wolf, "DODGE")
+        w:cast(REND)
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "cross")
+        Clean(w)
+    end
+end)
+
+test("game tracker: answers the client keeps from an addon are no answers", function()
+    for _, what in ipairs({ "unit", "lit", "id", "info", "registered", "pool", "visible" }) do
+        for _, truth in ipairs({ "landed", "missed" }) do
+            local w, ns, boar = Tracked({ buffs = { REND }, seal = { [what] = true } })
+            w:cast(REND)
+            w:advance(22)
+            w:said(boar, "DODGE")
+            if truth == "landed" then
+                w:cast(REND)
+            else
+                w:cast(REND, SILENT_MISS)
+                w:applyAura(boar, "Mortal Wounds", 10, false)
+            end
+            w:advance(1.5)
+            if what == "registered" and truth == "landed" then
+                -- Whether the item was looked at again for this target is
+                -- only needed for "none there".
+                eq(w:icon("ActionButton1"), "cross", what)
+            else
+                eq(w:icon("ActionButton1"), "unsure", what .. ", " .. truth)
+            end
+            eq(Noted(ns, "Rend").dropped, nil, what)
+            Clean(w)
+        end
+    end
+end)
+
+test("game tracker: frames the game hands round among its entries are asked by the entry they hold now", function()
+    local w, ns, boar = Tracked({ buffs = { SUNDER, REND } }, nil, REND, SUNDER)
+    ShowsRend(w)
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "no Rend")
+    -- The viewer lays its items out anew: the frame that held Rend holds
+    -- Sunder Armor now, and is lit for it.
+    w:trackerDeal("buffs")
+    for _ = 1, 30 do
+        w:advance(0.05)
+        eq(w:icon("ActionButton1"), "check", "still no Rend, whichever frame says so")
+    end
+    eq(Noted(ns, "Rend").added, nil)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "and the frame that holds Rend now is the one asked")
+    Clean(w)
+end)
+
+test("game tracker: an item that also lights for another spell's effect is not asked about the skill", function()
+    local w, ns, boar = Tracked({ buffs = { REND }, linked = { [REND] = { MORTAL } } }, nil, REND, MORTAL)
+    w:cast(MORTAL)
+    w:advance(1)
+    eq(w.tracker.viewers.buffs.items[1]:GetAuraDataUnit(), "target", "lit, for the wound")
+    eq(w:icon("ActionButton1"), "check", "which is no Rend")
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "nor is it believed when Rend may be there")
+    local noted = Noted(ns, "Rend")
+    eq(noted.item, "Tracked Buffs, which also lights for Mortal Strike")
+    eq(noted.listed, "Tracked Buffs (has an effect; also lights for Mortal Strike)")
+    check(noted.loose and noted.loose > 0)
+    eq(noted.there, nil)
+    Clean(w)
+end)
+
+test("game tracker: an entry whose other spells all go by the skill's name is asked", function()
+    local w, ns, boar = Tracked({ buffs = { REND }, linked = { [REND] = { 9100 } } })
+    w:addSpell(9100, { name = "Rend", harmful = true, description = "Bleeding." })
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Noted(ns, "Rend").item, "Tracked Buffs")
+    Clean(w)
+end)
+
+test("game tracker: when it shows none of a cast that was just seen to land, neither is believed the first time, and the landing the second", function()
+    local w, ns, boar = Tracked()
+    ShowsRend(w)
+    -- From here on the item does not find Rend any more.
+    w.options.tracker.unlinked = { [REND] = true }
+    local noted = Noted(ns, "Rend")
+    local dropped = noted.dropped or 0
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "seen to land, and the game's tracker shows none")
+    eq(noted.clashed, 1)
+    eq(noted.dropped or 0, dropped, "it is not taken off the books for that")
+    w:advance(21)
+    eq(w:icon("ActionButton1"), "check", "its time is over")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "twice running: the tracker is the one not believed")
+    eq(noted.clashed, 2)
+    eq(noted.doubted, 1)
+    check(not ns.TrackerProven("Rend"))
+    w:advance(21)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "and it stays that way")
+    eq(noted.clashed, 2)
+    -- Until it shows Rend again.
+    w.options.tracker.unlinked = nil
+    w:advance(21)
+    w:cast(REND)
+    w:advance(0.5)
+    check(ns.TrackerProven("Rend"))
+    Clean(w)
+end)
+
+test("game tracker: one clash is forgotten once it shows the effect again", function()
+    local w, ns, boar = Tracked()
+    ShowsRend(w)
+    w.options.tracker.unlinked = { [REND] = true }
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure")
+    w.options.tracker.unlinked = nil
+    w:cast(REND) -- renewed, and the item finds it
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(21)
+    w.options.tracker.unlinked = { [REND] = true }
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "a first clash again, not a second")
+    eq(Noted(ns, "Rend").doubted, nil)
+    Clean(w)
+end)
+
+test("game tracker: none of yours says nothing of an effect a unit carries once, while you are in a group", function()
+    local w, ns, boar, warrior = Tracked({ buffs = { SUNDER } }, { saved = Proven() }, SUNDER, REND)
+    for _ = 1, 5 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    eq(w:icon("ActionButton1"), "cross", "five of five")
+    check(ns.TrackerProven("Sunder Armor"))
+    -- The other warrior's Sunder Armor takes the place of yours: the unit
+    -- carries the effect once, and it is theirs now.
+    w:applyAura(boar, "Sunder Armor", 30, false, nil, nil, SUNDERED)
+    w:advance(1)
+    eq(w.tracker.viewers.buffs.items[1]:GetAuraDataUnit(), nil, "the item shows none of yours")
+    eq(w:icon("ActionButton1"), "cross", "and the boar carries it all the same")
+    local noted = Noted(ns, "Sunder Armor")
+    check(noted.shared and noted.shared > 0)
+    eq(noted.dropped, nil)
+    Clean(w)
+end)
+
+test("game tracker: a buff of yours that is taken off in a fight goes when the tracker stops showing it", function()
+    local w, ns = Tracked({ buffs = { BLOCK } }, { auraPayload = "sealed" }, REND, BLOCK)
+    w:cast(REND, SILENT_MISS) -- into the fight
+    w:advance(1)
+    w:cast(BLOCK)
+    w:advance(1)
+    eq(w:icon("ActionButton2"), "cross", "Shield Block is up")
+    w:removeAura(w.player, "Shield Block")
+    w:advance(0.3)
+    eq(w:icon("ActionButton2"), "check", "gone before its time, and the tracker shows that")
+    eq(Noted(ns, "Shield Block").dropped, 1)
+    Clean(w)
+end)
+
+test("game tracker: an effect the books knew nothing of is there while it is shown, and in doubt once it is not", function()
+    local w, ns, boar = Tracked()
+    w:cast(SUNDER, { miss = true }) -- into the fight
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check")
+    -- Rend gets onto the boar by a way the addon knows nothing of.
+    boar.auras[#boar.auras + 1] = {
+        name = "Rend", spellId = 0, duration = 21, expirationTime = w.clock + 21, auraInstanceID = 990,
+        harmful = true, fromPlayer = true,
+    }
+    w.tracker:hear("UNIT_AURA", "target")
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the tracker shows it")
+    eq(Noted(ns, "Rend").added, 1)
+    eq(Booked(ns, "Rend").how, "shown by the game's own tracker")
+    w:advance(9.5)
+    eq(w:icon("ActionButton1"), "cross", "and goes on showing it")
+    -- The tracker goes off the screen: the Rend is not known to be there any more, nor gone.
+    w:trackerShow(nil, false)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "unsure")
+    w:advance(19)
+    eq(w:icon("ActionButton1"), "unsure", "for as long as a Rend lasts, counted from when it was last shown")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "and no longer")
+    Clean(w)
+
+    -- The same after a Rend of yours that is long over: this one is not that one.
+    w, ns, boar = Tracked()
+    w:cast(REND)
+    w:advance(1)
+    w:cast(SUNDER, { miss = true })
+    w:advance(24)
+    eq(w:icon("ActionButton1"), "check", "the Rend you cast has run out")
+    boar.auras[#boar.auras + 1] = {
+        name = "Rend", spellId = 0, duration = 21, expirationTime = w.clock + 21, auraInstanceID = 991,
+        harmful = true, fromPlayer = true,
+    }
+    w.tracker:hear("UNIT_AURA", "target")
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "cross")
+    w:trackerShow(nil, false)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "unsure", "known from the tracker alone, which says nothing now")
+    -- A Rend that is seen to land is known for itself.
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(20)
+    eq(w:icon("ActionButton1"), "cross", "for its 21 seconds, with the tracker still off the screen")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+end)
+
+test("game tracker: a client without one, and one whose tracker is switched off, are noted as that", function()
+    local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:cast(REND)
+    w:advance(1)
+    local tracker = ns.db.report.tracker
+    eq(tracker.game.api, false)
+    eq(tracker.game.viewers["Tracked Buffs"], "missing")
+    eq(tracker.skills.Rend.listed, "nowhere")
+    check(tracker.skills.Rend["no tracker"] > 0)
+    Clean(w)
+
+    w, ns, boar = Tracked({ offered = { buffs = { REND } }, hidden = true, available = "not in this game mode",
+        setting = "0" })
+    w:cast(REND)
+    w:advance(1)
+    tracker = ns.db.report.tracker
+    eq(tracker.game.api, true)
+    eq(tracker.game.available, false)
+    eq(tracker.game.reason, "not in this game mode")
+    eq(tracker.game.setting, "0")
+    eq(tracker.game.viewers["Tracked Buffs"], "hidden")
+    eq(tracker.skills.Rend.listed, "Tracked Buffs (has an effect)", "the game's data has an entry for it")
+    eq(tracker.skills.Rend.item, nil, "which is not on screen")
+    check(tracker.skills.Rend.hidden > 0)
+    Clean(w)
+
+    -- On screen, with no entry for the skill.
+    w, ns, boar = Tracked({ buffs = { SUNDER } })
+    w:cast(REND)
+    w:advance(1)
+    tracker = ns.db.report.tracker
+    eq(tracker.game.viewers["Tracked Buffs"], "1 item")
+    eq(tracker.skills.Rend.listed, "nowhere")
+    check(tracker.skills.Rend.unlisted > 0)
+    Clean(w)
+end)
+
+test("game tracker: it is not asked about any enemy but your target", function()
+    local w, ns, boar = Tracked()
+    ShowsRend(w)
+    local wolf = w:addMob("Wolf")
+    wolf.engaged = true
+    w:showPlate(wolf)
+    -- A Rend in doubt on the boar, and then the wolf is targeted.
+    w:said(boar, "DODGE")
+    w:cast(REND, SILENT_MISS)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:target(wolf)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "the wolf has none")
+    w:target(nil)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "with nobody targeted the wolf is one to use it on")
+    w:kill(wolf)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "unsure", "the boar alone is left, and of it the tracker says nothing now")
+    w:target(boar)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "targeted again, it is shown to carry none")
+    Clean(w)
+end)
+
+test("game tracker: what a viewer showed when it went off the screen is not taken for an answer, however new the list of its items", function()
+    local w, ns, boar = Tracked()
+    ShowsRend(w)
+    ns.TrackerProbe() -- the items are listed this very moment
+    w:trackerShow(nil, false)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w.tracker.viewers.buffs.items[1]:GetAuraDataUnit(), nil, "the item still shows none, as when it went")
+    eq(w:icon("ActionButton1"), "unsure", "which says nothing of the Rend cast since")
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "unsure")
+    eq(Noted(ns, "Rend").dropped, 1, "only the first Rend, when it ran out")
+    Clean(w)
+end)
+
+test("game tracker: in a group, none of yours still takes a cast in doubt off the books", function()
+    local w, ns, boar = Tracked()
+    w:slash("anyone Rend")
+    w:drain()
+    ShowsRend(w)
+    local noted = Noted(ns, "Rend")
+    local dropped = noted.dropped or 0
+    w:said(boar, "DODGE")
+    w:cast(REND, SILENT_MISS)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "another player's Rend may be there or not: the books never had one")
+    eq(noted.dropped, dropped + 1)
+    Clean(w)
+end)
+
+test("game tracker: in a group, a cast in doubt on top of another player's effect leaves theirs as it was", function()
+    local w, ns, boar, warrior = Tracked()
+    w:slash("anyone Rend")
+    w:drain()
+    ShowsRend(w)
+    w:partyCast(warrior, REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the other warrior's Rend counts")
+    eq(Booked(ns, "Rend").how, "another player's")
+    local left = Booked(ns, "Rend").left
+    w:advance(4)
+    w:said(boar, "DODGE")
+    w:cast(REND, SILENT_MISS)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "yours left nothing, and theirs is where it was")
+    eq(Booked(ns, "Rend").how, "another player's")
+    check(math.abs(Booked(ns, "Rend").left - (left - 4.5)) < 0.01, "with the time it had: " .. Booked(ns, "Rend").left)
+    w:advance(left - 4.5 - 0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "and gone when theirs was going to be")
+    Clean(w)
+end)
+
+test("game tracker: in a group, a stack in doubt that the tracker shows none of is taken off the count", function()
+    local w, ns, boar, warrior = Tracked({ buffs = { SUNDER } }, { saved = Proven() }, SUNDER, REND)
+    w:cast(SUNDER)
+    w:advance(31.5)
+    check(ns.TrackerProven("Sunder Armor"))
+    eq(w:icon("ActionButton1"), "check")
+    for _ = 1, 4 do
+        w:partyCast(warrior, SUNDER)
+        w:advance(1.5)
+    end
+    eq(Stacks(ns, "Sunder Armor"), 4, "the other warrior's four")
+    w:said(boar, "DODGE")
+    w:cast(SUNDER, SILENT_MISS)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(0.5)
+    eq(Stacks(ns, "Sunder Armor"), 4, "yours added none: the item would show it as yours")
+    eq(w:icon("ActionButton1"), "check", "four of five")
+    eq(Booked(ns, "Sunder Armor").how, "another player's")
+    Clean(w)
+end)
+
+test("game tracker: another player's effect in the books is left alone after you leave the group", function()
+    local w, ns, boar, warrior = Tracked()
+    w:slash("anyone Rend")
+    w:drain()
+    ShowsRend(w)
+    w:partyCast(warrior, REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:removePartyMember(warrior)
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "cross", "theirs is still on the boar, and none of yours says nothing of it")
+    eq(Booked(ns, "Rend").how, "another player's")
+    Clean(w)
+end)
+
+test("game tracker: an enemy known to be immune keeps the red X over a cast in doubt", function()
+    local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:slash("immune rend")
+    w:drain()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "boars are immune to Rend, on your say-so")
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(ns.db.report.verdicts.unsure, 1)
+    eq(w:icon("ActionButton1"), "cross", "whether it carries Rend or never will, casting again changes nothing")
+    Clean(w)
+end)
+
+test("game tracker: a cast is not judged by what the tracker showed before the cast could be there", function()
+    local function Silent()
+        return { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    end
+    local w, ns, boar = Tracked(nil, { auraEvents = false, saved = Silent() })
+    w:cast(REND)
+    w:advance(22)
+    check(ns.TrackerProven("Rend"))
+    eq(w:icon("ActionButton1"), "check")
+    -- The effect comes one frame after the cast is announced.
+    w:cast(REND, { travel = 0.05 })
+    for _ = 1, 12 do
+        w:advance(0.05)
+        eq(w:icon("ActionButton1"), "cross", "taken to land, and then shown: never a green check in between")
+    end
+    eq(Noted(ns, "Rend").dropped, 1, "only the first Rend, when it ran out")
+    Clean(w)
+end)
+
+test("game tracker: that it shows the effect says nothing of a cast in doubt on top of one that is running", function()
+    local w, ns, boar = Tracked()
+    w:cast(REND)
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "cross")
+    w:said(boar, "PARRY")
+    w:cast(REND, SILENT_MISS)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(2)
+    eq(w.tracker.viewers.buffs.items[1]:GetAuraDataUnit(), "target", "lit for the first Rend")
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Noted(ns, "Rend").settled, nil, "which settles nothing about the second")
+    w:trackerShow(nil, false)
+    w:advance(8)
+    eq(w:icon("ActionButton1"), "cross", "to the end of the first one's time")
+    w:advance(2)
+    eq(w:icon("ActionButton1"), "unsure", "from here on it is only there if the second cast landed")
+    w:trackerShow(nil, true)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "and the tracker, back on screen, shows that it did not")
+    Clean(w)
+end)
+
+test("game tracker: an effect it shows after your last cast at the unit was of that skill runs from that cast", function()
+    local w, ns, boar = Tracked()
+    w:said(boar, "DODGE")
+    w:cast(REND, { travel = 0.2 })
+    w:advance(0.5)
+    eq(ns.db.report.verdicts.missed, 1, "by the game's word the cast missed")
+    eq(w:icon("ActionButton1"), "cross", "and the tracker shows Rend on the boar")
+    w:trackerShow(nil, false)
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "cross", "off the screen now: the books have it from that cast, and not in doubt")
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check", "21 seconds from the cast")
+    Clean(w)
+end)
+
+test("game tracker: an enemy it shows your effect on is not immune to it, whatever the game said", function()
+    local w, ns, boar = Tracked()
+    -- Somebody's spell is turned away by the boar as you cast, and your Rend
+    -- shows a little later than a Rend does.
+    w:said(boar, "IMMUNE")
+    w:cast(REND, { travel = 0.2 })
+    w:advance(0.5)
+    eq(ns.db.report.verdicts.immune, 1, "by the game's word the boar is immune")
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Noted(ns, "Rend").added, 1, "and the tracker shows Rend on it")
+    eq(#ns.Tracker:Immunities(ns.Now()), 0, "so it is not")
+    w:advance(21)
+    eq(w:icon("ActionButton1"), "check", "the Rend has run out, and another one would bleed it again")
+    Clean(w)
+
+    -- Without the tracker the red X stays for as long as the boar is about.
+    w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:said(boar, "IMMUNE")
+    w:cast(REND, { travel = 0.2 })
+    w:advance(21.5)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("game tracker: a cast it shows on a unit that had none is counted as seen, and one on top of the effect is not", function()
+    local function Silent()
+        return { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    end
+    local w, ns, boar = Tracked(nil, { auraEvents = false, saved = Silent() })
+    w:cast(REND)
+    w:advance(5)
+    eq(ns.db.report.verdicts.seen, 1, "shown by the tracker while it waited")
+    w:cast(REND, SILENT_MISS)
+    w:advance(5)
+    eq(ns.db.report.verdicts.seen, 1, "the item is lit either way: that is no sign of the second cast")
+    Clean(w)
+end)
+
+test("game tracker: it is not asked about a friend you have targeted", function()
+    local w, ns, boar, warrior = Tracked({ buffs = { RENEW } }, nil, REND, RENEW)
+    w:cast(REND, { miss = true }) -- into the fight
+    w:advance(1)
+    w:cast(RENEW)
+    w:advance(1)
+    eq(w:icon("ActionButton2"), "cross", "Renew is on you")
+    check(ns.TrackerProven("Renew"))
+    local noted = Noted(ns, "Renew")
+    local function Asked()
+        local times = 0
+        for _, count in pairs(noted) do
+            times = times + (type(count) == "number" and count or 0)
+        end
+        return times
+    end
+    check(Asked() > 0)
+    w:target(warrior)
+    w:advance(0.5)
+    local asked = Asked()
+    eq(w:icon("ActionButton2"), "check", "the warrior has none")
+    w:cast(RENEW)
+    w:advance(3)
+    eq(w:icon("ActionButton2"), "cross", "and now has")
+    eq(Asked(), asked, "the tracker shows you and your target as one: of a friend it is not asked")
+    Clean(w)
+end)
+
+test("not sure: where your effects can be counted, the count says which it was", function()
+    for _, truth in ipairs({ "landed", "landed first", "missed" }) do
+        local w, ns, boar = Simple({ combatAuras = "ids" })
+        w:cast(REND) -- the count is seen to go up, and is believed from here on
+        w:advance(22)
+        eq(w:icon("ActionButton1"), "check")
+        if truth == "landed first" then
+            -- Counted already when the word comes, a frame after the cast.
+            w:cast(REND)
+            w:advance(0.05)
+            w:said(boar, "DODGE")
+            truth = "landed"
+        else
+            w:said(boar, "DODGE")
+        end
+        if truth == "landed" then
+            if not Booked(ns, "Rend") then
+                w:cast(REND)
+            end
+        else
+            w:cast(REND, SILENT_MISS)
+            w:applyAura(boar, "Mortal Wounds", 10, false)
+        end
+        w:advance(0.3)
+        eq(w:icon("ActionButton1"), truth == "landed" and "cross" or "check", "counted: it " .. truth)
+        w:advance(3.2)
+        eq(w:icon("ActionButton1"), truth == "landed" and "cross" or "check")
+        eq(ns.db.report.verdicts.unsure, nil, "the count is an answer of its own")
+        Clean(w)
+    end
+end)
+
+test("not sure: another player's cast of a shared skill that is seen to land ends the doubt", function()
+    local w, ns, boar, warrior = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:slash("anyone Rend")
+    w:drain()
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "unsure")
+    w:partyCast(warrior, REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "theirs is on the boar now, whatever became of yours")
+    eq(Booked(ns, "Rend").how, "another player's")
+    Clean(w)
+end)
+
+test("game tracker: an answer the client starts keeping from addons in mid-session is no answer from then on", function()
+    for _, what in ipairs({ "unit", "lit", "id", "info", "registered", "pool", "visible" }) do
+        for _, truth in ipairs({ "landed", "missed" }) do
+            local seal = {}
+            local w, ns, boar = Tracked({ buffs = { REND }, seal = seal })
+            ShowsRend(w)
+            check(ns.TrackerProven("Rend"), "believed of Rend so far")
+            seal[what] = true
+            w:advance(1.5) -- the list of its items is made anew within this time
+            w:said(boar, "DODGE")
+            if truth == "landed" then
+                w:cast(REND)
+            else
+                w:cast(REND, SILENT_MISS)
+                w:applyAura(boar, "Mortal Wounds", 10, false)
+            end
+            w:advance(1.5)
+            local want = "unsure"
+            if (what == "lit" or what == "unit") and truth == "missed" then
+                -- The item says plainly that it found nothing on the boar
+                -- (there is no unit to keep back), and whether it is lit is
+                -- not asked then.
+                want = "check"
+            elseif what == "registered" and truth == "landed" then
+                -- Whether the item was looked at again for this target is
+                -- only needed for "none there".
+                want = "cross"
+            end
+            eq(w:icon("ActionButton1"), want, what .. ", " .. truth)
+            Clean(w)
+        end
+    end
+end)
+
+test("not sure: two casts in doubt one after the other are both in doubt", function()
+    local w, ns, boar = Party({ saved = Seasoned() }, REND, SUNDER)
+    w:said(boar, "DODGE")
+    w:cast(REND)
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "unsure")
+    w:said(boar, "PARRY")
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "the first may have left nothing for the second to come on top of")
+    w:advance(17.5)
+    eq(w:icon("ActionButton1"), "unsure", "past the first one's time")
+    w:advance(2.5)
+    eq(w:icon("ActionButton1"), "unsure", "for as long as the second would run")
+    w:advance(1)
+    eq(w:icon("ActionButton1"), "check")
+    Clean(w)
+
+    -- The same with stacks: three for sure, and then two casts in doubt.
+    w, ns, boar = Party(nil, SUNDER, REND)
+    for _ = 1, 3 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    for _ = 1, 2 do
+        w:said(boar, "DODGE")
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    eq(w:icon("ActionButton1"), "unsure", "three, four or five of five")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "unsure", "this one landed: four or five")
+    w:cast(SUNDER)
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "cross", "five whichever it was")
+    Clean(w)
+end)
+
+test("not sure, area: a cast in doubt on one enemy is not held against the skill for the silence of the others", function()
+    local w, ns, mobs = Pack({ saved = Seasoned() })
+    local learned = ns.db.learned["Thunder Clap"]
+    local casts, hits = learned.casts, learned.hits
+    -- Something changes on the first kobold as you clap, the game calls an
+    -- attack on it dodged, and nothing shows on the other two.
+    w:said(mobs[1], "DODGE")
+    w:cast(CLAP, { hits = { mobs[1] } })
+    w:advance(4)
+    eq(ns.db.report.verdicts.unsure, 1)
+    eq(learned.casts, casts, "it may have landed on the first: the cast says nothing of the skill")
+    eq(learned.hits, hits)
+    Clean(w)
+end)
+
+test("not sure, area: an enemy in doubt that is immune to the skill is no reason to wait", function()
+    local w, ns, mobs = Pack({ saved = Seasoned() })
+    w:slash("immune thunder clap") -- the first kobold's kind, on your say-so
+    w:drain()
+    w:advance(0.3)
+    w:said(mobs[1], "DODGE")
+    w:cast(CLAP, { hits = mobs })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the other two carry it, and the first never will or does already")
+    Clean(w)
+end)
+
+test("game tracker: while you are in no group, none of yours is none at all, also for an effect a unit carries once", function()
+    local options = { saved = Seasoned(), tracker = { buffs = { REND } }, auraPayload = "sealed" }
+    local w, ns = Bar(options, REND, SUNDER)
+    local boar = Meet(w, "Boar")
+    w:slash("anyone Rend")
+    w:drain()
+    w:cast(REND)
+    w:advance(5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:removeAura(boar, "Rend") -- cleansed
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "nobody is about whose Rend could be there in its place")
+    eq(Noted(ns, "Rend").dropped, 1)
+    eq(Noted(ns, "Rend").shared, nil)
+    Clean(w)
+end)
+
+test("game tracker: an effect it still shows when the books' time for it is over stays as it was", function()
+    local w, ns, boar = Tracked({ buffs = { SUNDER } }, { saved = Proven() }, SUNDER, REND)
+    for _ = 1, 5 do
+        w:cast(SUNDER)
+        w:advance(1.5)
+    end
+    eq(w:icon("ActionButton1"), "cross", "five of five")
+    -- Something keeps it going that the addon knows nothing of.
+    for _, aura in ipairs(boar.auras) do
+        if aura.name == "Sunder Armor" then
+            aura.expirationTime = w.clock + 300
+        end
+    end
+    w.tracker:hear("UNIT_AURA", "target")
+    w:advance(40)
+    eq(w.tracker.viewers.buffs.items[1]:IsActive(), true, "the item is still lit")
+    eq(w:icon("ActionButton1"), "cross", "still there, with the five stacks it had")
+    eq(Stacks(ns, "Sunder Armor"), 5)
+    eq(Noted(ns, "Sunder Armor").added, nil, "the same effect all along")
     Clean(w)
 end)
 

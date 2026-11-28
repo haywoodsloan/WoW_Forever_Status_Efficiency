@@ -13,13 +13,19 @@ status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 An enemy that is immune to a debuff is left out: it never will have it, and is
 no reason to cast. So is one that stands further off than the spell reaches.
 
+A fourth mark, a **grey question mark**, means that the addon cannot tell which
+of these holds, usually because the game's signs about your last cast
+contradict each other
+(see [When the game says two things at once](#when-the-game-says-two-things-at-once)).
+It shows neither a check nor an X on a guess.
+
 No icon means there is nothing to say: the spell applies no status effect, or
 it is a debuff and there is no enemy to judge and no fight going on. Out of the
 box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.5.4 is an early draft. It loads and draws its icons in the real
+Version 0.5.9 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -73,6 +79,14 @@ A skill whose effect stacks, like Sunder Armor, keeps the green check until
 the last stack is on: casting again still adds to it. The red X comes with the
 last stack. A skill that stacks and hits every enemy shows the yellow half
 circle when some of them carry every stack and others do not.
+
+During a fight the game hides an enemy's effects from addons, so the addon
+works them out from signs (see [How it knows what is there](#how-it-knows-what-is-there)).
+One part of the game reads them directly: its own **Cooldown Manager**. While
+that is on screen and has a skill among its items, the addon takes what it
+shows of that skill on your target, and on you, over its own reckoning (see
+[The game's own Cooldown Manager](#the-games-own-cooldown-manager)).
+`/se tracker` says what it has for each of your skills.
 
 An enemy that is immune to a skill does not count for it. Use Rend on an
 elemental that cannot bleed and the game says "Immune". From then on Rend
@@ -309,6 +323,7 @@ to type if that was not what you meant.
 | `/se usable <on\|off>` | `on` (the default) shows an icon only on a skill you can use right now. `off` shows it on every skill. |
 | `/se nameplates <on\|tell\|off>` | What the addon does when enemy nameplates are off: `on` (the default) turns them back on and says so in chat, `tell` only says so, `off` does nothing. Without a word it says which of the three is set and whether nameplates are on right now. |
 | `/se list` | Lists the skills on your action bars and says of each what its icon checks and why it has one, or why it has none. |
+| `/se tracker` | Says whether the game's own Cooldown Manager is on screen, and for each skill with an icon whether it has an item the addon can ask (see [The game's own Cooldown Manager](#the-games-own-cooldown-manager)). `/se cooldowns` is the same. |
 | `/se track <skill>` | Puts the skill on Always, so it has an icon. The answer says what the icon will check. |
 | `/se buff <skill>` | Puts the skill on Always, and treats its effect as a buff on you. |
 | `/se debuff <skill>` | Puts the skill on Always, and treats its effect as a debuff on enemies. |
@@ -485,7 +500,9 @@ cast. The word is not taken for your cast's answer, and nothing is learned
 from it, when anything else in that moment could be the answer instead:
 
 - the enemy's effects changed in that moment, as they do when a cast lands.
-  The landing then stands, as it would without the word;
+  Whether the cast landed is then not known either, and the button shows the
+  grey question mark (see
+  [When the game says two things at once](#when-the-game-says-two-things-at-once));
 - the game also said "Miss", "Dodge", "Parry", "Resist" or the like of that
   enemy in that moment: one of the two words was for another attack;
 - two casts of yours went to that enemy in that moment.
@@ -529,11 +546,13 @@ the cast's answer (since 0.5.8):
 The word does not say whose attack it is about, so it is believed only as far
 as that is safe:
 
-- **If the enemy's effects did change in that moment, the cast is taken to
-  have landed**, as it would be without the word. In a group the word is far
-  more often for somebody else's attack than for your cast: in a record of
-  about 80 casts made in a dungeon, two landings came with a "Miss" or a
-  "Dodge" in the same moment.
+- **If the enemy's effects did change in that moment, neither is believed**
+  (since 0.5.9). Either your cast landed and the word was for somebody else's
+  attack, or your cast missed and the change was something else. The two look
+  exactly alike, and in a group both happen: in a record of about 80 casts
+  made in a dungeon, two came with a change and a "Miss" or a "Dodge" in the
+  same moment. The button shows the grey question mark (see
+  [When the game says two things at once](#when-the-game-says-two-things-at-once)).
 - "Block" and "Absorb" are not among these words: such a blow did reach the
   enemy and can leave its effect there.
 - Two casts of yours at one enemy in the same moment share the word, and
@@ -547,6 +566,89 @@ as that is safe:
 The record writes such a cast down as "missed", with the word the game used.
 On a client that sends no such words to addons, or keeps them secret during a
 fight, all of this is as it was before 0.5.8.
+
+### When the game says two things at once
+
+Since 0.5.9 the addon does not guess where the game's signs about a cast
+contradict each other. The button then shows a **grey question mark** in
+place of the check or the X. Up to 0.5.8 such a cast was taken to have landed,
+which put a red X on casts that had in fact been dodged.
+
+It happens in these cases:
+
+- **The enemy's effects changed in the moment of your cast, and in that same
+  moment the game said "Miss", "Dodge", "Parry" or the like of that enemy, or
+  called it immune.** One of the two was not about your cast, and the game
+  does not say which.
+- **A cast was seen to land, and the game's own Cooldown Manager shows none
+  of the effect just after** (see
+  [The game's own Cooldown Manager](#the-games-own-cooldown-manager)).
+- **An effect is only known from the game's Cooldown Manager, and that has
+  stopped answering** (it went off the screen, or you changed target).
+
+The question mark is only shown where the doubt changes the answer:
+
+- A doubtful cast on top of an effect that was still running leaves the red X
+  for as long as the old one lasts either way, and the question mark after
+  that.
+- For an effect that stacks, three stacks or four both mean the green check.
+  The question mark comes when it is four or five of five.
+- For a skill that hits every enemy, one enemy in doubt does not matter while
+  another is known to lack the effect and another to carry it: that is the
+  yellow half circle whatever the one in doubt carries.
+
+What ends the doubt: the next cast of the skill that plainly lands (for an
+effect that stacks, the count stays in doubt until both counts would be full),
+the game's Cooldown Manager showing the effect or showing none, the effects
+being read once the fight is over, and the end of the time the effect could
+have lasted. A cast in doubt is counted neither for nor against its skill, and
+the record writes it down as "unsure".
+
+The mark is the addon's own and cannot be changed in the settings, so that it
+is never mistaken for one of the three results.
+
+### The game's own Cooldown Manager
+
+The game has a cooldown tracker of its own, the Cooldown Manager. Among its
+items are "tracked buffs": an item for a skill, lit while your effect of that
+skill is on you or on your target. It is part of the game, so it reads the
+effects on a unit during a fight, which no addon may. Its items are ordinary
+parts of the interface, and an item says plainly whether it is lit and for
+whom. Since 0.5.9 the addon asks it, for every skill with an icon:
+
+- **When an item shows your effect on your target, the effect is there.** A
+  green check does not stay up over it, whatever the addon made of your cast.
+- **When an item shows none, there is none**, and a red X does not stay on a
+  cast that left nothing, nor on an effect that was removed early. This is
+  only believed once that item has been seen to show the skill's effect in
+  the same session: an item that could never light for it would say "none"
+  for ever.
+- A cast the game gave two answers about is settled by what the item shows.
+
+What it cannot do:
+
+- **It only watches you and your target.** The other enemies a skill like
+  Thunder Clap hits, and an enemy you are no longer targeting, are judged as
+  before.
+- **It has to be on screen, with the skill among its items.** While it is
+  switched off or hidden its items are not kept up to date, and the addon does
+  not ask them. `/se tracker` says what it has for each of your skills. Which
+  skills it can show is the game's choice, not the addon's.
+- **It only shows your own effect.** For an effect a unit carries once,
+  whoever puts it there (see [Other players' effects](#other-players-effects)),
+  "none of yours" does not mean "none" while you are in a group: another
+  player's may have taken its place. There it is only used to settle a cast of
+  yours that was in doubt.
+- **An item that also lights for another skill's effect is not asked**: it
+  could be showing that one.
+- It does not say how many stacks there are, nor when an effect ends.
+
+If the two ever disagree about a cast that was plainly seen to land, the
+addon shows the question mark the first time, and stops believing that item's
+"none" the second time running, until the item shows the effect again.
+
+The addon only reads what the items say of themselves. It never looks into
+the parts of the Cooldown Manager the game closes to addons.
 
 ### Who is looked at
 
@@ -809,14 +911,16 @@ window gave the page, and which skills the game had no picture for.
   renewed on the unit within moments of it. Another effect arriving there in
   the same moment (another player's debuff landing, an effect the enemy puts
   on itself, an effect of your own that a talent or a weapon adds) passes for
-  your cast, so a miss can still show a red X now and then, more often in a
-  group than alone. The game's "Miss" or "Dodge" does not settle that case:
-  it does not say whose attack missed, and in a group it is mostly somebody
-  else's (see [Misses the game names](#misses-the-game-names)). What the word
-  does settle is everything after that moment: once the game has called your
-  cast a miss, a later change on the enemy is not taken for it. On your own
-  buffs this is weaker still, because your effects come and go all through a
-  fight.
+  your cast, so a miss the game does not name can still show a red X now and
+  then, more often in a group than alone. Where the game does name it
+  ("Miss", "Dodge" and the like) the addon does not guess: the word does not
+  say whose attack missed, so the button shows the grey question mark (see
+  [When the game says two things at once](#when-the-game-says-two-things-at-once)).
+  For your target the game's own Cooldown Manager settles it, when it is on
+  screen with the skill among its items (see
+  [The game's own Cooldown Manager](#the-games-own-cooldown-manager)). On your
+  own buffs this is weaker still, because your effects come and go all through
+  a fight.
 - **On a client that does not show what kind of change a report is, an effect
   going is told from a cast landing only by its timing.** Build 71139 shows
   the kind, so there this is left for the rare report that says nothing (one
@@ -835,7 +939,8 @@ window gave the page, and which skills the game had no picture for.
     pass for a cast.
   - A change in the very frame a cast is announced goes to the cast, because
     that is when the game reports a landing. So a cast that misses in the exact
-    frame another of your effects ends shows a red X. And an effect renewed in
+    frame another of your effects ends shows a red X, or the grey question
+    mark where the game named the miss. And an effect renewed in
     its last tenth of a second, where the report comes a frame apart from the
     cast, shows a green check until the next cast.
 - **"Close by", for a fight that someone in your group is in, means close
@@ -846,7 +951,8 @@ window gave the page, and which skills the game had no picture for.
   A member the game will not answer about is not counted: whether they are in
   combat, or whether they are close by. `/se debug` says what was found, under
   "Your group".
-- **An effect that ends early in combat is not noticed.** A debuff that is
+- **An effect that ends early in combat is only noticed through the game's
+  Cooldown Manager.** Without an item for the skill there, a debuff that is
   dispelled or used up, or a buff that is removed, keeps its red X until its
   timer runs out or the fight ends. The game says that an effect went from the
   unit, and not which one. A buff you already had when the fight began keeps
@@ -857,7 +963,8 @@ window gave the page, and which skills the game had no picture for.
   that is your target, the game's pick, or showing a nameplate). In a group
   the opposite can then happen too: somebody else's attack missing that enemy
   in the very moment of your cast leaves the green check on a cast that
-  landed. That covers three cases:
+  landed. On your target the game's Cooldown Manager puts both right, where it
+  has an item for the skill. That covers three cases:
   - an enemy that is neither your target nor showing a nameplate;
   - a client that has been found not to report changes in combat (see
     [Checking it against your client](#checking-it-against-your-client));
@@ -913,8 +1020,9 @@ window gave the page, and which skills the game had no picture for.
     does not announce the refusal;
   - a spell that takes a while to reach its target, which is answered when it
     arrives and not when it is cast;
-  - an "Immune" that came together with a miss or with a change on the enemy
-    (see [Immune enemies](#immune-enemies)).
+  - an "Immune" that came together with a miss (see
+    [Immune enemies](#immune-enemies)). One that came together with a change
+    on the enemy shows the grey question mark.
 
   `/se immune <skill>` adds such a creature by hand.
 - **A shield can still be taken for a lasting immunity** when nothing else is
