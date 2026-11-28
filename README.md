@@ -906,6 +906,11 @@ python3 tests/run_tests.py settings       # only scenarios with "settings" in th
 python3 tests/run_tests.py --only lists   # only the way build 71139 reports them ("sealed": the documented way)
 ```
 
+The scenarios give the same results on Windows as on Linux (on Windows the
+command is `python` or `py -3`). The runner makes the Lua inside Python sort
+letters and punctuation the way the game does whatever the computer's language
+settings are, and stops with a message if it cannot.
+
 To redraw the icons (needs Pillow):
 
 ```

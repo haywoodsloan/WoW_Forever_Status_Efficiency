@@ -15,6 +15,7 @@ plays the same both times. --only plays one of the two. --stop-early leaves
 the second out when the first has failures.
 """
 
+import locale
 import re
 import sys
 from pathlib import Path
@@ -79,6 +80,20 @@ PAYLOADS = [
 ]
 
 
+# True in a Lua whose character table is not the plain one: some byte above 127
+# counts as a letter, a space, a digit, punctuation or a control character, or
+# changes when a string is put in lower or upper case.
+PLAIN_TABLE_BROKEN = """(function()
+    for byte = 128, 255 do
+        local char = string.char(byte)
+        if char:find("[%a%s%d%p%c]") or char:lower() ~= char or char:upper() ~= char then
+            return true
+        end
+    end
+    return false
+end)()"""
+
+
 def main():
     args = sys.argv[1:]
     stop_early = "--stop-early" in args
@@ -98,7 +113,21 @@ def main():
     for problem in static_checks():
         failures.append(("static checks", problem))
 
+    # Lua sorts bytes into letters, spaces and punctuation by the C library's
+    # table. A game client keeps the plain one, in which no byte above 127 is any
+    # of them (which is why addons spell out [\128-\255] for letters with
+    # accents). Python takes the computer's own table when it starts: on Windows
+    # that is a code page such as 1252, where half of those bytes are letters
+    # and one of the three bytes of "秒" is the punctuation mark "§", so a
+    # tooltip was read differently there than in the game. Go back to the plain
+    # table before any Lua runs, and make sure it took.
+    locale.setlocale(locale.LC_ALL, "C")
     lua = lua51.LuaRuntime(unpack_returned_tuples=True)
+    if lua.eval(PLAIN_TABLE_BROKEN):
+        print("The Lua inside Python does not sort bytes above 127 the way the game does "
+              "(locale: %s), so the scenarios would not show what the game does. Nothing was run."
+              % locale.setlocale(locale.LC_CTYPE))
+        return 2
     lua.globals().REPO_ROOT = str(ROOT)
     tests = lua.eval('dofile(REPO_ROOT .. "/tests/scenarios.lua")')
     run = lua.eval('function(fn) local ok, err = xpcall(fn, debug.traceback) return ok, err or "" end')
