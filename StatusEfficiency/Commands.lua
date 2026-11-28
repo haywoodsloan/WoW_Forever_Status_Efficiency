@@ -1069,6 +1069,7 @@ function commands.debug()
     local verdicts = journal.verdicts
     local landed = (verdicts.changed or 0) + (verdicts.seen or 0)
     local empty = (verdicts.silent or 0) + (verdicts["nothing new"] or 0) + (verdicts.immune or 0)
+        + (verdicts.missed or 0)
     local open = (verdicts.unproven or 0) + (verdicts.assumed or 0) + (verdicts.unclear or 0) + (verdicts.unknown or 0)
     print(format("  Casts made with details hidden this session: %d left something, %d left nothing, %d could not be judged.",
         landed, empty, open))

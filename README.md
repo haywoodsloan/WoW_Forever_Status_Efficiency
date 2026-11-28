@@ -506,6 +506,48 @@ you have targeted to that list yourself. It is then shown as "(added by you)",
 and it stays until you clear the list: `/se immune forget <skill>` clears it
 for one skill, and `/se immune forget` for all of them.
 
+### Misses the game names
+
+"Miss", "Dodge", "Parry", "Resist", "Evade", "Deflect" and "Reflect" are words
+of the same kind as "Immune": the attack did not reach the enemy at all. When
+the game says one of them of an enemy in the very moment a cast of yours went
+to it, and nothing changed on that enemy in that moment, the word is taken as
+the cast's answer (since 0.5.8):
+
+- **The cast left nothing**, and the button stays green. Whatever changes on
+  that enemy later on is something else: another player's effect arriving
+  half a second after your miss no longer passes for your cast landing.
+- **Where a cast is taken to land because nothing better is known** (an enemy
+  nobody reports on, a client that sends no reports, a skill you set to
+  Always), the game's word takes that back: no red X for a cast the game
+  called a miss. A cast that would have renewed an effect leaves the effect
+  with the time and the stacks it had before.
+- **The miss is not held against the skill.** A skill loses its icon when its
+  casts keep leaving nothing. A cast the game called a miss says nothing about
+  the skill, so it is not counted there.
+
+The word does not say whose attack it is about, so it is believed only as far
+as that is safe:
+
+- **If the enemy's effects did change in that moment, the cast is taken to
+  have landed**, as it would be without the word. In a group the word is far
+  more often for somebody else's attack than for your cast: in a record of
+  about 80 casts made in a dungeon, two landings came with a "Miss" or a
+  "Dodge" in the same moment.
+- "Block" and "Absorb" are not among these words: such a blow did reach the
+  enemy and can leave its effect there.
+- Two casts of yours at one enemy in the same moment share the word, and
+  neither is judged by it.
+- A skill that has to fly to its target, or one whose landings are known to
+  show a while after the cast, is answered when it arrives. A word said as it
+  sets off is about something else and is not used. A skill cast from a
+  distance is judged by the word once three of its landings, and nine in ten,
+  have shown in the very moment of the cast.
+
+The record writes such a cast down as "missed", with the word the game used.
+On a client that sends no such words to addons, or keeps them secret during a
+fight, all of this is as it was before 0.5.8.
+
 ### Who is looked at
 
 - A debuff aimed at one enemy is judged against your target (or the enemy the
@@ -585,9 +627,11 @@ game's own for enemy nameplates, the one the V key switches. The addon never
 turns nameplates off, and leaves the setting alone while its icons are
 turned off.
 
-The game does not let an addon change this setting during a fight. Found off
-in a fight, the addon says so once for that fight, with what the icons go by
-until then, and turns nameplates on when the fight ends. Should the game
+This happens every time nameplates go off, not only when you log in. The game
+does not let an addon change this setting during a fight. Found off in a
+fight, the addon says so, with what the icons go by until then, and turns
+nameplates on when the fight ends. It says so once for each time they go off:
+switched on and off again in the same fight, they are announced again. Should the game
 refuse out of a fight as well, the addon says that once and tries again every
 minute. Nameplates that were off when you logged in are turned on then, with
 the one line in chat that says so. Where the addon only tells, it says
@@ -636,7 +680,9 @@ client still allows, best first:
    saying which effect or whose. So a cast counts for nothing until the unit it
    was aimed at reports such a change right after it, and that goes for the
    first cast as much as for any other. A cast that misses changes nothing on
-   the enemy, nothing is reported, and the button stays green. The addon waits
+   the enemy, nothing is reported, and the button stays green. (Where the
+   game also says "Miss" or "Dodge" of that enemy, the cast is settled there
+   and then: see [Misses the game names](#misses-the-game-names).) The addon waits
    up to three seconds for the report: the full three for a spell cast from a
    distance, and a second and a half for a skill used at arm's length, which
    comes down as that skill's landings are timed. A skill used at arm's length
@@ -699,7 +745,7 @@ arriving how many only added effects and how many only renewed them), how many w
 put down to an effect of yours running out, how many only took effects away
 and how many of those came while a cast was waiting to be judged, which
 requests the game refused, how each of the last 40 casts was judged
-("changed", "silent", and so on), how the casts of spells without an icon came
+("changed", "silent", "missed" and so on), how the casts of spells without an icon came
 out, and for each spell you cast which words of its tooltip were read as an
 effect's length and which time was passed over, which words say how often its
 effect stacks (`stacks`), what the game's own data gave for that (`gameStacks`:
@@ -764,8 +810,13 @@ window gave the page, and which skills the game had no picture for.
   the same moment (another player's debuff landing, an effect the enemy puts
   on itself, an effect of your own that a talent or a weapon adds) passes for
   your cast, so a miss can still show a red X now and then, more often in a
-  group than alone. On your own buffs this is weaker still, because your
-  effects come and go all through a fight.
+  group than alone. The game's "Miss" or "Dodge" does not settle that case:
+  it does not say whose attack missed, and in a group it is mostly somebody
+  else's (see [Misses the game names](#misses-the-game-names)). What the word
+  does settle is everything after that moment: once the game has called your
+  cast a miss, a later change on the enemy is not taken for it. On your own
+  buffs this is weaker still, because your effects come and go all through a
+  fight.
 - **On a client that does not show what kind of change a report is, an effect
   going is told from a cast landing only by its timing.** Build 71139 shows
   the kind, so there this is left for the rare report that says nothing (one
@@ -801,8 +852,12 @@ window gave the page, and which skills the game had no picture for.
   unit, and not which one. A buff you already had when the fight began keeps
   its real end time.
 - **A cast is still assumed to land where the addon has nothing to go on.**
-  There a miss shows a red X for the length of the effect. That covers three
-  cases:
+  There a miss shows a red X for the length of the effect, unless the game
+  named the miss in the moment of the cast (which it can only do for an enemy
+  that is your target, the game's pick, or showing a nameplate). In a group
+  the opposite can then happen too: somebody else's attack missing that enemy
+  in the very moment of your cast leaves the green check on a cast that
+  landed. That covers three cases:
   - an enemy that is neither your target nor showing a nameplate;
   - a client that has been found not to report changes in combat (see
     [Checking it against your client](#checking-it-against-your-client));
@@ -884,7 +939,8 @@ window gave the page, and which skills the game had no picture for.
   for it.
 - **A skill is held to the moment of its cast only after three landings.**
   Until then its casts are waited for a little longer, and in that time
-  another effect arriving on the enemy after a miss can pass for the landing.
+  another effect arriving on the enemy after a miss can pass for the landing,
+  unless the game named the miss.
   The first three landed casts of each skill after updating to 0.4.0 are
   judged that way.
 - **Spell detection is a guess from the tooltip.** A spell whose tooltip
@@ -901,8 +957,10 @@ window gave the page, and which skills the game had no picture for.
   effects do not change). For a buff it needs a client that lets it count
   effects in combat. Otherwise use `/se ignore <skill>`. A real status spell
   can lose its icon this way when its first three casts all miss, or after a
-  long run of misses, or of casts at immune enemies that the game did not
-  call immune (one it did call immune is not held against the skill). It
+  long run of misses, on a client that does not name a miss to addons (a cast
+  the game called a miss is not held against the skill), or after casts at
+  immune enemies that the game did not call immune (one it did call immune
+  is not held against the skill either). It
   keeps being watched, and gets its icon back by itself, with a line in chat,
   once at least two in five of its casts have left something. `/se track <skill>` gives it back at once. The
   other way round, a real status spell whose tooltip words its length
@@ -1025,7 +1083,7 @@ python3 tools/checks/replay_saved_fights.py <saved file>   # play a few fights f
 python3 tools/checks/show_saved.py <saved file> keys       # look into a saved settings file
 ```
 
-`break_one_at_a_time.py` holds some 1,080 ways of breaking the addon, one line
+`break_one_at_a_time.py` holds some 1,130 ways of breaking the addon, one line
 changed at a time. A mistake that no scenario catches means a rule nothing
 holds the addon to. The whole run plays the scenarios once per mistake, so it
 is the long one: about ten seconds each, shared over as many copies as

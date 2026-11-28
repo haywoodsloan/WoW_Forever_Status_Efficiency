@@ -1109,7 +1109,8 @@ local function NoteSpell(info, kind, source)
 end
 
 local VERDICTS = {
-    "seen", "changed", "immune", "nothing new", "silent", "out of reach", "unproven", "unclear", "assumed", "unknown",
+    "seen", "changed", "immune", "missed", "nothing new", "silent", "out of reach", "unproven", "unclear", "assumed",
+    "unknown",
 }
 
 -- Whose effects each kind of unit token reports changes to, for a line in chat.
@@ -2208,6 +2209,9 @@ do
                 end
             end
             sighting.offSince = on == false and now or nil
+            if on ~= false then
+                sighting.toldFight = nil -- off again in the same fight is said again
+            end
             if on == false and not Keeps() then
                 if sighting.read then
                     TellOff() -- they went off just now
@@ -2955,6 +2959,7 @@ local function Landed(unit, castID, spellID, mustBeSent)
         wait = wait,
         sharp = sharp,
         loose = Spells:ShowsLate(info.name),
+        atOnce = Spells:AtOnce(info),
         -- A spell with no icon is listened for all the same. Only a debuff:
         -- reports say too little about your own effects to learn a buff from.
         learning = not tracked and kind == "debuff",

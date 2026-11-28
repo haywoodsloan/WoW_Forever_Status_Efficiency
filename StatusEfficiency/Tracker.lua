@@ -42,6 +42,15 @@
 --     word that could be the cast's answer, it is that answer: the cast left
 --     nothing, and the unit is kept as immune to that spell. Nothing else
 --     passes for immunity, least of all silence.
+--   * "Miss", "dodge", "parry" and the like are words of the same kind: the
+--     attack did not reach the unit. Said of a unit in the moment of a cast
+--     of yours at it, with nothing to show for the cast there in that moment,
+--     it is the cast's answer as well: the cast left nothing, whatever would
+--     have been assumed of it, a change on the unit later on is something
+--     else, and the miss is not held against the spell. Where the unit's
+--     effects did change in that moment, the cast is taken to have landed
+--     all the same: the word does not say whose attack it was about, and it
+--     is far more often somebody else's, or a swing of yours.
 --
 -- The books do not care whether a unit is an enemy carrying your debuffs or
 -- you carrying your buffs: Core.lua decides which unit a spell is judged on.
@@ -164,6 +173,14 @@ local spoken = {}
 local unheeded = {} -- unit key -> that moment, while no cast of yours has been found to go with it
 local turned = {} -- unit key -> when the game last said an attack left nothing there for another reason
 local turnedWord = {} -- unit key -> its word for that: "MISS", "DODGE", "RESIST" ...
+local missedAt = {} -- unit key -> when it last said that an attack did not reach the unit at all
+-- The game's words for an attack or a spell that did not reach the unit at
+-- all. (A blow that was blocked or soaked up did reach it, and may have left
+-- its effect there all the same: those words are not among them.)
+local MISSES = { MISS = true, DODGE = true, PARRY = true, RESIST = true, EVADE = true, DEFLECT = true, REFLECT = true }
+-- What is kept of a timer that a cast started over, for a cast the game then
+-- says did not reach the unit.
+local OLD = { "applied", "duration", "expires", "endless", "exact", "stacks", "counted", "before", "sure" }
 local lastCast = {} -- unit key -> your last cast that could leave a debuff there
 
 --------------------------------------------------------------------------------
@@ -368,15 +385,40 @@ local function Answered(unit)
     return unit.refused ~= nil and not unit.missed and not unit.shared
 end
 
+--- True when the game's word that an attack did not reach the unit stands as
+--- the answer to a cast on it: it was said of the unit in the moment of the
+--- cast, with no other cast of yours in that moment that it could have been
+--- about. (A change on the unit in that moment is looked at when the cast is
+--- judged.)
+local function Missed(unit)
+    return unit.miss ~= nil and not unit.split
+end
+
 --- True while a unit a cast went to could still show the cast landing, by a
---- change reported at `when`. One the game called immune to the cast can only
---- until the moment of the cast is over: a change within it leaves open what
---- the cast did, and a later one is something else that happened there.
+--- change reported at `when`. One the game called immune to the cast, or
+--- said the cast did not reach, can only until the moment of the cast is
+--- over: a change within it leaves open what the cast did, and a later one is
+--- something else that happened there.
 local function Open(cast, unit, when)
     if not unit.watched or unit.signal or unit.settled then
         return false
     end
-    return not (when - cast.time > MOMENT and Answered(unit))
+    return not (when - cast.time > MOMENT and (Answered(unit) or Missed(unit)))
+end
+
+--- The game said at `when` that an attack did not reach a unit, in the moment
+--- of a cast of yours at it: `unit` is the cast's entry for it. Another cast
+--- of yours that the word was put down to already shares it from now on:
+--- which of the two it was about is not told, and it is neither one's answer.
+local function Unreached(key, unit, when)
+    for i = #pending, 1, -1 do
+        local other = pending[i].kind == "debuff" and pending[i].units[key]
+        if other and other ~= unit and other.miss == when then
+            other.split = true
+            unit.split = true
+        end
+    end
+    unit.miss = when
 end
 
 --- The game called a unit immune at `when`, in the moment of a cast of yours
@@ -699,7 +741,7 @@ local function Judged(cast)
 end
 
 --- A cast went off.
---- spell = { name, info, tracked, area, duration, forced, wait, sharp, learning, most }
+--- spell = { name, info, tracked, area, duration, forced, wait, sharp, loose, atOnce, learning, most }
 ---   info      what Spells:Get gave for the spell
 ---   most      how many times over its effect can be on one unit, for one
 ---             that stacks
@@ -711,6 +753,9 @@ end
 ---             longer than `wait` before the cast was announced is not its
 ---   loose     the spell is known to show late: a change that comes a while
 ---             after the cast is counted on as its landing all the same
+---   atOnce    the spell reaches its target the moment it is cast, as far as
+---             is known: the game's word that an attack did not reach the
+---             unit, said in that moment, can be about the cast
 ---   learning  it has no icon, but is listened for all the same: that is how
 ---             a spell earns one, or earns back the one it lost
 function Tracker:Succeeded(snapshot, spell, now)
@@ -725,6 +770,7 @@ function Tracker:Succeeded(snapshot, spell, now)
         duration = spell.duration,
         most = spell.most,
         loose = spell.loose,
+        atOnce = spell.atOnce,
         forced = spell.forced,
         hidden = snapshot.hidden,
         time = now,
@@ -774,6 +820,10 @@ function Tracker:Succeeded(snapshot, spell, now)
                     unit.missed = true
                     Word(unit, turnedWord[key])
                 end
+                at = missedAt[key]
+                if at and now - at <= MOMENT and spell.atOnce then
+                    Unreached(key, unit, at)
+                end
                 lastCast[key] = cast
             end
         end
@@ -818,6 +868,13 @@ function Tracker:Succeeded(snapshot, spell, now)
             if rec then
                 if unit.engaged then
                     -- Recast on a unit that already has it: the timer starts over.
+                    -- (What it was is kept, for a cast the game then says
+                    -- did not reach the unit.)
+                    local old = {}
+                    for i = 1, #OLD do
+                        old[OLD[i]] = rec[OLD[i]]
+                    end
+                    unit.old = old
                     local before = rec.stacks or 1
                     rec.applied = now
                     rec.duration = spell.duration
@@ -1055,6 +1112,9 @@ function Tracker:Said(key, when, word)
     else
         turned[key] = when
         turnedWord[key] = word
+        if MISSES[word] then
+            missedAt[key] = when
+        end
     end
     local found, two
     for i = #pending, 1, -1 do
@@ -1064,6 +1124,12 @@ function Tracker:Said(key, when, word)
             Word(unit, word)
             if not refusal then
                 unit.missed = true
+                -- A spell that has to fly to the unit, or is known to show
+                -- late, has not reached it yet: the word is about something
+                -- else.
+                if MISSES[word] and cast.atOnce then
+                    Unreached(key, unit, when)
+                end
             else
                 unit.refused = when
                 if found then
@@ -1392,6 +1458,7 @@ local function Finish(cast, now, engaged)
     for key, unit in pairs(cast.units) do
         local set = records[key]
         local rec = set and set[name]
+        local restarted = rec ~= nil and rec.pending == cast and unit.old -- its timer, as it was before the cast
         if rec and rec.pending == cast then
             rec.pending = nil
         end
@@ -1414,6 +1481,7 @@ local function Finish(cast, now, engaged)
         -- nothing else it said then could be the cast's answer instead.
         local answered = Answered(unit)
         local refused = false -- and nothing showed of the cast there either
+        local missed = false -- the game said the cast did not reach the unit, and nothing showed of it there
         local verdict = "unknown"
         if unit.settled then
             verdict = "seen" -- confirmed by its instance id, or read directly
@@ -1425,6 +1493,8 @@ local function Finish(cast, now, engaged)
             -- says nothing of the spell, nor of whether the game reports
             -- what changes on that unit.
             verdict = "out of reach"
+        elseif Missed(unit) and not unit.signal then
+            missed = true
         elseif unit.observed then
             -- Its effects were countable before and after, and nothing new appeared.
             if unit.had or (not unit.direct and unit.observed.n > LiveCount(key, name, now)) then
@@ -1540,6 +1610,22 @@ local function Finish(cast, now, engaged)
                 ns.NoteImmune(name, key, unit.refused, Refuse(key, name, unit.refused))
             end
         end
+        if missed then
+            -- The cast left nothing there, and the game said why. That is
+            -- this cast's story and not the spell's: it is left out of what
+            -- the cast tells of the spell, and the unit's silence is held
+            -- against nobody.
+            verdict = "missed"
+            if mine then
+                Drop(key, name) -- taken to land when it was cast
+            elseif restarted then
+                -- The effect that was there runs on as it did before.
+                for i = 1, #OLD do
+                    rec[OLD[i]] = restarted[OLD[i]]
+                end
+            end
+            ns.Log("%s: the game said the cast did not reach the unit, so it left nothing there", name)
+        end
         tally[verdict] = (tally[verdict] or 0) + 1
         if unit.refused and not unit.shared then
             -- What became of the game's word, for the saved report.
@@ -1603,8 +1689,8 @@ end
 --- change on it could now go unreported, so the cast is taken to have landed,
 --- as it is on a unit nobody reports on.
 local function Lose(cast, key, unit)
-    if not unit.trusted or unit.signal or unit.settled or Answered(unit) or not cast.tracked then
-        return -- (the game's "immune" leaves no doubt to give the benefit of)
+    if not unit.trusted or unit.signal or unit.settled or Answered(unit) or Missed(unit) or not cast.tracked then
+        return -- (the game's "immune" or "miss" leaves no doubt to give the benefit of)
     end
     if cast.area and (not unit.engaged or unit.far) then
         return -- (nor on an enemy that was out of the spell's reach)
@@ -1733,8 +1819,9 @@ function Tracker:Update(now, seen, engaged, direct)
             -- to show. Its cast is kept until the moment of that word is
             -- over as well: a cast of yours that is only announced then
             -- would share the word, and it would be neither one's answer.
-            local open = not unit.signal and not Answered(unit)
-            if unit.refused and now - unit.refused <= MOMENT then
+            -- The same goes for one the game said the cast did not reach.
+            local open = not unit.signal and not Answered(unit) and not Missed(unit)
+            if (unit.refused and now - unit.refused <= MOMENT) or (unit.miss and now - unit.miss <= MOMENT) then
                 held = true
             end
             if not unit.settled and (countable or open
@@ -1824,7 +1911,7 @@ function Tracker:Update(now, seen, engaged, direct)
     end
     for key, when in pairs(turned) do
         if now - when > CHANGE_TTL then
-            turned[key], turnedWord[key] = nil, nil
+            turned[key], turnedWord[key], missedAt[key] = nil, nil, nil
         end
     end
     for key, cast in pairs(lastCast) do
@@ -2055,7 +2142,7 @@ function Tracker:ForgetUnit(key)
     endings[Owner(key)] = nil -- kept under the unit, whichever book this is
     immune[key], taken[key], touched[key] = nil, nil, nil
     unheeded[key], refusedAt[key], lastCast[key], spoken[key] = nil, nil, nil, nil
-    turned[key], turnedWord[key] = nil, nil
+    turned[key], turnedWord[key], missedAt[key] = nil, nil, nil
     for i = 1, #pending do
         pending[i].units[key] = nil
     end
@@ -2095,7 +2182,8 @@ function Tracker:Reset()
     for unit in pairs(endings) do
         endings[unit] = nil
     end
-    for _, tbl in pairs({ immune, taken, touched, unheeded, refusedAt, turned, turnedWord, lastCast, spoken }) do
+    for _, tbl in pairs({ immune, taken, touched, unheeded, refusedAt, turned, turnedWord, missedAt, lastCast,
+        spoken }) do
         for key in pairs(tbl) do
             tbl[key] = nil
         end

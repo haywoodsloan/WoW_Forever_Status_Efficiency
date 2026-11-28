@@ -1347,6 +1347,29 @@ function Spells:ShowsLate(name)
     return landings >= LATE_SEEN and instant < LATE_SHARE * landings
 end
 
+--- True for a spell that reaches its target the moment it is cast, as far as
+--- is known: one used at arm's length that is not known to show late, or one
+--- cast from further off whose casts have kept showing in the very frame they
+--- were announced in. What the game says of the target in that moment can be
+--- about such a cast. (One that has to fly there is answered when it arrives,
+--- and a word said as it sets off is about something else.)
+function Spells:AtOnce(info)
+    if self:ShowsLate(info.name) then
+        return false
+    end
+    if type(info.range) == "number" and info.range <= NEAR then
+        return true
+    end
+    local learned = ns.db.learned[info.name]
+    local prompt = learned and learned.prompt
+    local instant = learned and learned.instant
+    if type(prompt) ~= "number" or type(instant) ~= "number" then
+        return false
+    end
+    local landings = prompt + (type(learned.tardy) == "number" and learned.tardy or 0)
+    return instant >= INSTANT_SEEN and instant >= INSTANT_SHARE * landings
+end
+
 --- Records that a cast of this spell showed on its target `delay` seconds
 --- after it went off: none at all when it showed in the very frame the cast
 --- was announced, and less than none when it showed before that.
