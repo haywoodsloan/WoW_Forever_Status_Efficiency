@@ -102,6 +102,13 @@ would rather see the icons all the time (buffs at any time, debuffs whenever
 there is an enemy to check), or only during fights of your own, change **when
 the icons appear** in the settings or with `/se when`.
 
+The addon reads the enemies around you from their nameplates, so it keeps
+enemy nameplates on. If it finds them off, it turns them back on and says so
+in chat. The game does not let an addon do that during a fight: there the
+addon says once what the icons go by until then, and turns them on when the
+fight ends. You can have it only tell you, or do nothing, with
+`/se nameplates` (see [Without enemy nameplates](#without-enemy-nameplates)).
+
 A skill you cannot use right now shows no icon either, whatever the icon would
 have said: the target is too close or too far, you are in the wrong stance, the
 skill cannot be used during a fight, and so on. It is the test the game uses to
@@ -285,6 +292,7 @@ to type if that was not what you meant.
 | `/se on`, `/se off` | Turns the icons on or off. |
 | `/se when <always\|combat\|group>` | When the icons appear: always, only while you are in combat, or while you or someone in your group close by is in combat (the default). `party` and `raid` work for `group`. |
 | `/se usable <on\|off>` | `on` (the default) shows an icon only on a skill you can use right now. `off` shows it on every skill. |
+| `/se nameplates <on\|tell\|off>` | What the addon does when enemy nameplates are off: `on` (the default) turns them back on and says so in chat, `tell` only says so, `off` does nothing. Without a word it says which of the three is set and whether nameplates are on right now. |
 | `/se list` | Lists the skills on your action bars and says of each what its icon checks and why it has one, or why it has none. |
 | `/se track <skill>` | Puts the skill on Always, so it has an icon. The answer says what the icon will check. |
 | `/se buff <skill>` | Puts the skill on Always, and treats its effect as a buff on you. |
@@ -488,7 +496,9 @@ for one skill, and `/se immune forget` for all of them.
 - A debuff aimed at one enemy is judged against your target (or the enemy the
   game's soft targeting has picked).
 - A debuff that hits everything around you is judged against the enemies that
-  are in the fight and have a nameplate showing, plus your target.
+  are in the fight and have a nameplate showing, plus your target. While no
+  enemy has a nameplate, the few enemies the game names in another way take
+  their place (see [Without enemy nameplates](#without-enemy-nameplates)).
 - A debuff that hits everything around you leaves out the enemies that stand
   further off than it reaches (see
   [Enemies out of reach](#enemies-out-of-reach)).
@@ -539,6 +549,56 @@ Three things could make such a proof wrong, and each is watched for:
 A cast with an enemy out of reach is not expected to show on that enemy, and
 that it does not is never held against the skill. The record's `reach` part
 says what your game answered (see
+[Checking it against your client](#checking-it-against-your-client)).
+
+### Without enemy nameplates
+
+A nameplate is the one handle the game gives an addon on an enemy you have
+not targeted: through it the addon can ask whether the enemy is in the fight
+and how far off it stands, and hears when its effects change. So the addon
+wants enemy nameplates on. What it does when it finds them off is one setting
+with three choices:
+
+- `/se nameplates on` (the default): it turns them back on and says so in
+  chat.
+- `/se nameplates tell`: it leaves them off, and says in chat what that means
+  for the icons.
+- `/se nameplates off`: it does nothing and says nothing.
+
+`/se nameplates` alone says which is set. The setting it looks at is the
+game's own for enemy nameplates, the one the V key switches. The addon never
+turns nameplates off, and leaves the setting alone while its icons are
+turned off.
+
+The game does not let an addon change this setting during a fight. Found off
+in a fight, the addon says so once for that fight, with what the icons go by
+until then, and turns nameplates on when the fight ends. Should the game
+refuse out of a fight as well, the addon says that once and tries again every
+minute. Nameplates that were off when you logged in are turned on then, with
+the one line in chat that says so. Where the addon only tells, it says
+nothing for logging in and waits for your next fight to begin.
+
+While no enemy has a nameplate, a skill that hits every enemy around you is
+judged on the enemies the game still names: your target, your focus, the
+enemy under your mouse, the enemy the game's soft targeting picks, and the
+targets of the people in your party. Each counts once, and only while it is
+in the fight. The skill's icon is also no longer hidden for having nobody
+within its reach, because the enemy standing next to you may be one that
+nothing names.
+
+The addon knows in two ways that there are no nameplates to go by. The game's
+setting reads off. Or, whatever the setting says, you are in a fight within
+10 yards of the enemy you have targeted and for two seconds not one enemy has
+had a nameplate: where nameplates are shown, that enemy's own would be there.
+The second way covers a client that does not let the setting be read and a
+place where the game shows none, and nothing is said in chat for it. Both end
+the moment an enemy's nameplate is seen. Nameplates that show while the
+setting reads off are believed, and the setting is not for the rest of the
+session.
+
+What cannot be made up for is under
+[Known limitations](#known-limitations). The record's `sight` part says what
+your game showed (see
 [Checking it against your client](#checking-it-against-your-client)).
 
 ### How it knows what is there
@@ -651,7 +711,18 @@ at once and so are believed of enemies other than your target (`proven`), how
 often each skill began leaving an enemy out of its count (`left`), and a line
 for everything out of the ordinary (`notes`). Each area skill's entry under
 `spells` gives how far it is taken to reach (`reach`) and the words that was
-read from (`around`). `/se debug`
+read from (`around`). And what was seen of enemy nameplates (`sight`): for
+each kind of place you fought in (`none` is the open world, `party` a
+dungeon) the number of fights, in how many of them an enemy's nameplate was
+seen, in how many the game announced a nameplate at all and how many began
+with the setting off (`fights`), the most enemy nameplates seen at once
+(`most`), how often there were none to go by and why, and how often they came
+back (`blind`), how often your focus, the enemy under your mouse, the game's
+pick and a party member's target stood in as a further enemy, were one already
+counted, or could not be told from one (`handles`), how often the addon turned
+nameplates on (`switched`) and was refused (`refused`), whether the game calls
+the setting protected (`secure`), and a line for each change of the setting
+and for anything out of the ordinary (`notes`). `/se debug`
 prints the summary. The full
 record is saved with the addon's settings at the next `/reload` or logout,
 under `report` in `WTF\Account\<account>\SavedVariables\StatusEfficiency.lua`,
@@ -795,7 +866,7 @@ window gave the page, and which skills the game had no picture for.
   the same, and neither is left out of a skill that reaches 8 yards. An enemy
   standing between a skill's reach and the next range your skills can tell
   apart is counted as within reach, so the yellow half circle can still show
-  for it. An enemy without a nameplate is not seen at all, as before.
+  for it.
 - **A skill is held to the moment of its cast only after three landings.**
   Until then its casts are waited for a little longer, and in that time
   another effect arriving on the enemy after a miss can pass for the landing.
@@ -844,16 +915,30 @@ window gave the page, and which skills the game had no picture for.
 - **A buff that always shows a green check** because it is meant to be used
   only now and then (a defensive cooldown) can be hidden with
   `/se ignore <skill>`.
-- **Area spells have no range check.** Every enemy in the fight with a nameplate
-  showing is assumed to be in reach. Enemy nameplates need to be turned on for
-  area spells to see more than your target.
+- **Without enemy nameplates most enemies cannot be seen at all.** The addon
+  turns nameplates back on unless you tell it not to, and the game keeps it
+  from doing so during a fight (see
+  [Without enemy nameplates](#without-enemy-nameplates)). Until they are on, a
+  skill that hits every enemy around you goes by your target, your focus, the
+  enemy under your mouse, the game's pick and your party's targets, and:
+  - An enemy that none of those names is not counted. The icon can show the
+    red X while such an enemy lacks the effect, and the green check where the
+    yellow half circle would be right.
+  - The game reports changes for your target and for its own pick, and for no
+    other of these enemies, so a cast is taken to land on the rest. A miss on
+    one of them shows as landed.
+  - An enemy that is first named after a cast is not known to carry the
+    effect, so the icon goes back to yellow or green for it.
+  - How far off those enemies stand is still asked, and one proven out of
+    reach is left out. The icon is not hidden for having nobody within reach.
 - **Casts aimed somewhere else** (a mouseover or focus macro, or a buff cast on
   yourself with a modifier key while a friend is targeted) are judged against
   your current target. In combat that unit reports no change, so the cast is
   taken to have left nothing.
 - **When the client hides who an enemy is**, enemies are told apart by their
   nameplates. With nameplates off, switching away from an enemy and back forgets
-  what was on it.
+  what was on it, and an enemy that turns up under another name (first under
+  your mouse, then as your target) is taken for a new one.
 - **Action bars.** The default bars are supported. Bartender4, Dominos and ElvUI
   buttons are picked up by name but have not been tried.
 - **Whether a skill can be used is only as good as what the game tells.** Where
@@ -896,8 +981,9 @@ ways, and every scenario is run under both: the way build 71139 was seen to
 send it, where the kind of change shows, and the way the documentation
 describes it, where nothing does. It can also be told to lack or
 break the game's controls, fonts and art, to draw text wider, to give the
-Options page less room, and to keep back what it says about using a skill, so
-that each thing the addon does by itself has a scenario.
+Options page less room, to keep back what it says about using a skill, and to
+have enemy nameplates off, with the setting locked during a fight, unreadable
+or refused, so that each thing the addon does by itself has a scenario.
 
 ```
 pip install lupa
@@ -924,7 +1010,7 @@ python3 tools/checks/replay_saved_fights.py <saved file>   # play a few fights f
 python3 tools/checks/show_saved.py <saved file> keys       # look into a saved settings file
 ```
 
-`break_one_at_a_time.py` holds some 940 ways of breaking the addon, one line
+`break_one_at_a_time.py` holds some 1,040 ways of breaking the addon, one line
 changed at a time. A mistake that no scenario catches means a rule nothing
 holds the addon to. The whole run plays the scenarios once per mistake, so it
 is the long one: about ten seconds each, shared over as many copies as

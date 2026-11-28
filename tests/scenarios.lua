@@ -288,7 +288,7 @@ local OPTIONAL_READS = {
     Settings = true,
     InterfaceOptions_AddCategory = true, GetSpellTexture = true, SOUNDKIT = true, PlaySound = true,
     IsUsableAction = true, IsActionInRange = true, C_Texture = true, UnitIsVisible = true,
-    UnitCreatureID = true,
+    UnitCreatureID = true, C_CVar = true, GetCVar = true, SetCVar = true,
     -- Fonts, which the settings panel looks for before it borrows one.
     GameFontNormal = true, GameFontNormalLarge = true, GameFontNormalSmall = true, GameFontHighlight = true,
     GameFontHighlightSmall = true, GameFontHighlightHuge = true, GameFontHighlightLarge = true,
@@ -4155,6 +4155,8 @@ test("every command answers in whole sentences", function()
     local commands = {
         "", "help", "off", "on", "when", "when sometimes", "when combat", "when always",
         "usable", "usable maybe", "usable off", "usable on",
+        "nameplates", "nameplates sideways", "nameplates off", "nameplates", "nameplates tell", "nameplates",
+        "nameplates on",
         "track", "track nonsense", "track s", "track rend", "track battle", "track shield", "track thunder",
         "track mortal strike", "buff shield", "buff battle", "buff mortal strike", "debuff heroic", "debuff thunder",
         "debuff mortal strike", "ignore heroic", "auto heroic", "auto mortal strike", "aoe rend", "single rend",
@@ -13435,6 +13437,788 @@ test("reach: how far a skill reaches is read out of its description", function()
     eq(Read("Blasts nearby enemies, slowing their attacks by 10% for 30 sec."), nil)
     eq(Read(""), nil)
     eq(Read(nil), nil)
+end)
+
+--------------------------------------------------------------------------------
+-- Enemy nameplates: turned back on, and what is done without them
+--------------------------------------------------------------------------------
+
+-- What the icons go by while there are no nameplates, as the addon says it.
+local BLIND = "a skill that hits every enemy around you is judged only on your target, your focus, the enemy under "
+    .. "your mouse, the one the game picks for you and your party's targets"
+local TURNED_ON = "Enemy nameplates were off, so the addon turned them on: it reads the enemies around you from them. "
+    .. "Type /se nameplates to change what it does when they are off."
+local TURNED_AGAIN = "The addon turned enemy nameplates back on. Type /se nameplates to change what it does when they "
+    .. "are off."
+local IN_A_FIGHT = "Enemy nameplates are off, and the game does not let an addon turn them on during a fight: the "
+    .. "addon does it when your fight ends. Until then, " .. BLIND .. ". "
+local WENT_OFF = "Enemy nameplates are off. While they are, " .. BLIND .. ". "
+local TO_CHANGE = " It reads the enemies around you from them. To change what it does, type /se nameplates on (it "
+    .. "turns them back on and says so), /se nameplates tell (it only says so) or /se nameplates off (it does nothing)."
+
+test("nameplates: switched off, the addon turns them back on and says so", function()
+    local w, ns = Warband()
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:advance(0.5)
+    eq(w:drain(), "", "nothing to say while they are on")
+    eq(ns.db.nameplates, "on", "turned back on unless you say otherwise")
+    eq(ns.KeepsNameplates(), "on")
+
+    w:setPlates(false) -- the key that hides them, pressed by mistake
+    eq(w:platesShown(), true, "back on in the same moment")
+    eq(w:drain(), SAID .. TURNED_ON)
+    eq(bandit.plate ~= nil, true, "and the enemy has its nameplate again")
+    w:advance(3)
+    eq(w:drain(), "", "said once")
+
+    w:setPlates(false)
+    eq(w:platesShown(), true)
+    eq(w:drain(), SAID .. TURNED_AGAIN, "the second time in fewer words")
+    eq(w.platesAsked, 2, "the game was asked twice in all")
+    eq(w.platesBlocked, 0)
+    local sight = ns.db.report.sight
+    eq(sight.switched, 2)
+    eq(sight.refused, 0)
+    eq(sight.secure, true, "what the game says of the setting is kept")
+    check(Last(sight.notes):find("the game's setting for enemy nameplates reads on", 1, true), Last(sight.notes))
+    w:slash("")
+    check(w:drain():find("/se nameplates <on | tell | off> - when enemy nameplates are off, turns them back on and "
+        .. "says so, only", 1, true), "and /se lists the command")
+    Clean(w)
+end)
+
+test("nameplates: off when you log in, they are turned on and that is said", function()
+    local w, ns = Warband({ plates = false })
+    w:advance(0.5)
+    eq(w:platesShown(), true)
+    eq(w:drain(), SAID .. TURNED_ON)
+    eq(w.platesAsked, 1)
+    eq(ns.KeepsNameplates(), "on")
+    Clean(w)
+end)
+
+test("nameplates: in a fight the game refuses, so it is said what the icons go by, and they are turned on when the fight ends", function()
+    local w, ns, bandit = Skirmish()
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    w:drain()
+
+    w:setPlates(false)
+    eq(w:drain(), SAID .. IN_A_FIGHT .. "Press V to show them.")
+    eq(w:platesShown(), false)
+    eq(w.platesAsked, 0)
+    eq(w.platesBlocked, 0, "not tried in a fight: the game would show you an error")
+    eq(ns.KeepsNameplates(), "later")
+    eq(ns.ShowEnemyPlates(), false, "the call that turns them on does not try either")
+    eq(w.platesBlocked, 0)
+    eq(bandit.plate, nil, "no enemy has a nameplate now")
+    eq((ns.SightProbe()), true, "the addon knows at once that it has no nameplates to go by")
+    w:advance(5)
+    eq(w:drain(), "", "said once in a fight")
+    eq(w.platesAsked, 0)
+    eq(w.platesBlocked, 0)
+
+    -- Meanwhile the few enemies the game names in another way are counted.
+    local thug = Foe(w, "Thug", 4)
+    w:advance(0.5)
+    eq(thug.plate, nil)
+    eq(w:icon("ActionButton1"), "cross", "an enemy the game gives no name to cannot be seen")
+    w:mouseover(thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "under the mouse, it is counted")
+
+    w:leaveCombat()
+    eq(w:platesShown(), true, "turned on in the moment the fight ends")
+    eq(w:drain(), SAID .. TURNED_ON)
+    eq(w.platesBlocked, 0)
+    eq(ns.KeepsNameplates(), "on")
+    check(bandit.plate ~= nil and thug.plate ~= nil, "the enemies have their nameplates again")
+    w:advance(0.5)
+
+    -- Off again in the next fight: said again, once.
+    w:cast(REND)
+    w:advance(0.5)
+    eq((ns.SightProbe()), false, "the addon sees them")
+    w:drain()
+    w:setPlates(false)
+    eq(w:drain(), SAID .. IN_A_FIGHT .. "Press V to show them.")
+    w:setPlates(true)
+    w:setPlates(false)
+    eq(w:drain(), "", "once a fight")
+    w:leaveCombat()
+    eq(w:drain(), SAID .. TURNED_AGAIN)
+    local sight = ns.db.report.sight
+    eq(sight.switched, 2)
+    eq(sight.blind.off, 3, "three times the setting went off")
+    eq(w.platesBlocked, 0)
+    Clean(w)
+end)
+
+test("nameplates: a game that does not say what kind of setting it is, is not asked to change it in a fight", function()
+    local w, ns = Skirmish({ noCVarInfo = true })
+    w:drain()
+    w:setPlates(false)
+    eq(w:drain(), SAID .. IN_A_FIGHT .. "Press V to show them.")
+    eq(w.platesAsked, 0)
+    eq(w.platesBlocked, 0)
+    eq(ns.db.report.sight.secure, nil)
+    w:leaveCombat()
+    eq(w:platesShown(), true)
+    Clean(w)
+end)
+
+test("nameplates: a game that calls the setting an ordinary one has it changed in a fight as well", function()
+    local w, ns = Skirmish({ platesSecure = false })
+    w:drain()
+    w:setPlates(false)
+    eq(w:platesShown(), true, "turned back on at once")
+    eq(w:drain(), SAID .. TURNED_ON)
+    eq(w.platesBlocked, 0)
+    eq(ns.db.report.sight.secure, false)
+    Clean(w)
+end)
+
+test("nameplates: a game that will not let the addon turn them on is asked once a minute, and it is said once", function()
+    local w, ns = Warband({ platesLocked = true })
+    w:advance(0.5)
+    w:setPlates(false)
+    eq(w:platesShown(), false)
+    eq(w:drain(), SAID .. "Enemy nameplates are off, and the game did not let the addon turn them on. Press V to show "
+        .. "them.")
+    eq(ns.KeepsNameplates(), "refused")
+    eq(w.platesAsked, 1)
+    w:advance(50)
+    eq(w.platesAsked, 1, "not asked again within the minute")
+    w:advance(15)
+    eq(w.platesAsked, 2, "asked again after it")
+    w:advance(130)
+    eq(w.platesAsked, 4)
+    eq(w:drain(), "", "and nothing more is said")
+    eq(ns.db.report.sight.refused, 4)
+    Replies(w, "nameplates", "When enemy nameplates are off, the addon turns them back on and says so in chat. They "
+        .. "are off right now, and the game did not let the addon turn them on. Press V to show them." .. TO_CHANGE)
+    -- Asking for it tries at once, whatever was refused a moment ago.
+    Replies(w, "nameplates on", "When enemy nameplates are off, the addon now turns them back on and says so in chat. "
+        .. "They are off right now, and the game did not let the addon turn them on. Press V to show them.")
+    eq(w.platesAsked, 5)
+    w:setPlates(true) -- you press the key yourself
+    eq(ns.KeepsNameplates(), "on")
+    Clean(w)
+
+    -- With no key bound to it, the game's Options are named instead.
+    w = Warband({ platesLocked = true, platesKey = false })
+    w:advance(0.5)
+    w:setPlates(false)
+    eq(w:drain(), SAID .. "Enemy nameplates are off, and the game did not let the addon turn them on. You can show "
+        .. "them in the game's Options, under Nameplates.")
+    Clean(w)
+end)
+
+test("nameplates: told only to say so, the addon leaves them off and says so when they go off", function()
+    local w, ns = Warband()
+    w:advance(0.5)
+    Replies(w, "nameplates tell", "When enemy nameplates are off, the addon now only says so in chat. They are on "
+        .. "right now.")
+    eq(ns.db.nameplates, "tell")
+    eq(ns.KeepsNameplates(), "off")
+    Replies(w, "nameplates", "When enemy nameplates are off, the addon only says so in chat. They are on right now."
+        .. TO_CHANGE)
+
+    w:setPlates(false)
+    eq(w:platesShown(), false, "left off")
+    eq(w:drain(), SAID .. WENT_OFF .. "Press V to show them, or type /se nameplates on to have the addon turn them on.")
+    w:advance(10)
+    w:enterCombat()
+    w:advance(3)
+    eq(w:drain(), "", "said once")
+    eq(w.platesAsked, 0)
+    w:leaveCombat()
+    Replies(w, "nameplates", "When enemy nameplates are off, the addon only says so in chat. They are off right now, "
+        .. "so " .. BLIND .. "." .. TO_CHANGE)
+
+    -- Said each time they go off.
+    w:setPlates(true)
+    eq(w:drain(), "")
+    w:setPlates(false)
+    check(w:drain():find(WENT_OFF, 1, true), "said again")
+
+    -- Choosing to have them turned on turns them on.
+    Replies(w, "nameplates on", "When enemy nameplates are off, the addon now turns them back on and says so in chat. "
+        .. "They were off, so it turned them on.")
+    eq(w:platesShown(), true)
+    eq(ns.db.nameplates, "on")
+    Replies(w, "nameplates on", "When enemy nameplates are off, the addon now turns them back on and says so in chat. "
+        .. "They are on right now.")
+    Replies(w, "nameplates", "When enemy nameplates are off, the addon turns them back on and says so in chat. They "
+        .. "are on right now." .. TO_CHANGE)
+    Clean(w)
+
+    -- With no key bound to it, the game's Options are named.
+    local saved = Seasoned()
+    saved.nameplates = "tell"
+    w = Warband({ platesKey = false, saved = saved })
+    w:advance(0.5)
+    w:setPlates(false)
+    eq(w:drain(), SAID .. WENT_OFF .. "You can show them in the game's Options, under Nameplates, or type /se "
+        .. "nameplates on to have the addon turn them on.")
+    Clean(w)
+end)
+
+test("nameplates: off already when you log in, the addon that only tells says so when a fight begins, not for loading", function()
+    local saved = Seasoned()
+    saved.nameplates = "tell"
+    local w = Warband({ plates = false, saved = saved })
+    w:advance(5)
+    eq(w:drain(), "", "nothing is said for loading")
+    eq(w:platesShown(), false)
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:enterCombat()
+    eq(w:drain(), SAID .. WENT_OFF .. "Press V to show them, or type /se nameplates on to have the addon turn them on.")
+    w:advance(3)
+    w:leaveCombat()
+    w:enterCombat()
+    w:advance(3)
+    eq(w:drain(), "", "once")
+    eq(w.platesAsked, 0)
+    Clean(w)
+end)
+
+test("nameplates: told to do nothing, the addon neither turns them on nor says a word", function()
+    local w, ns = Warband()
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:advance(0.5)
+    Replies(w, "nameplates off", "When enemy nameplates are off, the addon now does nothing. They are on right now.")
+    eq(ns.db.nameplates, "off")
+    eq(ns.KeepsNameplates(), "off")
+    w:setPlates(false)
+    w:advance(3)
+    w:enterCombat()
+    w:advance(3)
+    w:leaveCombat()
+    w:advance(3)
+    eq(w:drain(), "")
+    eq(w:platesShown(), false)
+    eq(w.platesAsked, 0)
+    eq(w.platesBlocked, 0)
+    Replies(w, "nameplates", "When enemy nameplates are off, the addon does nothing. They are off right now, so "
+        .. BLIND .. "." .. TO_CHANGE)
+    Replies(w, "plates off", "When enemy nameplates are off, the addon now does nothing. They are off right now, so "
+        .. BLIND .. ".")
+    -- Choosing never turns them off.
+    w:setPlates(true)
+    w:slash("nameplates tell")
+    w:slash("nameplates off")
+    eq(w:platesShown(), true)
+    w:drain()
+
+    w:slash("reset")
+    w:drain()
+    eq(ns.db.nameplates, "on", "/se reset has the addon turn them back on again")
+    Clean(w)
+
+    -- Off when you log in: nothing is done, nothing said, in a fight or out of one.
+    local saved = Seasoned()
+    saved.nameplates = "off"
+    w = Warband({ plates = false, saved = saved })
+    w:advance(5)
+    w:enterCombat()
+    w:advance(3)
+    eq(w:drain(), "")
+    eq(w:platesShown(), false)
+    eq(w.platesAsked, 0)
+    Clean(w)
+
+    -- A word that was saved and is not one of the three is taken for the usual choice.
+    saved = Seasoned()
+    saved.nameplates = "quiet"
+    w, ns = Warband({ saved = saved })
+    eq(ns.db.nameplates, "on")
+    eq(ns.SetNameplates("sideways"), false)
+    eq(ns.db.nameplates, "on")
+    Clean(w)
+end)
+
+test("nameplates: chosen in a fight, turning them on is promised for when the fight ends", function()
+    local saved = Seasoned()
+    saved.nameplates = "off"
+    local w, ns = Skirmish({ saved = saved })
+    w:setPlates(false)
+    eq(w:drain(), "")
+    Replies(w, "nameplates on", "When enemy nameplates are off, the addon now turns them back on and says so in chat. "
+        .. "They are off right now, and the game does not let an addon turn them on during a fight, so the addon "
+        .. "does that when your fight ends.")
+    eq(w.platesAsked, 0)
+    eq(w.platesBlocked, 0)
+    Replies(w, "nameplates", "When enemy nameplates are off, the addon turns them back on and says so in chat. They "
+        .. "are off right now, and the game does not let an addon turn them on during a fight, so the addon does that "
+        .. "when your fight ends." .. TO_CHANGE)
+    w:advance(3)
+    eq(w:drain(), "", "you were told when you chose: the notice is not given on top of it")
+    w:leaveCombat()
+    eq(w:platesShown(), true)
+    eq(ns.KeepsNameplates(), "on")
+    eq(w:drain(), SAID .. TURNED_ON)
+    Clean(w)
+end)
+
+test("nameplates: a game that does not announce the change is caught up with in two seconds", function()
+    local w = Warband({ settingEvents = false })
+    w:advance(0.5)
+    w:setPlates(false)
+    eq(w:platesShown(), false, "nothing told the addon")
+    w:advance(2.3)
+    eq(w:platesShown(), true)
+    eq(w:drain(), SAID .. TURNED_ON)
+    Clean(w)
+
+    -- One that announces it without saying which setting changed is taken at its word.
+    w = Warband({ settingEvents = "secret" })
+    w:advance(0.5)
+    w:setPlates(false)
+    eq(w:platesShown(), true)
+    eq(w:drain(), SAID .. TURNED_ON)
+    Clean(w)
+end)
+
+test("nameplates: where the game's settings cannot be read or changed, nothing is done and nothing said", function()
+    for _, options in ipairs({ { noCVars = true }, { cvars = "secret" }, { onlyCCVar = true } }) do
+        local plain = options.onlyCCVar
+        local w, ns = Skirmish(options)
+        w:setPlates(false)
+        w:advance(3)
+        if plain then
+            -- The newer calls alone are enough.
+            eq(ns.KeepsNameplates(), "later")
+            w:leaveCombat()
+            eq(w:platesShown(), true)
+        else
+            eq(ns.EnemyPlates(), nil)
+            eq(w:drain(), "")
+            eq(w.platesAsked, 0)
+            w:leaveCombat()
+            w:advance(3)
+            eq(w:platesShown(), false)
+            eq(w:drain(), "")
+            eq(ns.KeepsNameplates(), "on", "nothing says they are off")
+            Replies(w, "nameplates", "When enemy nameplates are off, the addon turns them back on and says so in "
+                .. "chat." .. TO_CHANGE)
+        end
+        Clean(w)
+    end
+end)
+
+test("nameplates: with the icons turned off, the addon leaves nameplates alone", function()
+    local w = Warband()
+    w:advance(0.5)
+    w:slash("off")
+    w:drain()
+    w:setPlates(false)
+    w:advance(5)
+    eq(w:platesShown(), false)
+    eq(w:drain(), "")
+    eq(w.platesAsked, 0)
+    w:slash("on")
+    w:drain()
+    w:advance(2.5)
+    eq(w:platesShown(), true, "turned on once the icons are back")
+    eq(w:drain(), SAID .. TURNED_ON)
+    Clean(w)
+end)
+
+test("nameplates: enemies with nameplates long after the setting read off are believed, and the setting is not", function()
+    local saved = Seasoned()
+    saved.nameplates = "off"
+    local w, ns, bandit, mage = Skirmish({ saved = saved })
+    w:setPlates(false)
+    eq((ns.SightProbe()), true)
+    -- A game whose setting says one thing while it does another.
+    w.cvars.nameplateShowEnemies = "1"
+    w:showPlate(bandit)
+    w:showPlate(mage)
+    w.cvars.nameplateShowEnemies = "0"
+    w:advance(0.5)
+    eq((ns.SightProbe()), true, "for a moment they may just not have gone yet")
+    w:advance(2)
+    eq((ns.SightProbe()), false, "they are seen, and that is what counts")
+    w:advance(5)
+    eq((ns.SightProbe()), false, "for good")
+    check(Last(ns.db.report.sight.notes):find("enemies have nameplates though the setting reads off", 1, true))
+    Clean(w)
+end)
+
+--- A world in which enemy nameplates are off and the addon is to do nothing
+--- about it: all it has are the enemies the game names in another way.
+local function Unplated(options)
+    options = options or {}
+    options.plates = false
+    local saved = options.saved or Seasoned()
+    saved.nameplates = "off"
+    options.saved = saved
+    return Warband(options)
+end
+
+test("no nameplates: an area skill is not hidden for having nobody in its reach, since nobody near you can be seen", function()
+    local w, ns = Unplated()
+    local mage = Foe(w, "Bandit Mage", 20)
+    w:target(mage)
+    w:enterCombat()
+    w:advance(0.5)
+    eq(mage.plate, nil, "no nameplates")
+    local blind, why, setting = ns.SightProbe()
+    eq(blind, true)
+    eq(why, "off")
+    eq(setting, false)
+    eq(w:icon("ActionButton1"), "check", "your target is too far off, but who stands next to you is not known")
+    eq(w:icon("ActionButton2"), "check")
+    eq(w:icon("ActionButton3"), nil, "a skill for your target is out of range as ever")
+    w:slash("debug")
+    check(w:drain():find("Enemy nameplates: the game's setting reads off. When they are off: off (off). Enemies seen "
+        .. "by them: no (off).", 1, true), "said in /se debug")
+
+    w:setPlates(true) -- you show them again
+    w:advance(0.5)
+    check(mage.plate ~= nil, "the mage has its nameplate")
+    eq((ns.SightProbe()), false)
+    eq(w:icon("ActionButton1"), nil, "the enemies are seen now, and none is within reach")
+    eq(w:icon("ActionButton2"), nil)
+    local sight = ns.db.report.sight
+    eq(sight.blind.off, 1)
+    eq(sight.blind.back, 1)
+    eq(sight.most, 1)
+    w:slash("debug")
+    check(w:drain():find("Enemy nameplates: the game's setting reads on. When they are off: off (off). Enemies seen "
+        .. "by them: yes.", 1, true), "said in /se debug")
+    eq(w:drain(), "")
+    Clean(w)
+end)
+
+test("no nameplates: the enemy under the mouse, your focus, the one the game picks and your party's targets are counted", function()
+    local w, ns = Unplated()
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the one enemy the addon knows of has it")
+
+    local thug = Foe(w, "Thug", 4)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "an enemy the game gives no name to cannot be seen")
+
+    w:mouseover(thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "under the mouse")
+    eq(w:icon("ActionButton2"), "check", "Demoralizing Shout is on neither")
+    w:mouseover(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the mouse has left it")
+
+    w:focus(thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "your focus")
+    w:focus(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+
+    w:softTarget(thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "the enemy the game picks for you")
+    w:softTarget(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+
+    local ally = w:addPartyMember("Ally", { engaged = true })
+    w:memberTarget(ally, thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "what someone in your party has targeted")
+
+    -- The same enemy under two names is one enemy.
+    w:mouseover(thug)
+    w:focus(bandit)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial")
+    local handles = ns.db.report.sight.handles
+    check(handles.focus.same > 0, "your focus is your target")
+    check(handles.party.same > 0, "the thug is counted once")
+    w:mouseover(nil)
+    w:focus(nil)
+
+    -- A cast is taken to land on the enemies that are counted.
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(#thug.auras, 1)
+    eq(w:icon("ActionButton1"), "cross", "both have it")
+    w:memberTarget(ally, nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    w:memberTarget(ally, thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "the thug is known by the game's own name for it, whoever points at it")
+    check(handles.mouseover.added > 0 and handles.focus.added > 0 and handles.softenemy.added > 0
+        and handles.party.added > 0, "each kind is kept count of")
+    Clean(w)
+end)
+
+test("no nameplates: an enemy named in another way that is out of reach, not in the fight or dead is left out", function()
+    local w, ns = Unplated()
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(0.5)
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+
+    local mage = Foe(w, "Bandit Mage", 20)
+    w:mouseover(mage)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "twenty yards off: Thunder Clap does nothing for it")
+    eq(ns.db.report.reach.left["Thunder Clap"], 1)
+
+    local sheep = w:addMob("Sheep", { distance = 4 }) -- it stands about and fights nobody
+    w:mouseover(sheep)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "not in the fight")
+
+    local thug = Foe(w, "Thug", 4)
+    w:mouseover(thug)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial")
+    w:kill(thug)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "dead")
+
+    -- Someone of your party in the thick of it, within Thunder Clap's reach.
+    local ally = w:addPartyMember("Ally", { engaged = true, distance = 3 })
+    w:mouseover(ally)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "a friend is no enemy")
+    Clean(w)
+end)
+
+test("no nameplates: an enemy that cannot be told from one already counted is not counted", function()
+    -- The game hides who is who in a fight, and whether two names mean one unit.
+    local w, ns = Unplated({ combatIdentity = false, secretFlags = true })
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(0.5)
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    local thug = Foe(w, "Thug", 4)
+    w:mouseover(thug)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "it might be your target under another name: no half circle on a guess")
+    local handles = ns.db.report.sight.handles
+    check(handles.mouseover.untold > 0, "kept count of")
+    eq(handles.mouseover.added, 0)
+    Clean(w)
+end)
+
+test("no nameplates: what was learned through the mouse is not put down to the next enemy under it", function()
+    -- The game hides who is who in a fight: an enemy is known by the name it was reached through.
+    local w = Unplated({ combatIdentity = false })
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(0.5)
+    local thug = Foe(w, "Thug", 4)
+    w:mouseover(thug)
+    w:advance(0.3)
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(#thug.auras, 1)
+    eq(w:icon("ActionButton1"), "cross", "your target and the enemy under the mouse have it")
+
+    local brute = Foe(w, "Brute", 4)
+    w:mouseover(brute)
+    w:advance(0.3)
+    eq(#brute.auras, 0)
+    eq(w:icon("ActionButton1"), "partial", "another enemy under the mouse: it has nothing")
+    w:mouseover(nil)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+
+    -- The same for your focus and for what your party has targeted.
+    w:focus(thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "the thug under a new name is not known to have it")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    local late = Foe(w, "Latecomer", 4)
+    w:focus(late)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "a new focus that has nothing")
+    w:focus(nil)
+    local ally = w:addPartyMember("Ally", { engaged = true })
+    w:memberTarget(ally, thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "the thug under yet another name")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    local last = Foe(w, "Straggler", 4)
+    w:memberTarget(ally, last)
+    w:advance(0.3)
+    eq(#last.auras, 0)
+    eq(w:icon("ActionButton1"), "partial", "your party member's new target has nothing")
+    Clean(w)
+end)
+
+test("no nameplates: a name the game does not tell the moves of is not used", function()
+    local w = Unplated({ unknownEvents = { UPDATE_MOUSEOVER_UNIT = true, UNIT_TARGET = true } })
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(0.5)
+    w:cast(CLAP)
+    w:advance(0.5)
+    local thug = Foe(w, "Thug", 4)
+    w:addPartyMember("Ally", { engaged = true, target = thug })
+    w.tokens.mouseover = thug
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "neither the mouse nor your party's target is gone by")
+    w:focus(thug)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "partial", "your focus is, as the game tells when it changes")
+    Clean(w)
+end)
+
+test("no nameplates: with no enemy targeted in a fight, a skill for one enemy is judged on the ones the game names", function()
+    local w = Unplated()
+    local thug = Foe(w, "Thug", 4)
+    w:target(thug)
+    w:enterCombat()
+    w:advance(0.5)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton3"), "cross")
+    w:target(nil)
+    w:advance(0.5)
+    eq(w:icon("ActionButton3"), "check", "nobody in sight")
+    w:mouseover(thug)
+    w:advance(0.5)
+    eq(w:icon("ActionButton3"), "cross", "the one enemy the addon knows of has Rend")
+    Clean(w)
+end)
+
+test("no nameplates: next to your target in a fight with not one nameplate, none are taken to be shown", function()
+    -- The setting reads on, and all the same no enemy has a nameplate.
+    local w, ns = Warband()
+    local bandit = w:addMob("Bandit", { distance = 3, engaged = true })
+    local mage = w:addMob("Bandit Mage", { distance = 20, engaged = true })
+    local sheep = w:addMob("Sheep", { distance = 3 })
+    w:target(bandit)
+    w:advance(4)
+    eq((ns.SightProbe()), nil, "out of a fight the game may just not be showing nameplates")
+    w:target(mage)
+    w:enterCombat()
+    w:advance(6)
+    eq((ns.SightProbe()), nil, "an enemy twenty yards off without a nameplate shows nothing")
+    eq(w:icon("ActionButton1"), nil, "so Thunder Clap is hidden, with nobody in reach as far as is seen")
+    w:mouseover(bandit)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), nil, "the enemy under the mouse is not gone by while nothing says nameplates are missing")
+    w:mouseover(nil)
+    w:target(sheep)
+    w:advance(4)
+    eq((ns.SightProbe()), nil, "nor does a creature that is not in the fight")
+
+    w:target(bandit)
+    w:advance(1.5)
+    eq((ns.SightProbe()), nil, "three yards off, for a moment")
+    w:advance(1)
+    local blind, why = ns.SightProbe()
+    eq(blind, true, "for two seconds")
+    eq(why, "unseen")
+    eq(w:drain(), "", "nothing is said of it in chat")
+    eq(w.platesAsked, 0, "the setting reads on: there is nothing to turn on")
+
+    w:target(mage)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "not hidden any more")
+    local thug = w:addMob("Thug", { distance = 4, engaged = true })
+    w:mouseover(thug)
+    w:advance(0.3)
+    w:cast(CLAP, { hits = { thug } })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the enemy under the mouse is counted, the mage is left out")
+    w:mouseover(nil)
+    w:leaveCombat()
+    w:advance(0.5)
+    eq((ns.SightProbe()), true, "it holds until a nameplate is seen")
+
+    w:showPlate(mage)
+    mage.engaged = true
+    w:enterCombat()
+    w:advance(0.5)
+    eq((ns.SightProbe()), false, "one is")
+    eq(w:icon("ActionButton1"), nil, "and the enemies are seen: none within reach")
+    local sight = ns.db.report.sight
+    eq(sight.blind.unseen, 1)
+    eq(sight.blind.back, 1)
+    check(Last(sight.notes):find("no enemy has a nameplate, though your target is within 10 yards and the setting "
+        .. "reads on", 1, true), Last(sight.notes))
+    w:slash("debug")
+    check(w:drain():find("When they are off: on (on). Enemies seen by them: yes.", 1, true))
+    Clean(w)
+end)
+
+test("the saved report says what was seen of nameplates in each kind of place", function()
+    local w, ns = Warband()
+    local bandit = Foe(w, "Bandit", 3)
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(1)
+    w:leaveCombat()
+    local sight = ns.db.report.sight
+    local world = sight.fights.none
+    eq(world.n, 1)
+    eq(world.plates, 1, "an enemy's nameplate was seen in it")
+    eq(world.off, 0)
+    w:kill(bandit)
+    w:hidePlate(bandit)
+
+    w:enterInstance("party")
+    local guard = w:addMob("Guard", { distance = 3, engaged = true })
+    w:target(guard)
+    w:enterCombat()
+    w:advance(1)
+    w:fire("FORBIDDEN_NAME_PLATE_UNIT_ADDED", "nameplate9")
+    w:leaveCombat()
+    local dungeon = sight.fights.party
+    eq(dungeon.n, 1)
+    eq(dungeon.plates, 0, "none in the dungeon")
+    eq(dungeon.events, 0)
+    eq(sight.forbidden, 1, "and one the addon may not touch")
+    guard.engaged = true
+    w:enterCombat()
+    w:showPlate(guard)
+    w:advance(1)
+    w:leaveCombat()
+    eq(dungeon.n, 2)
+    eq(dungeon.plates, 1)
+    eq(dungeon.events, 1)
+    eq(world.n, 1)
+
+    -- A fight that began with the setting off.
+    w:slash("nameplates off")
+    w:setPlates(false)
+    w:drain()
+    w:enterCombat()
+    w:advance(1)
+    w:leaveCombat()
+    eq(dungeon.n, 3)
+    eq(dungeon.off, 1)
+    Clean(w)
 end)
 
 return tests

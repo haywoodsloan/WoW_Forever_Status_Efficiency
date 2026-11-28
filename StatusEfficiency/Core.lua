@@ -97,6 +97,9 @@ local function Defaults()
         enabled = true,
         appear = APPEAR_DEFAULT,
         usableOnly = true, -- an icon only on a skill that can be used right now
+        -- When enemy nameplates are off: "on" turns them back on and says
+        -- so in chat, "tell" only says so, "off" does nothing.
+        nameplates = "on",
         corner = "TOPLEFT",
         size = 0, -- 0 sizes the icon from the button
         plain = false, -- draw the settings panel without the game's own controls
@@ -140,6 +143,9 @@ local function LoadSettings()
     end
     if saved.interval < 0.05 or saved.interval > 2 then
         saved.interval = 0.2
+    end
+    if not ns.NAMEPLATE_CHOICES[saved.nameplates] then
+        saved.nameplates = "on"
     end
     if saved.size > SIZE_MAX and saved.size <= OLD_SIZE_MAX then
         saved.size = SIZE_MAX -- chosen when sizes went further: keep it as big as it can be
@@ -1861,6 +1867,7 @@ do
     local liars = {} -- spell id -> true for a skill that said "out of range" of an enemy inside its range
     local heard = {} -- spell id -> true for a skill the game has answered about: asked before the others of its range
     local reachLo = {} -- unit key -> how many yards off it is at the least, this pass; false when not known
+    local reachHi = {} -- unit key -> how many yards off it is at the most, this pass, where that is known
     local probeYes, probeNo = {}, {} -- probe -> a unit that got that answer in this round of asking
     local answers, askedOf = {}, {} -- scratch: what each probe said of the unit being asked about, and which skill said it
     local leftOut = {} -- spell name -> true while an enemy is left out of its count
@@ -1942,6 +1949,7 @@ do
         ns.Wipe(probeNo)
         if pass then
             ns.Wipe(reachLo)
+            ns.Wipe(reachHi)
             ns.Wipe(Reach.nobody)
         end
     end
@@ -2049,6 +2057,7 @@ do
             end
         end
         reachLo[key] = result
+        reachHi[key] = result and hi or nil
         return result or nil
     end
 
@@ -2089,6 +2098,408 @@ do
             ListProbes()
         end
         return probes, ReachReport()
+    end
+
+    ----------------------------------------------------------------------------
+    -- With no nameplates to go by
+    --
+    -- The enemies around you are read from their nameplates. When the game
+    -- shows none, all that is left are the few enemies it names in another
+    -- way: your target, the enemy it picks for you, your focus, the one under
+    -- the mouse and the targets of the others in your party.
+    --
+    --   * What is done about it is one setting (/se nameplates), with three
+    --     choices for when the game's setting for enemy nameplates reads off:
+    --     "on" turns them back on and says so in chat, "tell" only says so,
+    --     "off" does nothing. The game refuses the change during a fight, so
+    --     then it is made when the fight ends. The addon never turns them off.
+    --   * Knowing it. Reach.blind is true while there are no nameplates to go
+    --     by: because the setting reads off, or because you have stood in a
+    --     fight next to your target for a while and not one enemy had a
+    --     nameplate. It is false from the moment one is seen.
+    --   * Making do. While it is true, those few other enemies are counted
+    --     for an area skill, and such a skill is no longer hidden for having
+    --     nobody in its reach: whoever stands next to you cannot be seen.
+    --   * What the game does show is kept in the saved report (`sight`), by
+    --     the kind of place you fought in.
+    ----------------------------------------------------------------------------
+
+    local NEAR = 10 -- yards: an enemy this close has a nameplate, where there are any
+    local UNSEEN_WAIT = 2 -- seconds next to an enemy in a fight without one nameplate before none are taken to be shown
+    local SETTING_EVERY = 2 -- seconds between looks at the game's setting
+    local RETRY = 60 -- seconds before the game is asked again, once it has refused
+    local sighting = { readAt = -100, fightPlates = 0, fightEvents = 0 }
+    local others = {} -- the list Reach.Others gives
+    local HANDLE_KINDS = { softenemy = "softenemy", focus = "focus", mouseover = "mouseover" } -- the rest are "party"
+
+    Reach.events = {} -- event -> whether this client lets it be listened for
+
+    -- What the icons go by while there are no nameplates, for a line of chat.
+    ns.BLIND_WORDS = "a skill that hits every enemy around you is judged only on your target, your focus, the enemy "
+        .. "under your mouse, the one the game picks for you and your party's targets"
+
+    --- True where the addon is to turn enemy nameplates back on.
+    local function Keeps()
+        return ns.db.nameplates == "on"
+    end
+
+    --- A line said in chat about nameplates without being asked, where the
+    --- addon is to say so when they are off.
+    local function Announce(text)
+        if ns.db.nameplates ~= "off" then
+            ns.Print(text)
+        end
+    end
+
+    --- How you can show enemy nameplates yourself, as the start of a sentence.
+    local function ShowThem()
+        local key = ns.PlatesKey()
+        return key and ("Press " .. key .. " to show them") or "You can show them in the game's Options, under Nameplates"
+    end
+
+    ns.ShowPlatesWords = ShowThem
+
+    --- Said where the addon only tells: enemy nameplates are off.
+    local function TellOff()
+        sighting.owed = nil
+        Announce("Enemy nameplates are off. While they are, " .. ns.BLIND_WORDS .. ". " .. ShowThem()
+            .. ", or type /se nameplates on to have the addon turn them on.")
+    end
+
+    --- The saved report's part on what the addon gets to see of the enemies.
+    local function SightReport()
+        local journal = Journal()
+        local sight = journal.sight
+        if type(sight) ~= "table" then
+            sight = {
+                -- By the kind of place ("none" is the open world, "party" a
+                -- dungeon): fights, the ones in which an enemy's nameplate
+                -- was seen, the ones in which any nameplate was announced,
+                -- and the ones that began with the setting off.
+                fights = {},
+                most = 0, -- enemy nameplates seen at once
+                blind = { off = 0, unseen = 0, back = 0 }, -- how often sight was lost, by why, and came back
+                -- By softenemy, focus, mouseover and party: how often one was
+                -- counted as a further enemy, was one already counted, and
+                -- could not be told from one.
+                handles = {},
+                switched = 0, -- times the addon turned enemy nameplates on
+                refused = 0, -- times the game did not let it
+                forbidden = 0, -- nameplates announced that addons may not touch
+                notes = {},
+            }
+            journal.sight = sight
+        end
+        return sight
+    end
+
+    --- Reads the game's setting for enemy nameplates. Off, there is nothing
+    --- to see the enemies by, and that is known at once.
+    local function ReadSetting(now)
+        local on = ns.EnemyPlates()
+        sighting.readAt = now
+        if on ~= sighting.on or not sighting.read then
+            if sighting.read or on ~= true then
+                local sight = SightReport()
+                Keep(sight.notes, format("%s the game's setting for enemy nameplates reads %s", Stamp(now),
+                    (on == true and "on") or (on == false and "off") or "nothing"))
+                if sight.secure == nil then
+                    sight.secure = ns.PlatesSettingSecure()
+                end
+            end
+            sighting.offSince = on == false and now or nil
+            if on == false and not Keeps() then
+                if sighting.read then
+                    TellOff() -- they went off just now
+                else
+                    -- Off already when the addon was loaded: nothing is said
+                    -- for loading. It is said when a fight begins.
+                    sighting.owed = true
+                end
+            end
+            sighting.read = true
+            sighting.on = on
+            stateDirty = true
+        end
+        if on == false then
+            if Reach.why ~= "off" and not sighting.disbelieved then
+                Reach.blind, Reach.why = true, "off"
+                sighting.lost = true
+                sighting.unseenSince = nil
+                local blind = SightReport().blind
+                blind.off = blind.off + 1
+                stateDirty = true
+            end
+        elseif Reach.why == "off" then
+            -- On again. Whether anything is seen by them is not known yet.
+            Reach.blind, Reach.why = nil, nil
+            stateDirty = true
+        end
+        return on
+    end
+
+    --- True while the game would refuse to have the setting changed.
+    local function Locked()
+        return ns.InCombat() and ns.PlatesSettingSecure() ~= false
+    end
+
+    --- Sees to it that enemy nameplates are on, where the addon is to turn
+    --- them back on. With `asked`, you have just chosen that, and whoever
+    --- calls gives the answer in chat. Returns "on", "later" (in a fight: it
+    --- is done when the fight ends), "refused" (the game did not let it) or
+    --- "off" (the addon is not to turn them on), and true when it just
+    --- turned them on.
+    function Reach.Keep(now, asked)
+        local on = ReadSetting(now)
+        if not Keeps() then
+            sighting.pending = nil
+            return "off"
+        end
+        if on ~= false then
+            sighting.pending, sighting.refusedAt = nil, nil
+            return "on"
+        end
+        if Locked() then
+            sighting.pending = true
+            if asked then
+                sighting.toldFight = combatEpoch -- the answer to what you typed says it
+            elseif sighting.toldFight ~= combatEpoch then
+                sighting.toldFight = combatEpoch
+                Announce("Enemy nameplates are off, and the game does not let an addon turn them on during a fight: "
+                    .. "the addon does it when your fight ends. Until then, " .. ns.BLIND_WORDS .. ". " .. ShowThem()
+                    .. ".")
+            end
+            return "later"
+        end
+        sighting.pending = nil
+        if not asked and sighting.refusedAt and now < sighting.refusedAt + RETRY then
+            return "refused"
+        end
+        local sight = SightReport()
+        if ns.ShowEnemyPlates() then
+            sighting.refusedAt = nil
+            ReadSetting(now)
+            sight.switched = sight.switched + 1
+            if not asked then
+                if sighting.switched then
+                    Announce("The addon turned enemy nameplates back on. Type /se nameplates to change what it does "
+                        .. "when they are off.")
+                else
+                    Announce("Enemy nameplates were off, so the addon turned them on: it reads the enemies around "
+                        .. "you from them. Type /se nameplates to change what it does when they are off.")
+                end
+            end
+            sighting.switched = true
+            return "on", true
+        end
+        sight.refused = sight.refused + 1
+        sighting.refusedAt = now
+        if not asked and not sighting.toldRefused then
+            sighting.toldRefused = true
+            Announce("Enemy nameplates are off, and the game did not let the addon turn them on. " .. ShowThem() .. ".")
+        end
+        return "refused"
+    end
+
+    --- The game's setting may have changed, or a fight began or ended: it is
+    --- looked at, and seen to, at once.
+    function Reach.Watch()
+        if ns.db.enabled then
+            Reach.Keep(ns.Now())
+        end
+        stateDirty = true
+    end
+
+    --- Whether the addon turns enemy nameplates back on, and how that
+    --- stands: "on" (they are shown), "later" (they are off, and it turns
+    --- them on when your fight ends), "refused" (they are off, and the game
+    --- did not let it) or "off" (it is not to turn them on). Nothing is
+    --- changed by asking.
+    function ns.KeepsNameplates()
+        if not Keeps() then
+            return "off"
+        elseif ns.EnemyPlates() ~= false then
+            return "on"
+        elseif sighting.refusedAt and not Locked() then
+            return "refused"
+        end
+        return "later"
+    end
+
+    --- Sets what the addon does when enemy nameplates are off: "on", "tell"
+    --- or "off" (/se nameplates and the settings), and sees to it at once.
+    --- Never turns them off. False for any other word; otherwise it answers
+    --- like Reach.Keep.
+    function ns.SetNameplates(choice)
+        if not ns.NAMEPLATE_CHOICES[choice] then
+            return false
+        end
+        ns.db.nameplates = choice
+        stateDirty = true
+        return Reach.Keep(ns.Now(), true)
+    end
+
+    --- True for an enemy the ranges of your skills put within `yards` of you.
+    local function Within(unit, key, yards)
+        FarAtLeast(unit, key)
+        local hi = reachHi[key]
+        return hi ~= nil and hi <= yards
+    end
+
+    --- Called in each pass: `walked` says whether the nameplates were gone
+    --- over in it, and `plates` how many of them showed an enemy. Works out
+    --- whether there are nameplates to go by at all.
+    function Reach.Sight(now, walked, plates)
+        if now >= sighting.readAt + SETTING_EVERY then
+            Reach.Keep(now)
+        end
+        if not walked then
+            return
+        end
+        if plates > 0 then
+            sighting.unseenSince = nil
+            if plates > sighting.fightPlates then
+                sighting.fightPlates = plates
+                local sight = SightReport()
+                if plates > sight.most then
+                    sight.most = plates
+                end
+            end
+            if sighting.on == false and not sighting.disbelieved then
+                if now - sighting.offSince < SETTING_EVERY then
+                    return -- they were turned off this moment, and have not gone yet
+                end
+                -- Enemies with nameplates, long after the setting read off: what
+                -- is seen is believed, and the setting is not again.
+                sighting.disbelieved = true
+                Keep(SightReport().notes, format("%s enemies have nameplates though the setting reads off: it is "
+                    .. "not gone by any more", Stamp(now)))
+            end
+            if sighting.lost then
+                sighting.lost = nil
+                local blind = SightReport().blind
+                blind.back = blind.back + 1
+            end
+            Reach.blind, Reach.why = false, nil
+            return
+        end
+        if Reach.blind == true then
+            return
+        end
+        -- Not one enemy with a nameplate, and a setting that does not read
+        -- off. Next to your target in a fight, that is not how it looks where
+        -- nameplates are shown: its own would be there. (Out of a fight it
+        -- may be: the game can be set to show nameplates in fights only.)
+        if ns.InCombat() and primaryKey and engagedKeys[primaryKey] and Within(primaryUnit, primaryKey, NEAR) then
+            sighting.unseenSince = sighting.unseenSince or now
+            if now - sighting.unseenSince >= UNSEEN_WAIT then
+                Reach.blind, Reach.why = true, "unseen"
+                sighting.lost = true
+                local sight = SightReport()
+                sight.blind.unseen = sight.blind.unseen + 1
+                Keep(sight.notes, format("%s no enemy has a nameplate, though your target is within %d yards and the "
+                    .. "setting reads %s", Stamp(now), NEAR, sighting.on and "on" or "nothing"))
+            end
+        else
+            sighting.unseenSince = nil
+        end
+    end
+
+    --- With no nameplates to go by: the enemies in the fight that the game
+    --- names in another way, as a list of unit tokens. `first` is the one
+    --- already counted, your target or the enemy the game picks for you. One
+    --- that may be an enemy already counted is left out: only the game's
+    --- plain "not the same" lets it in, so that nobody is counted twice.
+    function Reach.Others(first)
+        for i = #others, 1, -1 do
+            others[i] = nil
+        end
+        if Reach.blind ~= true then
+            return others
+        end
+        local tokens, events = ns.handleTokens, ns.handleEvents
+        local tallies
+        for i = 1, #tokens do
+            local token = tokens[i]
+            if token ~= first and Reach.events[events[token]] and Attackable(token) and ns.IsEngaged(token) then
+                local same = false
+                if first then
+                    same = ns.SameUnit(token, first)
+                end
+                local n = 1
+                while same == false and n <= #others do
+                    same = ns.SameUnit(token, others[n])
+                    n = n + 1
+                end
+                tallies = tallies or SightReport().handles
+                local kind = HANDLE_KINDS[token] or "party"
+                local tally = tallies[kind]
+                if type(tally) ~= "table" then
+                    tally = { added = 0, same = 0, untold = 0 }
+                    tallies[kind] = tally
+                end
+                if same == false then
+                    others[#others + 1] = token
+                    tally.added = tally.added + 1
+                elseif same then
+                    tally.same = tally.same + 1
+                else
+                    tally.untold = tally.untold + 1
+                end
+            end
+        end
+        return others
+    end
+
+    --- A fight began (`began`) or ended. What was seen of nameplates in it
+    --- goes into the saved report, by the kind of place it was fought in.
+    function Reach.Fight(began)
+        if began then
+            sighting.fighting = true
+            sighting.fightPlates, sighting.fightEvents = 0, 0
+            sighting.fightOff = sighting.on == false
+        elseif sighting.fighting then
+            sighting.fighting = nil
+            local fights = SightReport().fights
+            local place = ns.InstanceKind() or "unknown"
+            local tally = fights[place]
+            if type(tally) ~= "table" then
+                tally = { n = 0, plates = 0, events = 0, off = 0 }
+                fights[place] = tally
+            end
+            tally.n = tally.n + 1
+            if sighting.fightPlates > 0 then
+                tally.plates = tally.plates + 1
+            end
+            if sighting.fightEvents > 0 then
+                tally.events = tally.events + 1
+            end
+            if sighting.fightOff then
+                tally.off = tally.off + 1
+            end
+        end
+        Reach.Watch()
+        if began and sighting.owed and sighting.on == false and ns.db.enabled then
+            TellOff() -- they were off when the addon was loaded, and now it matters
+        end
+    end
+
+    --- The game announced a nameplate: one addons may not touch with
+    --- `forbidden`.
+    function Reach.Plate(forbidden)
+        if forbidden then
+            local sight = SightReport()
+            sight.forbidden = sight.forbidden + 1
+        else
+            sighting.fightEvents = sighting.fightEvents + 1
+        end
+    end
+
+    --- What is known of nameplates, for /se debug: whether there are none to
+    --- go by (true, false, or nil while nothing shows either way), why
+    --- ("off", "unseen"), and what the game's setting reads.
+    function ns.SightProbe()
+        return Reach.blind, Reach.why, sighting.on
     end
 end
 
@@ -2132,6 +2543,11 @@ local function AreaState(info, name, now, calm, most, anyone)
     Reach.Leaves(name, near < fightSize)
     if nobody then
         full, bare = farFull, farBare
+        if Reach.blind == true then
+            -- No nameplates to go by: whoever stands next to you cannot be
+            -- seen, so the skill is not taken to have nobody in its reach.
+            nobody = false
+        end
     end
     if bare == 0 then
         return "all", nobody
@@ -2246,16 +2662,30 @@ local function Refresh(now)
 
     -- Nameplates are only walked when an area spell or a cast in flight needs
     -- them, or a skill has to be judged with no enemy targeted in a fight.
+    local walked, plates = false, 0
     if sweepWanted or Tracker:HasPending("debuff") or (not primaryUnit and ns.InCombat()) then
+        walked = true
         for i = 1, #plateTokens do
             local token = plateTokens[i]
             if Attackable(token) then
+                plates = plates + 1
                 local key = Look(token, now, calm, "debuff")
                 if ns.IsEngaged(token) then
                     engagedKeys[key] = true
                     AddToFight(token, key)
                 end
             end
+        end
+    end
+    Reach.Sight(now, walked, plates)
+    if walked and plates == 0 then
+        -- No nameplates to go by: the few enemies the game names in another
+        -- way stand in for them.
+        local others = Reach.Others(primaryUnit)
+        for i = 1, #others do
+            local key = Look(others[i], now, calm, "debuff")
+            engagedKeys[key] = true
+            AddToFight(others[i], key)
         end
     end
 
@@ -2444,15 +2874,34 @@ local function Snapshot(info, area, now, late, kind)
         }, unit)
     end
     if area then
+        local plates = 0
         for i = 1, #plateTokens do
             local token = plateTokens[i]
             if Attackable(token) then
+                plates = plates + 1
                 local key = ns.UnitKey(token)
                 if not snapshot.units[key] then
                     Know(token, key)
                     snapshot.units[key] = Follow({
                         pre = not late and Sample(token, now, calm, kind) or nil,
                         engaged = ns.IsEngaged(token),
+                        far = reach and Reach.Beyond(token, key, reach) or nil,
+                    }, token)
+                end
+            end
+        end
+        if plates == 0 then
+            -- No nameplates to go by: the cast may land on the few enemies
+            -- the game names in another way.
+            local others = Reach.Others(unit)
+            for i = 1, #others do
+                local token = others[i]
+                local key = ns.UnitKey(token)
+                if not snapshot.units[key] then
+                    Know(token, key)
+                    snapshot.units[key] = Follow({
+                        pre = not late and Sample(token, now, calm, kind) or nil,
+                        engaged = true,
                         far = reach and Reach.Beyond(token, key, reach) or nil,
                     }, token)
                 end
@@ -2902,11 +3351,62 @@ local function PlateChanged(token)
     stateDirty = true
 end
 
-handlers.NAME_PLATE_UNIT_ADDED = PlateChanged
+function handlers.NAME_PLATE_UNIT_ADDED(token)
+    PlateChanged(token)
+    Reach.Plate()
+end
+
 handlers.NAME_PLATE_UNIT_REMOVED = PlateChanged
 
-handlers.PLAYER_REGEN_DISABLED = NewFight
-handlers.PLAYER_REGEN_ENABLED = NewFight
+--- A nameplate that addons may not touch. Nothing can be read from it: that
+--- there are such is kept for the saved report.
+function handlers.FORBIDDEN_NAME_PLATE_UNIT_ADDED()
+    Reach.Plate(true)
+end
+
+function handlers.PLAYER_REGEN_DISABLED()
+    NewFight()
+    Reach.Fight(true)
+end
+
+function handlers.PLAYER_REGEN_ENABLED()
+    NewFight()
+    Reach.Fight(false)
+end
+
+--- One of the game's settings changed: the one for enemy nameplates is the
+--- addon's business (see "With no nameplates to go by").
+function handlers.CVAR_UPDATE(name)
+    if ns.IsPlatesSetting(name) then
+        Reach.Watch()
+    end
+end
+
+-- The other names the game gives an enemy each move to another unit now and
+-- then, and what was learned through one belongs to the unit it has left.
+function handlers.UPDATE_MOUSEOVER_UNIT()
+    ns.TokenChanged("mouseover")
+    if Reach.blind then
+        stateDirty = true
+    end
+end
+
+function handlers.PLAYER_FOCUS_CHANGED()
+    ns.TokenChanged("focus")
+    if Reach.blind then
+        stateDirty = true
+    end
+end
+
+function handlers.UNIT_TARGET(unit)
+    local token = ns.memberTargets[ns.PlainString(unit) or ""]
+    if token then
+        ns.TokenChanged(token)
+        if Reach.blind then
+            stateDirty = true
+        end
+    end
+end
 
 handlers.ACTIONBAR_SLOT_CHANGED = ns.MarkBarsDirty
 handlers.ACTIONBAR_PAGE_CHANGED = ns.MarkBarsDirty
@@ -2946,6 +3446,7 @@ for event in pairs(handlers) do
     if event == "GROUP_ROSTER_UPDATE" then
         rosterHeard = registered
     end
+    Reach.events[event] = registered
 end
 
 frame:SetScript("OnEvent", function(_, event, ...)

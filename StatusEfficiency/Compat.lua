@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.5.4"
+ns.VERSION = "0.5.5"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -525,6 +525,113 @@ function ns.UnitKind(unit, key)
         return name, name
     end
     return nil, player == true and "player" or "hidden"
+end
+
+--------------------------------------------------------------------------------
+-- Enemy nameplates, shown or not
+--
+-- The enemies around you are read from their nameplates. Whether the game
+-- shows those is a setting of its own (the console variable
+-- nameplateShowEnemies), which a key flips: V, unless it was bound to another.
+-- With it off there is no nameplate to read anything from.
+--
+-- An addon may switch it on, but not during a fight: it is one of the settings
+-- the game calls secure, and trying then is refused with an error the player
+-- is shown. So it is never tried in a fight.
+--------------------------------------------------------------------------------
+
+local PLATES_SETTING = "nameplateShowEnemies"
+
+-- What the addon can be told to do when enemy nameplates are off (see "With
+-- no nameplates to go by" in Core.lua), in the order they are offered.
+ns.NAMEPLATE_CHOICES = { "on", "tell", "off", on = true, tell = true, off = true }
+
+--- Whether the game is set to show enemy nameplates: true, false, or nil
+--- when it will not say.
+function ns.EnemyPlates()
+    local value = Call(C_CVar and C_CVar.GetCVar or GetCVar, PLATES_SETTING)
+    if value == "1" then
+        return true
+    elseif value == "0" then
+        return false
+    end
+    return nil
+end
+
+--- Whether the game calls that setting secure, which is what keeps an addon
+--- from changing it in a fight: true, false, or nil when it will not say.
+function ns.PlatesSettingSecure()
+    local get = C_CVar and C_CVar.GetCVarInfo
+    if type(get) ~= "function" then
+        return nil
+    end
+    local ok, _, _, _, _, _, secure = pcall(get, PLATES_SETTING)
+    if not ok or IsSecret(secure) or type(secure) ~= "boolean" then
+        return nil
+    end
+    return secure
+end
+
+--- Switches enemy nameplates on in the game's settings. Not in a fight,
+--- unless the game says plainly that the setting is not a secure one. Says
+--- whether the game shows them afterwards.
+function ns.ShowEnemyPlates()
+    if ns.InCombat() and ns.PlatesSettingSecure() ~= false then
+        return false
+    end
+    local ok, err = pcall(C_CVar and C_CVar.SetCVar or SetCVar, PLATES_SETTING, "1")
+    if not ok then
+        Refused("SetCVar", err)
+    end
+    return ns.EnemyPlates() == true
+end
+
+--- The key that shows or hides enemy nameplates, as the game writes it ("V"),
+--- or nil when none is bound or the game will not say.
+function ns.PlatesKey()
+    local key = PlainString((Call(GetBindingKey, "NAMEPLATES")))
+    if key and key ~= "" then
+        return key
+    end
+    return nil
+end
+
+--- True for the game's report that the setting above changed (CVAR_UPDATE),
+--- and for one that does not say which setting it is about.
+function ns.IsPlatesSetting(name)
+    name = PlainString(name)
+    return name == nil or name == PLATES_SETTING
+end
+
+--- The kind of place you are in, in the game's word: "none" for the open
+--- world, "party" for a dungeon, "raid", "pvp", "arena", "scenario". Nil when
+--- the game will not say.
+function ns.InstanceKind()
+    local ok, _, kind = pcall(IsInInstance)
+    if not ok then
+        return nil
+    end
+    return PlainString(kind)
+end
+
+-- The other names the game gives an enemy, for when there is no nameplate to
+-- go by: the enemy it picks for you, your focus, the one under the mouse and
+-- the targets of the four others in your party. Each comes with the event that
+-- tells when it moves to another unit; one whose event this client does not
+-- have is not used, since what was learned through it would be put down to
+-- whoever it points at next.
+ns.handleTokens = { "softenemy", "focus", "mouseover" }
+ns.handleEvents = {
+    softenemy = "PLAYER_SOFT_ENEMY_CHANGED",
+    focus = "PLAYER_FOCUS_CHANGED",
+    mouseover = "UPDATE_MOUSEOVER_UNIT",
+}
+ns.memberTargets = {} -- "party2" -> "party2target"
+for i = 1, 4 do
+    local token = "party" .. i .. "target"
+    ns.handleTokens[#ns.handleTokens + 1] = token
+    ns.handleEvents[token] = "UNIT_TARGET"
+    ns.memberTargets["party" .. i] = token
 end
 
 --------------------------------------------------------------------------------

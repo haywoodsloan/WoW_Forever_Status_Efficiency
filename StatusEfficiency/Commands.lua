@@ -161,6 +161,8 @@ local HELP = {
     "  /se on | off - turns the icons on or off",
     "  /se when <always | combat | group> - sets when the icons appear",
     "  /se usable <on | off> - shows an icon only on a skill you can use right now, or on every skill",
+    "  /se nameplates <on | tell | off> - when enemy nameplates are off, turns them back on and says so, only",
+    "    says so, or does nothing. The addon reads the enemies around you from them",
     "  /se list - lists the skills on your action bars and what the addon does with each",
     "  /se track <skill> - puts a skill on Always, so it has an icon",
     "  /se ignore <skill> - puts a skill on Never, so it has no icon",
@@ -277,6 +279,53 @@ function commands.usable(rest)
     Print("The icons now appear " .. UsableWords(only) .. ".")
     UsableNote()
 end
+
+-- What the addon does when enemy nameplates are off, by choice: each follows
+-- "the addon".
+local PLATE_WORDS = {
+    on = "turns them back on and says so in chat",
+    tell = "only says so in chat",
+    off = "does nothing",
+}
+
+--- How things stand with enemy nameplates right now, as a sentence to follow
+--- another. `kept` is what ns.KeepsNameplates says. Nothing where the game
+--- does not say whether they are shown.
+local function PlatesNow(kept)
+    local shown = ns.EnemyPlates()
+    if shown == nil then
+        return ""
+    elseif shown then
+        return " They are on right now."
+    elseif kept == "later" then
+        return " They are off right now, and the game does not let an addon turn them on during a fight, so the "
+            .. "addon does that when your fight ends."
+    elseif kept == "refused" then
+        return " They are off right now, and the game did not let the addon turn them on. " .. ns.ShowPlatesWords()
+            .. "."
+    end
+    return " They are off right now, so " .. ns.BLIND_WORDS .. "."
+end
+
+--- /se nameplates: what the addon does when enemy nameplates are off.
+function commands.nameplates(rest)
+    local choice = Trim(rest):lower()
+    if not PLATE_WORDS[choice] then
+        Print("When enemy nameplates are off, the addon " .. PLATE_WORDS[ns.db.nameplates] .. "."
+            .. PlatesNow(ns.KeepsNameplates()) .. " It reads the enemies around you from them. To change what it "
+            .. "does, type /se nameplates on (it turns them back on and says so), /se nameplates tell (it only says "
+            .. "so) or /se nameplates off (it does nothing).")
+        return
+    end
+    local result, turned
+    ns.Options.Change(function()
+        result, turned = ns.SetNameplates(choice)
+    end)
+    Print("When enemy nameplates are off, the addon now " .. PLATE_WORDS[choice] .. "."
+        .. (turned and " They were off, so it turned them on." or PlatesNow(result)))
+end
+
+commands.plates = commands.nameplates
 
 function commands.track(rest)
     WithSpell(rest, function(name)
@@ -891,6 +940,12 @@ function commands.debug()
     end
     print(format("  Action buttons found: %d, holding a spell: %d, showing an icon: %d. Enabled: %s.",
         buttons, withSpell, showing, YesNo(ns.db.enabled)))
+
+    local blind, why, setting = ns.SightProbe()
+    print(format("  Enemy nameplates: the game's setting reads %s. When they are off: %s (%s). Enemies seen by them: %s.",
+        (setting == true and "on") or (setting == false and "off") or "nothing", tostring(ns.db.nameplates),
+        ns.KeepsNameplates(),
+        (blind == true and ("no (" .. tostring(why) .. ")")) or (blind == false and "yes") or "not known yet"))
 
     local unit = ns.PrimaryEnemy()
     if unit then

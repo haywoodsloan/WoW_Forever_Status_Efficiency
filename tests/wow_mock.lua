@@ -77,6 +77,21 @@
 --                  value too while details are hidden. "none": nothing is
 --                  sent. For a client that does not know the event at all,
 --                  name UNIT_COMBAT in unknownEvents.
+--   plates         false: the game starts with enemy nameplates switched off
+--                  (see world:setPlates).
+--   platesLocked   true: the game refuses an addon's change of that setting
+--                  at all times. In a fight it always does, unless
+--                  platesSecure is false: then the game says the setting is
+--                  not a secure one, and takes the change in a fight too.
+--   platesKey      the key that shows and hides enemy nameplates. Default
+--                  "V"; false for none.
+--   noCVars        true: the game has no functions for reading or changing
+--                  its settings. noCVarInfo: only the one that tells what
+--                  kind of setting one is, is missing. onlyCCVar: only the
+--                  C_CVar ones exist. cvars = "secret": reading a setting
+--                  gives a secret value.
+--   settingEvents  false: CVAR_UPDATE is not sent when a setting changes.
+--                  "secret": it is sent with the setting's name unreadable.
 --   noCreatureID   true: UnitCreatureID does not exist.
 --   noApplications true: an aura does not say how many times over it is on
 --                  the unit.
@@ -330,6 +345,80 @@ function Mock.new(options)
 
     function env.InCombatLockdown()
         return world.combat
+    end
+
+    ----------------------------------------------------------------------------
+    -- The game's own settings
+    ----------------------------------------------------------------------------
+
+    -- Console variables, of which the addon cares for one: whether enemy
+    -- nameplates are shown. The game calls it secure: an addon's change is
+    -- refused in a fight (and the player is shown an error, which is counted
+    -- in world.platesBlocked so that a scenario can hold the addon to never
+    -- trying).
+    world.cvars = { nameplateShowEnemies = options.plates == false and "0" or "1" }
+    world.platesBlocked = 0
+    world.platesAsked = 0 -- how often an addon asked for that setting to be changed, out of a fight
+
+    if not options.noCVars then
+        local function Get(name)
+            if type(name) ~= "string" then
+                error("GetCVar: bad name", 2)
+            end
+            local value = world.cvars[name]
+            if options.cvars == "secret" and value ~= nil then
+                return Secret(value)
+            end
+            return value
+        end
+
+        local function Set(name, value)
+            if type(name) ~= "string" or world.cvars[name] == nil then
+                return false
+            end
+            if world.combat and options.platesSecure ~= false then
+                world.platesBlocked = world.platesBlocked + 1
+                return nil
+            end
+            world.platesAsked = world.platesAsked + 1
+            if options.platesLocked then
+                return false
+            end
+            world:setPlates(tostring(value) == "1")
+            return true
+        end
+
+        env.C_CVar = { GetCVar = Get, SetCVar = Set }
+        if not options.noCVarInfo then
+            function env.C_CVar.GetCVarInfo(name)
+                local value = world.cvars[name]
+                if value == nil then
+                    return nil
+                end
+                -- value, default, kept for the account, kept for the character, locked, secure, read-only
+                return value, "1", false, true, false, options.platesSecure ~= false, false
+            end
+        end
+        if not options.onlyCCVar then
+            env.GetCVar, env.SetCVar = Get, Set
+        end
+    end
+
+    --- The key an action is bound to. The one that shows and hides enemy
+    --- nameplates is V unless options.platesKey names another, or false for
+    --- none.
+    function env.GetBindingKey(action)
+        if action == "NAMEPLATES" and options.platesKey ~= false then
+            return options.platesKey or "V"
+        end
+        return nil
+    end
+
+    --- Whether you are in a dungeon or the like, and which kind: see
+    --- world:enterInstance.
+    function env.IsInInstance()
+        local kind = world.instance or "none"
+        return kind ~= "none", kind
     end
 
     ----------------------------------------------------------------------------
@@ -1067,6 +1156,8 @@ function Mock.new(options)
         UNIT_SPELLCAST_CHANNEL_START = true, UNIT_SPELLCAST_FAILED = true,
         UNIT_SPELLCAST_FAILED_QUIET = true, UNIT_SPELLCAST_INTERRUPTED = true,
         GROUP_ROSTER_UPDATE = true, UNIT_COMBAT = true,
+        CVAR_UPDATE = true, UPDATE_MOUSEOVER_UNIT = true, PLAYER_FOCUS_CHANGED = true, UNIT_TARGET = true,
+        FORBIDDEN_NAME_PLATE_UNIT_ADDED = true,
     }
     if options.unknownEvents then
         for event in pairs(options.unknownEvents) do
@@ -2435,9 +2526,16 @@ function Mock.new(options)
         end
     end
 
+    --- Gives a unit a nameplate. An enemy only gets one while the game is
+    --- set to show enemy nameplates: with that off the wish is kept, and the
+    --- nameplate comes when it is turned on.
     function world:showPlate(mob)
         if mob.plate then
             return mob.plate
+        end
+        mob.plated = true
+        if mob.hostile and self.cvars.nameplateShowEnemies ~= "1" then
+            return nil
         end
         for i = 1, 40 do
             local token = "nameplate" .. i
@@ -2455,11 +2553,76 @@ function Mock.new(options)
 
     function world:hidePlate(mob)
         local token = mob.plate
+        mob.plated = nil
         if token then
             self.tokens[token] = nil
             mob.plate = nil
             self:fire("NAME_PLATE_UNIT_REMOVED", token)
         end
+    end
+
+    --- Turns the game's setting for enemy nameplates on or off, as the key
+    --- for it does, in a fight or out of one. Off, every enemy's nameplate
+    --- goes; on, the ones that were asked for (world:showPlate) come back.
+    function world:setPlates(on)
+        local value = on and "1" or "0"
+        if self.cvars.nameplateShowEnemies == value then
+            return
+        end
+        self.cvars.nameplateShowEnemies = value
+        for _, mob in ipairs(self.mobs) do
+            if mob.hostile then
+                if not on and mob.plate then
+                    local token = mob.plate
+                    self.tokens[token] = nil
+                    mob.plate = nil
+                    self:fire("NAME_PLATE_UNIT_REMOVED", token)
+                elseif on and mob.plated and not mob.plate and not mob.dead then
+                    self:showPlate(mob)
+                end
+            end
+        end
+        if self.options.settingEvents ~= false then
+            self:fire("CVAR_UPDATE", self.options.settingEvents == "secret" and Secret("nameplateShowEnemies")
+                or "nameplateShowEnemies", value)
+        end
+    end
+
+    --- Whether the game is set to show enemy nameplates.
+    function world:platesShown()
+        return self.cvars.nameplateShowEnemies == "1"
+    end
+
+    --- Puts the mouse over a unit, or with nil takes it off: the game tells
+    --- when it comes over one, and says nothing when it leaves.
+    function world:mouseover(mob)
+        self.tokens.mouseover = mob
+        if mob then
+            self:fire("UPDATE_MOUSEOVER_UNIT")
+        end
+    end
+
+    --- Makes a unit your focus, or with nil clears it.
+    function world:focus(mob)
+        self.tokens.focus = mob
+        self:fire("PLAYER_FOCUS_CHANGED")
+    end
+
+    --- Someone in your group (from world:addPartyMember) targets a unit, or
+    --- with nil nothing.
+    function world:memberTarget(member, mob)
+        member.target = mob
+        self:fire("UNIT_TARGET", member.token)
+        if member.partyToken then
+            self:fire("UNIT_TARGET", member.partyToken)
+        end
+    end
+
+    --- You walk into a dungeon ("party"), a raid ("raid") or back out into
+    --- the open world ("none").
+    function world:enterInstance(kind)
+        self.instance = kind
+        self:fire("PLAYER_ENTERING_WORLD")
     end
 
     function world:enterCombat()
