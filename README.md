@@ -11,7 +11,7 @@ status effect: the debuff it leaves on enemies, or the buff it leaves on you.
 | Red X | All of them already have it, at full stacks. Casting again changes nothing. | You already have it, at full stacks. Casting again changes nothing. |
 
 An enemy that is immune to a debuff is left out: it never will have it, and is
-no reason to cast.
+no reason to cast. So is one that stands further off than the spell reaches.
 
 No icon means there is nothing to say: the spell applies no status effect, or
 it is a debuff and there is no enemy to judge and no fight going on. Out of the
@@ -19,7 +19,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.5.3 is an early draft. It loads and draws its icons in the real
+Version 0.5.4 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -47,7 +47,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: Version 0.5.3."
+first line of the reply gives the version, "Status Efficiency: Version 0.5.4."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -58,7 +58,11 @@ Attack an enemy. Every spell on your bars that leaves a debuff gets a green
 check. Cast one and, once it lands, its button turns to a red X until the effect
 ends. A cast that misses, or is dodged, parried or resisted, leaves the green
 check where it is. Spells that hit every enemy around you go yellow when only
-some of the enemies in the fight have the effect.
+some of the enemies in the fight have the effect. Only the ones the spell can
+reach are counted: with Thunder Clap on the enemy next to you and a second one
+shooting at you from twenty yards off, the icon is the red X, because casting
+again would do nothing for either (see
+[Enemies out of reach](#enemies-out-of-reach)).
 
 Spells that put a buff on you work the same way: a green check while you do
 not have the buff, a red X while you do. A buff you can also put on other
@@ -72,10 +76,13 @@ circle when some of them carry every stack and others do not.
 
 An enemy that is immune to a skill does not count for it. Use Rend on an
 elemental that cannot bleed and the game says "Immune". From then on Rend
-shows the red X on that elemental, and once the game has said so a second
-time, on every creature of its kind, in later sessions too. A skill that hits
-every enemy is judged on the ones that can take its effect. `/se immune` lists
-what was learned (see [Immune enemies](#immune-enemies)).
+shows the red X on that elemental for as long as it is about. Every creature
+of its kind gets the same, in later sessions too, once the addon is sure that
+this was no passing shield: at once when you fight on your own and your other
+hits land on the elemental, and otherwise when the game says "Immune" of its
+kind a second time. A skill that hits every enemy is judged on the ones that
+can take its effect. `/se immune` lists what was learned (see
+[Immune enemies](#immune-enemies)).
 
 An effect that a unit carries only once, whoever put it there, counts when it
 is another player's. With another warrior's Demoralizing Shout on the enemy
@@ -87,8 +94,10 @@ heal over time, only counts when it is yours.
 The icons appear when a fight starts, buff icons included, and stay on until it
 ends, whatever you have targeted: your target dying does not take them away. A
 fight is your own, or one that someone in your party or raid is in close by.
-While it lasts, a debuff with no enemy to judge it on shows the green check
-until you pick the next target. Out of a fight your buttons stay bare. If you
+While it lasts and you have no enemy targeted, a debuff for one enemy is judged
+on the enemies of the fight whose nameplates show: the green check when one of
+them could do with it or none is in sight, and the red X when every one of
+them carries it or is immune to it. Out of a fight your buttons stay bare. If you
 would rather see the icons all the time (buffs at any time, debuffs whenever
 there is an enemy to check), or only during fights of your own, change **when
 the icons appear** in the settings or with `/se when`.
@@ -421,14 +430,27 @@ So an enemy is taken to be immune to a skill only when the game says "Immune"
 of it in the very moment a cast of yours with that skill went to it, with
 nothing to show for the cast there. Then:
 
-- **That enemy** gets the red X on the skill for twelve seconds. An immunity
-  can pass (a shield, a banishment), so one word is not counted on for longer.
-  When the game says so again after that while, the enemy stays immune for as
-  long as it is about.
-- **Its kind of creature** is kept with your settings, and counted on once
-  the game has said so on two occasions: the same creature twice, or two of a
-  kind once each. From then on every creature of that kind is left out for
-  that skill before the first cast, in later sessions too.
+- **That enemy** gets the red X on the skill, and keeps it for as long as it
+  is about. (Up to 0.5.3 the X went again after twelve seconds, and the green
+  check then asked for a cast that the enemy turned away once more.)
+- **A passing shield is told by what else the game says of that enemy.** A
+  shield or a banishment turns everything away, your swings too. So when the
+  game also calls the enemy immune to something else, a swing or a skill
+  without an icon, with no hit landing on it in between, the enemy is taken
+  to be behind a shield. It gets the red X until a hit lands on it again, or
+  until twelve seconds after the game last said "Immune" of it, and nothing
+  is held against its kind of creature. A second skill with an icon that is
+  turned away is no such sign: an elemental can be immune to two of your
+  skills.
+- **Its kind of creature** is kept with your settings, and counted on once it
+  is sure that no shield was in the way. Fighting on your own, that is when a
+  hit landed on the enemy within four seconds before the game's word and
+  another within four seconds after it, with nothing else turned away in
+  between, or when a hit landed in the very moment of the word. In a party or
+  raid the game's word may be about somebody else's attack, so there it takes
+  the word on two occasions: the same creature twice, twelve seconds or more
+  apart, or two of a kind once each. From then on every creature of that kind
+  is left out for that skill before the first cast, in later sessions too.
 - **An enemy seen to carry the effect** is not immune, whatever was said
   before: what was kept of it is dropped at once. Its kind is then known for
   an immunity that comes and goes, and is never counted on as immune again.
@@ -467,10 +489,57 @@ for one skill, and `/se immune forget` for all of them.
   game's soft targeting has picked).
 - A debuff that hits everything around you is judged against the enemies that
   are in the fight and have a nameplate showing, plus your target.
-- No such enemy: the icon is hidden. During a fight it shows the green check
-  instead: nobody the skill could go to has its effect.
+- A debuff that hits everything around you leaves out the enemies that stand
+  further off than it reaches (see
+  [Enemies out of reach](#enemies-out-of-reach)).
+- No such enemy: the icon is hidden. During a fight a debuff aimed at one
+  enemy is judged on the enemies of the fight whose nameplates show instead:
+  the red X when every one of them carries the effect or is immune to it, and
+  the green check otherwise, also when none of them is in sight.
 - A buff is judged on you. One that can be cast on other people is judged on
   your target instead while that target is a living friend.
+
+### Enemies out of reach
+
+A skill that hits every enemy around you does nothing for one that stands
+further off than it reaches. Such an enemy is left out when the skill is
+judged: it is no reason to cast, and none not to. With every enemy out of
+reach there is nobody to judge the skill on, and its icon is hidden like that
+of any skill that can do nothing right now. (With **Every skill** chosen it
+shows what it would with all of them within reach.)
+
+The game does not tell an addon how far away an enemy is. It does say whether
+an enemy is within the range of each of your skills, which is what turns the
+key on a button red. The addon asks that about every enemy in the fight, for
+every skill on your bars that goes to an enemy, and puts the answers together.
+For a warrior: Rend reaches the enemy, so it is within 5 yards. Charge does, so
+it is 8 to 25 yards off. Neither does and Intimidating Shout does not either,
+so it is more than 25 yards off.
+
+An enemy is only left out when that proves it to be further off than the
+skill reaches. How far a skill reaches is read out of its description ("all
+enemies within 10 yards"), and for the well known ones that do not say it
+comes from a list (Thunder Clap: 8 yards). A skill whose reach is not known
+leaves nobody out, and an enemy of whom the game says nothing counts as it
+always did.
+
+Three things could make such a proof wrong, and each is watched for:
+
+- **A game that answers about your target whoever it is asked about.** What a
+  range says of anybody but your target is only believed once it has given
+  two enemies different answers in the same moment.
+- **A skill that cannot be used on some enemy at all** and says "out of
+  range" of it. One that says so of an enemy the other skills put inside its
+  range is not asked again.
+- **A skill that reaches further than thought**, through a talent or in
+  another version of the game. A cast that shows on an enemy taken to be out
+  of reach is noted, and from the second such cast on the skill is taken to
+  reach a yard past where that enemy stood. That is kept with your settings.
+
+A cast with an enemy out of reach is not expected to show on that enemy, and
+that it does not is never held against the skill. The record's `reach` part
+says what your game answered (see
+[Checking it against your client](#checking-it-against-your-client)).
 
 ### How it knows what is there
 
@@ -574,7 +643,15 @@ word was kept from it, each word with how often it came, a line for each of
 the last 20 times the game said "Immune" with what that was taken for, a line
 for each thing learned from it, and how the game named the kinds of the
 enemies you met (by number, by name only, or not at all). A cast's own line
-ends with the words the game said of its targets in that moment. `/se debug`
+ends with the words the game said of its targets in that moment. And what the
+game said when asked whether an enemy is within the range of a skill
+(`reach`): how often it said yes, no or nothing, of your target, your soft
+target and the nameplates, which ranges gave two enemies different answers
+at once and so are believed of enemies other than your target (`proven`), how
+often each skill began leaving an enemy out of its count (`left`), and a line
+for everything out of the ordinary (`notes`). Each area skill's entry under
+`spells` gives how far it is taken to reach (`reach`) and the words that was
+read from (`around`). `/se debug`
 prints the summary. The full
 record is saved with the addon's settings at the next `/reload` or logout,
 under `report` in `WTF\Account\<account>\SavedVariables\StatusEfficiency.lua`,
@@ -699,13 +776,26 @@ window gave the page, and which skills the game had no picture for.
     (see [Immune enemies](#immune-enemies)).
 
   `/se immune <skill>` adds such a creature by hand.
-- **An immunity that lasts longer than twelve seconds can be taken for a
-  lasting one.** Cast a skill twice at an enemy behind a long shield, twelve
-  seconds or more apart, before the skill has ever been seen to land on that
-  kind of creature, and the kind is kept as immune. The red X then stays on
-  after the shield is gone. Casting the skill once all the same puts it right
-  for good: the effect is seen to land, and that kind is never counted on as
-  immune again. So does `/se immune forget <skill>`.
+- **A shield can still be taken for a lasting immunity** when nothing else is
+  turned away while it holds. If a skill of yours with an icon is the one
+  thing an enemy's shield turns away, that enemy keeps the red X after the
+  shield is gone. If you were also fighting on your own and your hits landed
+  within four seconds before and after, or it happens with two of a kind, the
+  kind is kept as immune. This takes a shield that comes and goes between two
+  of your swings, before the skill has ever been seen to land on that kind of
+  creature. Casting the skill once all the same puts it right for good: the
+  effect is seen to land, and that kind is never counted on as immune again.
+  So does `/se immune forget <skill>`.
+- **A kind of enemy is only known to be immune after the game has said so
+  once.** The first cast at the first one of its kind still shows the green
+  check.
+- **How far off an enemy stands is only known through the ranges of your own
+  skills** (see [Enemies out of reach](#enemies-out-of-reach)). With nothing
+  but melee skills on the bars an enemy 6 yards off and one 30 yards off look
+  the same, and neither is left out of a skill that reaches 8 yards. An enemy
+  standing between a skill's reach and the next range your skills can tell
+  apart is counted as within reach, so the yellow half circle can still show
+  for it. An enemy without a nameplate is not seen at all, as before.
 - **A skill is held to the moment of its cast only after three landings.**
   Until then its casts are waited for a little longer, and in that time
   another effect arriving on the enemy after a miss can pass for the landing.

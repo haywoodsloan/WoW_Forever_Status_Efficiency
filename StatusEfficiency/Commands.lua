@@ -476,8 +476,11 @@ local function ListImmune()
     end
     if #sure == 0 and #once == 0 then
         Print("No enemy has been found immune to one of your skills yet. When the game says \"Immune\" as you use a "
-            .. "skill on an enemy, the addon remembers it, and from the second time on it treats every enemy of that "
-            .. "kind as immune to that skill. To add one yourself, target it and type /se immune <skill>.")
+            .. "skill on an enemy, the icon stops telling you to use that skill on that enemy. Once the addon is "
+            .. "sure the enemy was not just shielded for a moment, it does the same for every enemy of that kind. "
+            .. "It is sure at once when you fight alone and your other hits land on that enemy, and otherwise when "
+            .. "the game says \"Immune\" of that kind a second time. To add a kind of enemy yourself, target one "
+            .. "and type /se immune <skill>.")
         return
     end
     if #sure > 0 then
@@ -968,8 +971,40 @@ function commands.debug()
             break
         end
         print(format("    %s: %s is taken to be immune, %s", immune[i].name, ns.EnemyName(immune[i].key),
-            immune[i].left and (Span(immune[i].left) .. " more unless the game says so again")
-                or "for as long as it is about"))
+            (immune[i].shield and "behind a shield: until a hit lands on it, or " .. Span(immune[i].left)
+                .. " more unless the game says so again")
+            or (immune[i].left and (Span(immune[i].left) .. " more unless the game says so again"))
+            or "for as long as it is about"))
+    end
+    -- How far off an enemy stands is put together from what the game says of
+    -- the ranges of the skills on the bars (see "Enemies out of reach" in
+    -- Core.lua).
+    local ranges, reach = ns.ReachProbe()
+    if #ranges == 0 then
+        print("  Enemies out of reach: no skill on your bars has a range to ask the game about, so every enemy "
+            .. "counts as within reach.")
+    else
+        local told = {}
+        for i = 1, #ranges do
+            told[i] = format("%s to %s yards%s", ranges[i].least, ranges[i].most,
+                ranges[i].proven and "" or " (believed of your target only so far)")
+        end
+        local mine, others, soft = reach.target, reach.plate, reach.softenemy
+        print(format("  Enemies out of reach: told by skills that reach %s. Asked about your target, the game "
+            .. "answered %d times and said nothing %d times; about other enemies, %d and %d times.",
+            table.concat(told, ", "), mine.yes + mine.no, mine.silent,
+            others.yes + others.no + soft.yes + soft.no, others.silent + soft.silent))
+        local left = {}
+        for name, times in pairs(reach.left) do
+            left[#left + 1] = format("%s (%d)", name, times)
+        end
+        if #left > 0 then
+            table.sort(left)
+            print("    Began leaving an enemy out, by skill and how often: " .. table.concat(left, ", ") .. ".")
+        end
+        if #reach.notes > 0 then
+            print("    " .. reach.notes[#reach.notes])
+        end
     end
     local verdicts = journal.verdicts
     local landed = (verdicts.changed or 0) + (verdicts.seen or 0)

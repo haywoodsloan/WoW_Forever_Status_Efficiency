@@ -16,7 +16,7 @@
 local ADDON_NAME, ns = ...
 
 ns.ADDON_NAME = ADDON_NAME
-ns.VERSION = "0.5.3"
+ns.VERSION = "0.5.4"
 
 local pcall, type, pairs, tostring = pcall, type, pairs, tostring
 local setmetatable, max, min = setmetatable, math.max, math.min
@@ -1011,7 +1011,8 @@ function ns.SpellMaxStacks(spellID)
 end
 
 --- How far a spell reaches, in yards: little or nothing for one used at arm's
---- length or with no target at all. nil when the client will not say.
+--- length or with no target at all. nil when the client will not say. The
+--- second answer is how near its target may be at the least: 0 for most.
 function ns.SpellRange(spellID)
     local info = Call(C_Spell and C_Spell.GetSpellInfo, spellID)
     if type(info) ~= "table" then
@@ -1019,7 +1020,8 @@ function ns.SpellRange(spellID)
     end
     local range = Field(info, "maxRange")
     if type(range) == "number" then
-        return range
+        local least = Field(info, "minRange")
+        return range, type(least) == "number" and least > 0 and least or 0
     end
     return nil
 end
@@ -1280,6 +1282,41 @@ local function AskRange(ask, id, unit)
         return nil, true
     end
     return not (range == false or range == 0), true -- older clients answer 1 and 0
+end
+
+--- Asks a call of the "is it in reach" kind about one unit by name, and takes
+--- no answer about anybody else: true, false, or nil when the call is not
+--- there, fails, keeps it secret or has nothing to say of that unit.
+local function AskReach(ask, id, unit)
+    if type(ask) ~= "function" then
+        return nil
+    end
+    local ok, range = pcall(ask, id, unit)
+    if not ok or IsSecret(range) or range == nil then
+        return nil
+    end
+    return not (range == false or range == 0)
+end
+
+--- Whether a unit is within the range of the skill in an action slot: true,
+--- false (too far, or too close for a skill with a shortest range), or nil
+--- when the game does not say. The action bar is asked, then the spell, each
+--- with the unit named. Unlike ns.ActionUsable this never falls back to the
+--- plain question, which is about your target: an answer about somebody else
+--- is worse than none. A client whose calls take no unit at all may still
+--- answer about your target whoever is named, so what is said of anybody
+--- else needs proof before it is believed (see "Enemies out of reach" in
+--- Core.lua).
+function ns.UnitInReach(slot, spellID, unit)
+    local bar, book = C_ActionBar, C_Spell
+    local answer = nil
+    if slot then
+        answer = AskReach(bar and bar.IsActionInRange or IsActionInRange, slot, unit)
+    end
+    if answer == nil and spellID then
+        answer = AskReach(book and book.IsSpellInRange, spellID, unit)
+    end
+    return answer
 end
 
 --- The colour a part of a button is drawn in, when that can be read.

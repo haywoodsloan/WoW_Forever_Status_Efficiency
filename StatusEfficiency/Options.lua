@@ -2706,8 +2706,9 @@ local function BuildPane(view, page)
     -- that in play, and the two things /se immune does.
     local immuneLabel = RowLabel(pane, "Immune", 0, PANE_ROWS.immune, labelRoom,
         "These are the enemies this skill does not work on. When the game says \"Immune\" after one of your "
-            .. "casts, the addon remembers what kind of enemy that was. From the second time on, the icon stops "
-            .. "asking you to cast the skill on enemies of that kind.")
+            .. "casts, the icon stops asking you to cast the skill on that enemy. The addon also remembers what "
+            .. "kind of enemy it was. Once it is sure the enemy was not just shielded for a moment, it does the "
+            .. "same for every enemy of that kind.")
     local mark = PushButton(pane, MARK_WIDTH, 22, "Add target")
     mark:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.immune + 1)
     -- The enemies, under the two buttons like the sentence of any other row.

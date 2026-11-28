@@ -72,7 +72,9 @@ local SLACK = 0.001 -- two times this close together are the same moment
 local ECHO = 0.6 -- how long after a cast that is held to its frame a change on the unit is still noted
 local FRAME = 0.05 -- a report this close to a cast being announced came in the frame of the cast, or the next one
 local MOMENT = FRAME + SLACK -- the same, for what the game says in a word: a time that was added up does not fall outside
-local IMMUNE_HOLD = 12 -- how long a unit the game called immune to a spell is taken to stay so, the first time
+local IMMUNE_HOLD = 12 -- how long a unit behind a shield is kept as immune after the game last said so
+local BRACKET = 4 -- a hit this soon before the game's "immune" and one this soon after: no shield came between
+local WORDS_TTL = 30 -- how long the last hit on a unit and its last "immune" are kept
 local STALE = 600 -- what was learned of a unit that has not come up for this long is dropped
 local SWEEP = 30 -- how often that is looked into
 
@@ -127,11 +129,19 @@ local holders = {} -- unit key -> the cast it was put down to
 local endings = {}
 local heard = {} -- kind of unit token -> true once it has reported a change while details were hidden
 -- What the game has said of a unit and a spell of yours (see "Immune units").
--- immune[unit key][spell name] = { till, times, since }: it said "immune" as
---     that spell was cast at the unit, which is taken to be immune to it
---     until `till`: for a while the first time, and for as long as the unit
---     is remembered once the game has said so again after that while.
---     `since` is when it last said so in a way that was counted.
+-- immune[unit key][spell name] = { till, times, since, ... }: it said
+--     "immune" as that spell was cast at the unit, which is taken to be
+--     immune to it until `till`: for as long as the unit is remembered, as a
+--     rule. `since` is when it last said so on a new occasion, and `times`
+--     how many occasions that makes. Further:
+--       open     nothing has been said of the unit since: what comes next
+--                tells a lasting immunity from a shield
+--       hit      when a hit last landed on the unit before the word
+--       shield   other attacks were turned away there too with no hit
+--                landing in between: it goes when a hit lands again
+--       counted  this was told to the unit's kind of creature as an
+--                occasion (see ns.NoteImmune)
+--       timed    a player: kept the old way, for a while the first time
 -- taken[unit key][spell name] = true: the unit has carried that spell's
 --     effect, so it is not immune to it by nature. If the game calls it
 --     immune afterwards, that will pass, and nothing is kept of it.
@@ -140,6 +150,17 @@ local taken = {}
 local touched = {} -- unit key -> when either of those was last added to or asked for
 local sweepAt = 0 -- when they are next looked through for units to drop
 local refusedAt = {} -- unit key -> when the game last called it immune
+-- What the game last said of a unit, kept a little longer than that:
+-- spoken[unit key] = {
+--     hit      when a hit last landed on it (the game said "WOUND")
+--     fresh    the first such hit that has not been held against the marks yet
+--     no       when the game last called it immune, to anything at all
+--     hitThen  `hit` as it was just before that word
+--     other    when it last called it immune to something that was not, or
+--              not only, a cast of yours with an icon: a swing, somebody
+--              else's attack, a skill that is only listened for
+-- }
+local spoken = {}
 local unheeded = {} -- unit key -> that moment, while no cast of yours has been found to go with it
 local turned = {} -- unit key -> when the game last said an attack left nothing there for another reason
 local turnedWord = {} -- unit key -> its word for that: "MISS", "DODGE", "RESIST" ...
@@ -298,12 +319,30 @@ end
 -- before the moment of a word said of one of its units is: only then is it
 -- known what else there was in that moment.
 --
--- How long it is taken to stay immune: a while the first time, since some
--- immunities pass (a shield, a banishment), and for as long as the unit is
--- remembered once the game has said so again after that while. A unit that
--- has carried the effect is not immune by nature, so nothing is kept of what
--- the game says of it then. And a unit seen to carry the effect after all
--- stops being immune at once.
+-- How long it is taken to stay immune: for as long as the unit is
+-- remembered. An elemental that does not bleed will not start to, and an X
+-- that gave way to the check again after a while sent a second cast into
+-- the same immunity.
+--
+-- Some immunities pass, though: a shield, a banishment. Those turn
+-- everything away, your ordinary hits as well, and the game says "immune"
+-- of each. So what else it says of the unit tells the two apart:
+--
+--   * Called immune to something else as well (a swing, somebody else's
+--     attack) with no hit landing in between: taken for a shield. The unit
+--     is immune until a hit lands on it again, or until a while after the
+--     game last said so, and nothing is held against its kind of creature.
+--   * A hit landed on it just before the word and another just after, with
+--     nothing else turned away in between: no shield came and went in so
+--     short a time. It took the hits and not the spell, which is as good as
+--     proof that its kind is immune to the spell (see ns.NoteProven).
+--
+-- A unit that has carried the effect is not immune by nature, so nothing is
+-- kept of what the game says of it then. And a unit seen to carry the effect
+-- after all stops being immune at once. A player is nobody's kind and seldom
+-- immune for good: one is kept the old way, for a while the first time, and
+-- for as long as they are remembered once the game has said so again after
+-- that while.
 --
 -- Nothing else passes for immunity. A cast that showed nothing may as well
 -- have missed, and several in a row may as well have missed in a row: a red
@@ -357,9 +396,18 @@ local function Shared(key, unit, when)
     return shared
 end
 
---- A unit was seen to carry a spell's effect, so it is not immune to it.
-local function Taken(key, name, when)
-    touched[key] = when
+--- What the game last said of a unit, to add to.
+local function Spoken(key)
+    local said = spoken[key]
+    if not said then
+        said = {}
+        spoken[key] = said
+    end
+    return said
+end
+
+--- Takes a unit's mark for one spell away.
+local function Unmark(key, name)
     local marks = immune[key]
     if marks and marks[name] then
         marks[name] = nil
@@ -367,6 +415,12 @@ local function Taken(key, name, when)
             immune[key] = nil
         end
     end
+end
+
+--- A unit was seen to carry a spell's effect, so it is not immune to it.
+local function Taken(key, name, when)
+    touched[key] = when
+    Unmark(key, name)
     local set = taken[key]
     if not set then
         set = {}
@@ -381,8 +435,11 @@ end
 --- The game called a unit immune to a cast of yours that showed nothing
 --- there. Says what was made of it: "passing" for a unit that has carried
 --- the effect before (nothing is kept), "once" the first time, "again" when
---- it is said once more within that first while, and "twice" when it is said
---- after it: from then on the unit stays immune.
+--- it is said once more within a while of that, and "twice" when it is said
+--- after that while: a new occasion. The second answer is true when the unit
+--- looks to be behind a shield (see "Immune units"), and the third when a
+--- hit landed on it in the very moment of the word: it took the one and not
+--- the other, which settles that it is no shield.
 local function Refuse(key, name, when)
     local set = taken[key]
     if set and set[name] then
@@ -395,20 +452,122 @@ local function Refuse(key, name, when)
         immune[key] = marks
     end
     local mark = marks[name]
+    local how = "once"
     if not mark then
-        marks[name] = { till = when + IMMUNE_HOLD, times = 1, since = when }
-        return "once"
+        mark = { times = 1, since = when }
+        marks[name] = mark
+    elseif when - mark.since < IMMUNE_HOLD then
+        how = "again"
+    else
+        how = "twice"
+        mark.times = mark.times + 1
+        mark.since = when
     end
-    if when - mark.since < IMMUNE_HOLD then
-        if mark.times < 2 then
+    if key:find("^Player%-") then
+        mark.timed = true
+        if how == "twice" then
+            mark.till = huge
+        elseif mark.times < 2 then
             mark.till = when + IMMUNE_HOLD
         end
-        return "again"
+        return how
     end
-    mark.times = mark.times + 1
-    mark.since = when
+    if how == "again" then
+        if mark.shield then
+            mark.till = when + IMMUNE_HOLD
+        end
+        return how, mark.shield == true
+    end
+    -- A new occasion. What the game said of the unit around it: the hit that
+    -- last landed before the word, and whether something else was turned
+    -- away there with no hit landing between the two.
+    local said = Spoken(key)
+    local before = said.no == when and said.hitThen or nil -- nil too once a later word has taken this one's place
+    local latest = said.hit
+    local other = said.other
+    mark.counted = nil
+    if other and other ~= when and when - other <= IMMUNE_HOLD then
+        local first, last = min(other, when), max(other, when)
+        local between = (latest and latest > first and latest < last) or (before and before > first and before < last)
+        if not between then
+            mark.shield, mark.open, mark.hit = true, nil, nil
+            mark.till = last + IMMUNE_HOLD
+            return how, true
+        end
+    end
+    mark.shield = nil
     mark.till = huge
-    return "twice"
+    mark.hit = before
+    mark.counted = true
+    if latest and latest - when <= MOMENT and when - latest <= MOMENT then
+        mark.open = nil
+        return how, false, true
+    end
+    mark.open = true
+    return how, false
+end
+
+--- The game called a unit immune to something that was not a cast of yours
+--- with an icon, or not that alone: a swing, somebody else's attack, a skill
+--- that is only listened for. A unit that turned a spell of yours away
+--- shortly before, with no hit landing on it since, looks to be behind a
+--- shield. Not when a hit landed there in the very moment of this word:
+--- whatever it turned away then, it took that hit.
+---
+--- A cast of yours with an icon that is turned away is no such sign for the
+--- other spells the unit turned away. An elemental can be immune to two of
+--- your skills, and they are often used one right after the other.
+local function Elsewhere(key, when)
+    local said = Spoken(key)
+    local hit = said.hit
+    if hit and hit - when <= MOMENT and when - hit <= MOMENT then
+        return
+    end
+    if not said.other or when > said.other then
+        said.other = when
+    end
+    local marks = immune[key]
+    if not marks or (said.fresh and said.fresh < when) then
+        return -- a hit landed first: the marks are held against that
+    end
+    for name, mark in pairs(marks) do
+        if not mark.timed and when > mark.since then
+            if mark.shield then
+                mark.till = max(mark.till, when + IMMUNE_HOLD)
+            elseif mark.open then
+                mark.shield, mark.open, mark.hit = true, nil, nil
+                mark.till = when + IMMUNE_HOLD
+                ns.NoteShield(name, key, when, mark.counted == true)
+                mark.counted = nil
+            end
+        end
+    end
+end
+
+--- A hit was seen to land on a unit, and the moment of it is over, so that
+--- whatever else the game said in it has been taken in. A unit behind a
+--- shield has lost it. One whose word is still open took this hit and not
+--- the spell: with a hit close before the word as well, it is settled that
+--- no shield was there.
+local function Struck(key, when)
+    local marks = immune[key]
+    if not marks then
+        return
+    end
+    for name, mark in pairs(marks) do
+        if mark.shield then
+            marks[name] = nil
+            ns.NoteShieldGone(name, key, when)
+        elseif mark.open and when > mark.since then
+            mark.open = nil
+            if mark.hit and mark.since - mark.hit <= BRACKET and when - mark.since <= BRACKET then
+                ns.NoteProven(name, key, when)
+            end
+        end
+    end
+    if next(marks) == nil then
+        immune[key] = nil
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -578,7 +737,7 @@ function Tracker:Succeeded(snapshot, spell, now)
     for key, was in pairs(snapshot.units) do
         local unit
         if spell.area then
-            unit = { pre = not snapshot.late and was.pre or nil, engaged = was.engaged }
+            unit = { pre = not snapshot.late and was.pre or nil, engaged = was.engaged, far = was.far }
         elseif key == snapshot.primary then
             unit = { pre = not snapshot.late and was.pre or nil, engaged = true }
         end
@@ -652,6 +811,9 @@ function Tracker:Succeeded(snapshot, spell, now)
         unit.had = rec ~= nil
         if unit.trusted then
             -- Nothing is taken on trust: the books change when the unit does.
+        elseif unit.far then
+            -- Out of the spell's reach, as far as can be told: it is not
+            -- taken to land there, and a timer running there is left alone.
         elseif spell.tracked then
             if rec then
                 if unit.engaged then
@@ -888,6 +1050,8 @@ function Tracker:Said(key, when, word)
             return -- one word, heard once for every name the unit goes by
         end
         refusedAt[key] = when
+        local said = Spoken(key)
+        said.no, said.hitThen = when, said.hit
     else
         turned[key] = when
         turnedWord[key] = word
@@ -919,6 +1083,19 @@ function Tracker:Said(key, when, word)
         ns.NoteRefusal("two", found, when)
     elseif refusal and not found then
         unheeded[key] = when
+    end
+end
+
+--- The game said that a hit landed on a unit: its word for that is "WOUND".
+--- Whose hit is not told, and need not be. A unit that takes hits is behind
+--- no shield, which is what tells a lasting immunity from one that passes
+--- (see "Immune units"). It is held against the unit's marks once the moment
+--- of it is over, when everything else said in that moment has been taken in.
+function Tracker:Hit(key, when)
+    local said = Spoken(key)
+    said.hit = when
+    if not said.fresh then
+        said.fresh = when
     end
 end
 
@@ -1242,6 +1419,12 @@ local function Finish(cast, now, engaged)
             verdict = "seen" -- confirmed by its instance id, or read directly
         elseif answered and not unit.signal then
             refused = true
+        elseif unit.far and not unit.signal then
+            -- Out of the spell's reach when it was cast, as far as could be
+            -- told: nothing was to be expected there. That nothing showed
+            -- says nothing of the spell, nor of whether the game reports
+            -- what changes on that unit.
+            verdict = "out of reach"
         elseif unit.observed then
             -- Its effects were countable before and after, and nothing new appeared.
             if unit.had or (not unit.direct and unit.observed.n > LiveCount(key, name, now)) then
@@ -1362,6 +1545,17 @@ local function Finish(cast, now, engaged)
             -- What became of the game's word, for the saved report.
             local how = (refused and "counted") or ((unit.settled or unit.signal) and "shown") or "mixed"
             ns.NoteRefusal(how, cast, unit.refused, unit.early)
+            if not (refused and cast.tracked) then
+                -- Not the answer to a skill with an icon: one more thing
+                -- that was turned away there.
+                Elsewhere(key, unit.refused)
+            end
+        end
+        -- A cast that showed on a unit taken to be out of its reach: the
+        -- spell reaches further than was thought.
+        if unit.far and cast.tracked and (verdict == "seen" or (verdict == "changed" and not unit.lost
+            and not unit.refused)) then
+            ns.NoteReached(name, unit.far)
         end
         -- A unit that was seen to carry the effect is not immune to it. Not
         -- one that was lost sight of, whose change may have been anything,
@@ -1412,8 +1606,8 @@ local function Lose(cast, key, unit)
     if not unit.trusted or unit.signal or unit.settled or Answered(unit) or not cast.tracked then
         return -- (the game's "immune" leaves no doubt to give the benefit of)
     end
-    if cast.area and not unit.engaged then
-        return
+    if cast.area and (not unit.engaged or unit.far) then
+        return -- (nor on an enemy that was out of the spell's reach)
     end
     local name = cast.name
     local rec = Live(key, name, cast.time)
@@ -1610,6 +1804,17 @@ function Tracker:Update(now, seen, engaged, direct)
             -- No cast of yours was announced in that moment after all.
             ns.NoteRefusal("nobody", lastCast[key], when)
             unheeded[key] = nil
+            Elsewhere(key, when)
+        end
+    end
+    for key, said in pairs(spoken) do
+        local fresh = said.fresh
+        if fresh and now - fresh > MOMENT then
+            said.fresh = nil
+            Struck(key, fresh)
+        end
+        if now - max(said.hit or 0, said.no or 0, said.other or 0) > WORDS_TTL then
+            spoken[key] = nil
         end
     end
     for key, when in pairs(refusedAt) do
@@ -1773,13 +1978,7 @@ end
 --- Takes back that a unit is immune to a spell: its kind is known to carry
 --- the effect, so what the game said of this one will pass.
 function Tracker:Pardon(key, name)
-    local marks = immune[key]
-    if marks and marks[name] then
-        marks[name] = nil
-        if next(marks) == nil then
-            immune[key] = nil
-        end
-    end
+    Unmark(key, name)
 end
 
 --- Forgets which units were called immune to one spell and which were seen
@@ -1799,13 +1998,17 @@ function Tracker:ForgetImmune(name)
 end
 
 --- The units taken to be immune right now, for /se debug:
---- { { key, name, left } ... }. `left` is nil for one that stays immune.
+--- { { key, name, left, shield } ... }. `left` is nil for one that stays
+--- immune, and `shield` true for one that looks to be behind a shield.
 function Tracker:Immunities(now)
     local list = {}
     for key, marks in pairs(immune) do
         for name, mark in pairs(marks) do
             if now < mark.till then
-                list[#list + 1] = { key = key, name = name, left = mark.till ~= huge and (mark.till - now) or nil }
+                list[#list + 1] = {
+                    key = key, name = name, shield = mark.shield,
+                    left = mark.till ~= huge and (mark.till - now) or nil,
+                }
             end
         end
     end
@@ -1851,7 +2054,7 @@ function Tracker:ForgetUnit(key)
     holders[key] = nil
     endings[Owner(key)] = nil -- kept under the unit, whichever book this is
     immune[key], taken[key], touched[key] = nil, nil, nil
-    unheeded[key], refusedAt[key], lastCast[key] = nil, nil, nil
+    unheeded[key], refusedAt[key], lastCast[key], spoken[key] = nil, nil, nil, nil
     turned[key], turnedWord[key] = nil, nil
     for i = 1, #pending do
         pending[i].units[key] = nil
@@ -1892,7 +2095,7 @@ function Tracker:Reset()
     for unit in pairs(endings) do
         endings[unit] = nil
     end
-    for _, tbl in pairs({ immune, taken, touched, unheeded, refusedAt, turned, turnedWord, lastCast }) do
+    for _, tbl in pairs({ immune, taken, touched, unheeded, refusedAt, turned, turnedWord, lastCast, spoken }) do
         for key in pairs(tbl) do
             tbl[key] = nil
         end

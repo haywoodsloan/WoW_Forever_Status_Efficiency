@@ -716,7 +716,7 @@ function Mock.new(options)
             if not data or data.unloaded then
                 return nil
             end
-            return { name = data.name, spellID = data.id, iconID = 1, castTime = 0, minRange = 0,
+            return { name = data.name, spellID = data.id, iconID = 1, castTime = 0, minRange = data.minRange or 0,
                 maxRange = data.range or 0 }
         end,
         GetSpellDescription = function(spell)
@@ -841,9 +841,33 @@ function Mock.new(options)
     -- slot the same, so that the action bar, the spell and the look of the
     -- button agree as they do in the game.
 
+    --- Whether a spell reaches someone, going by how far off they stand
+    --- (mob.distance, in yards). A spell with a range reaches from its
+    --- shortest (data.minRange) to its longest (data.range); one marked
+    --- `melee` has no range of its own and reaches five yards. Any other
+    --- spell hits where you stand, and range does not come into it: nil. Nil
+    --- as well for someone whose distance was never said.
+    local function ByDistance(data, mob)
+        local far = mob and mob.distance
+        if not data or type(far) ~= "number" then
+            return nil
+        end
+        local least, most = data.minRange or 0, data.range or 0
+        if most <= 0 then
+            if not data.melee then
+                return nil
+            end
+            most = 5
+        end
+        return far >= least and far <= most
+    end
+
     --- The reach of an action or a spell to a unit: `inRange` to your target,
-    --- `rangeTo[unit]` to anyone else. Nil when there is nothing to judge it on.
-    local function Reach(subject, unit)
+    --- `rangeTo[unit]` to anyone else, as world:setRange said. Where a test
+    --- said nothing of the kind, it follows from how far off the unit stands
+    --- (see ByDistance), with `data` the spell it is about. Nil when there is
+    --- nothing to judge it on.
+    local function Reach(subject, unit, data)
         if unit ~= nil and type(unit) ~= "string" then
             error("bad unit", 3)
         end
@@ -854,8 +878,15 @@ function Mock.new(options)
             end
             if mob ~= world.tokens.target then
                 local to = subject.rangeTo
-                return to and to[unit]
+                local said = to and to[unit]
+                if said == nil then
+                    said = ByDistance(data, mob)
+                end
+                return said
             end
+        end
+        if subject.inRange == nil then
+            return ByDistance(data, world.tokens.target)
         end
         return subject.inRange
     end
@@ -903,7 +934,7 @@ function Mock.new(options)
         local action = world.actions[slot]
         local inRange = nil
         if action then
-            inRange = Reach(action, unit)
+            inRange = Reach(action, unit, world.spells[action.kind == "macro" and world.macros[action.id] or action.id])
         end
         if inRange == nil then
             return nil -- no target, or range does not come into it
@@ -964,7 +995,7 @@ function Mock.new(options)
             local data = FindSpell(spell)
             local inRange = nil
             if data and not data.strange and spellMode ~= "strange" then
-                inRange = Reach(data, unit)
+                inRange = Reach(data, unit, data)
             end
             if inRange == nil then
                 return nil
@@ -2304,6 +2335,9 @@ function Mock.new(options)
     --- share the game's number for it, which is part of each one's GUID.
     --- `fields` can say otherwise (kind = number), and what the creature is
     --- immune to: immune = true for everything, or a set of effect names.
+    --- distance = how many yards off it stands, which decides whether your
+    --- skills reach it (see ByDistance); left out, nothing is said of range
+    --- but what world:setRange says.
     function world:addMob(name, fields)
         local kind = (fields and fields.kind) or self.kinds[name]
         if not kind then
@@ -2597,7 +2631,8 @@ function Mock.new(options)
     --- lands, early = seconds the effect shows on the unit before the cast is
     --- announced, castTime = seconds between sent and success, noSent = true,
     --- fail = true (the cast is sent and then fails), hits = list of mobs an
-    --- area spell reaches (default: every engaged mob plus the target),
+    --- area spell reaches (default: every engaged mob plus the target, short
+    --- of the ones standing further off than the effect's `radius`),
     --- quiet = true (does not start combat).
     ---
     --- A debuff that leaves nothing on an enemy has the game say why (see
@@ -2607,8 +2642,9 @@ function Mock.new(options)
     --- is announced; opts.said = "first" has it say so before that, and
     --- opts.said = seconds that much later.
     ---
-    --- A spell's effect = { duration, name, area, extra, fromPlayer, buff,
-    --- replaces, toggle, shared, stacks, party }. `shared` and `stacks` are as
+    --- A spell's effect = { duration, name, area, radius, extra, fromPlayer, buff,
+    --- replaces, toggle, shared, stacks, party }. `radius` is how many yards
+    --- around you an area effect reaches (mob.distance says how far off a mob is). `shared` and `stacks` are as
     --- world:applyAura has them, and `party` marks a buff that someone else's
     --- cast puts on you too (see world:partyCast). With buff = true it lands on the player, or on a
     --- friendly target when the spell is helpful and not selfOnly, and removes
@@ -2645,7 +2681,10 @@ function Mock.new(options)
                 if not victims then
                     victims = {}
                     for _, mob in pairs(self.mobs) do
-                        if not mob.dead and (mob.engaged or mob == target) then
+                        -- One that stands further off than the effect reaches is not hit.
+                        local near = not (effect.radius and type(mob.distance) == "number"
+                            and mob.distance > effect.radius)
+                        if not mob.dead and (mob.engaged or mob == target) and near then
                             victims[#victims + 1] = mob
                         end
                     end

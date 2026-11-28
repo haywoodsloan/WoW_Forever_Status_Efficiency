@@ -1086,9 +1086,15 @@ local function NoteSpell(info, kind, source)
             passed = info.tooltipPassed, -- a time that was not taken for an effect's length
             stacks = info.stacksRead, -- the words the most stacks were read from
             own = info.ownRead, -- the words that show its effect to be each caster's own
+            range = info.range, -- how far it goes, and how near its target may be: what is asked of each enemy
+            least = info.least,
+            around = info.reachRead, -- the words that say how far around you it reaches
         }
         spells[info.name] = entry
     end
+    -- How far around you it is taken to reach, for a skill that is judged on
+    -- every enemy in the fight.
+    entry.reach = Spells:Reach(info)
     if entry.gameStacks == nil then
         -- What the game's own data says of its stacks: false for an effect
         -- that goes on once, and nothing while the client keeps it back.
@@ -1096,7 +1102,9 @@ local function NoteSpell(info, kind, source)
     end
 end
 
-local VERDICTS = { "seen", "changed", "immune", "nothing new", "silent", "unproven", "unclear", "assumed", "unknown" }
+local VERDICTS = {
+    "seen", "changed", "immune", "nothing new", "silent", "out of reach", "unproven", "unclear", "assumed", "unknown",
+}
 
 -- Whose effects each kind of unit token reports changes to, for a line in chat.
 local WHOSE = {
@@ -1242,15 +1250,22 @@ ns.listening = listening
 -- cast and nothing else said that could be its answer, that is taken as the
 -- cast's answer (see "Immune units" in Tracker.lua for what is ruled out):
 --
---   * that enemy is taken to be immune to the spell for a while, and for
---     good once the game has said so again after that while (Tracker.lua);
+--   * that enemy is taken to be immune to the spell for as long as it is
+--     remembered, unless it looks to be behind a shield, which turns your
+--     ordinary hits away as well: then until a hit lands on it again
+--     (Tracker.lua);
 --   * its kind of creature is kept with the settings, and counted on once
---     the game has said so twice of that kind (Spells.lua);
+--     the game has said so twice of that kind, or once when you are on your
+--     own and your hits landed on the enemy right before and right after
+--     (Spells.lua);
 --   * an enemy, or a kind, that is seen to carry the effect is not immune,
 --     whatever was said, and what was kept of it is dropped.
 --
 -- Nothing else passes for immunity. A cast that showed nothing may as well
 -- have missed, and several in a row may as well have missed in a row.
+--
+-- The game's word for a hit that landed, "WOUND", is passed on as well: it
+-- is what tells a lasting immunity from a shield.
 --
 -- What the game said is counted in the saved report, so that it can be read
 -- there what a real client sends: whether it says anything of enemies in a
@@ -1389,13 +1404,17 @@ local function OnCombat(token, word)
         end
     end
     words[kept] = (words[kept] or 0) + 1
-    if DID[word] then
+    if DID[word] and word ~= "WOUND" then
         return -- says nothing of a cast that left nothing
     end
     if not Attackable(token) then
         return -- no enemy: nothing of yours was turned away there
     end
-    Tracker:Said(ns.UnitKey(token), ns.Now(), word)
+    if word == "WOUND" then
+        Tracker:Hit(ns.UnitKey(token), ns.Now()) -- it takes hits: no shield is in the way
+    else
+        Tracker:Said(ns.UnitKey(token), ns.Now(), word)
+    end
 end
 
 local function CombatSaid(token, word)
@@ -1433,12 +1452,18 @@ end
 
 --- A cast of yours was answered with "immune". `how` is what the tracker
 --- made of it for that one enemy: "once", "again", "twice" or "passing" (see
---- Refuse in Tracker.lua). Its kind of creature is told the same.
-function ns.NoteImmune(name, key, when, how)
+--- Refuse in Tracker.lua). `shielded` is true when the enemy looks to be
+--- behind a shield, which is not held against its kind of creature, and
+--- `struck` when a hit landed on it in the very moment of the word, which
+--- settles that it is none. Its kind is told the rest.
+function ns.NoteImmune(name, key, when, how, shielded, struck)
     local kind = kindOf[key] or nil
     local text
     if how == "again" then
         text = "said again of the same enemy"
+    elseif shielded then
+        text = "other attacks were turned away there too with no hit landing in between, so this may be a shield: "
+            .. "that enemy is left out until a hit lands on it again, and nothing is held against its kind"
     else
         local known = kind and Spells:KindImmune(name, kind)
         local sure, seen
@@ -1453,16 +1478,66 @@ function ns.NoteImmune(name, key, when, how)
         elseif known then
             text = nil -- nothing new: its kind was counted on as immune already
         elseif not kind then
-            text = how == "twice" and "that one enemy is immune from now on" or "that one enemy is immune for now"
+            text = key:find("^Player%-") and (how == "twice" and "that one enemy is immune from now on"
+                or "that one enemy is immune for now") or "that one enemy is left out from now on"
         elseif sure then
             text = format("its kind is counted on as immune from now on (said %d times)", seen)
         else
-            text = "immune for now, and for good once it is said of its kind again"
+            text = "that enemy is left out from now on, and its kind once this is proven or said of the kind again"
+        end
+        if struck and sure ~= "passing" and how ~= "passing" then
+            if text then
+                Keep(Said().learned, format("%s %s on %s: %s", Stamp(when), name, Named(key), text))
+                text = nil
+            end
+            ns.NoteProven(name, key, when, true)
         end
     end
     if text then
         Keep(Said().learned, format("%s %s on %s: %s", Stamp(when), name, Named(key), text))
     end
+end
+
+--- An enemy that turned a spell of yours away took your hits all the same:
+--- one landed right before the game's word and one right after (or, with
+--- `struck`, in the very moment of it), and nothing else was turned away in
+--- between. No shield comes and goes in so short a time, so it is the spell
+--- the enemy is immune to. On your own, where every word the game says of
+--- your enemy is about an attack of yours, that is proof enough for its kind
+--- of creature. In a group it still takes the game saying so twice.
+function ns.NoteProven(name, key, when, struck)
+    local kind = kindOf[key]
+    if not kind or ns.GroupState() ~= "alone" then
+        return
+    end
+    if Spells:ProveImmune(name, kind) then
+        Keep(Said().learned, format("%s %s on %s: %s, so it is behind no shield: its kind is counted on as immune "
+            .. "from now on", Stamp(when), name, Named(key),
+            struck and "a hit landed on it in that very moment" or "your hits landed on it right before and right after"))
+        stateDirty = true
+    end
+end
+
+--- An enemy that turned a spell of yours away turned something else away as
+--- well before any hit landed on it: it looks to be behind a shield. With
+--- `counted`, its kind was told of an occasion that is now taken back.
+function ns.NoteShield(name, key, when, counted)
+    local kind = kindOf[key]
+    if counted and kind then
+        Spells:Unsee(name, kind)
+    end
+    Keep(Said().learned, format("%s %s on %s: something else was turned away there before a hit landed, so this "
+        .. "may be a shield: left out until a hit lands on it again, and not held against its kind",
+        Stamp(when), name, Named(key)))
+    stateDirty = true
+end
+
+--- A hit landed on an enemy that was taken to be behind a shield: the
+--- shield is gone, and the enemy is judged like any other again.
+function ns.NoteShieldGone(name, key, when)
+    Keep(Said().learned, format("%s %s on %s: a hit landed on it again, so the shield is gone: no longer left out",
+        Stamp(when), name, Named(key)))
+    stateDirty = true
 end
 
 --- An enemy was seen to carry a spell's effect: its kind is not immune to
@@ -1739,30 +1814,348 @@ local function Carries(unit, key, name, now, calm, kind, most, anyone)
     return "all"
 end
 
+--------------------------------------------------------------------------------
+-- Enemies out of reach
+--
+-- A skill that hits every enemy around you does nothing for one that stands
+-- too far away: such an enemy is no reason to use it, and none not to. The
+-- game does not tell an addon how far away a unit is. It does say whether a
+-- unit is within the range of each of your skills, the answer that turns a
+-- button's key red. So every skill on the bars that goes to an enemy is
+-- asked about each enemy in the fight, and what they say is put together:
+-- Rend can reach it (within 5 yards), or Charge can (8 to 25), or neither
+-- can and Intimidating Shout cannot either (beyond 10, so beyond 25).
+--
+-- An enemy is only left out when that proves it to be further off than the
+-- skill reaches. One that nothing is known of counts as before, and so does
+-- every enemy while the skill's own reach is not known (see Spells:Reach).
+--
+-- Three things could make such a proof wrong, and each is watched for:
+--
+--   * A client that answers about your target whoever it is asked about. So
+--     what a range says of anybody but your target is only believed once it
+--     has given two enemies different answers in the same moment.
+--   * A skill that cannot be used on some enemy at all, and says "out of
+--     range" of it. One that says so of an enemy the others put inside its
+--     range is not asked again.
+--   * A skill that reaches further than thought. A cast that shows on an
+--     enemy taken to be out of reach is noted, and from the second one on
+--     the skill is taken to reach past where that enemy stood
+--     (Spells:Outreached).
+--------------------------------------------------------------------------------
+
+-- What the rest of this file needs of it: Reach.Ask starts a round of asking,
+-- Reach.Beyond says whether an enemy is out of a skill's reach, Reach.Leaves
+-- keeps count for the saved report, and Reach.nobody holds, by name, the
+-- area skills that have every enemy out of their reach in this pass.
+local Reach = { nobody = {} }
+
+do
+    local tinsert, tremove = table.insert, table.remove
+    local MELEE = 5 -- yards: what a skill reaches that has no range of its own and answers all the same
+    local PROBE_SKILLS = 2 -- skills of one range asked about a unit before that range is given up for it, once one of them is known to answer
+
+    local probes = {} -- the ranges the skills on the bars have: { least, most, name, proven, heard, [1..n] = bar entry }
+    local probesAt -- the reading of the bars they were listed from
+    local proven = {} -- range name -> true once it gave two enemies different answers at once: the game heeds whom it is asked about
+    local liars = {} -- spell id -> true for a skill that said "out of range" of an enemy inside its range
+    local heard = {} -- spell id -> true for a skill the game has answered about: asked before the others of its range
+    local reachLo = {} -- unit key -> how many yards off it is at the least, this pass; false when not known
+    local probeYes, probeNo = {}, {} -- probe -> a unit that got that answer in this round of asking
+    local answers, askedOf = {}, {} -- scratch: what each probe said of the unit being asked about, and which skill said it
+    local leftOut = {} -- spell name -> true while an enemy is left out of its count
+
+    --- The saved report's part on reach: how often the game said yes, no or
+    --- nothing when asked whether an enemy is within a skill's range, by the
+    --- kind of unit token asked about; the ranges whose answers about enemies
+    --- other than your target were proven; how often each skill began leaving
+    --- an enemy out; and a line for everything out of the ordinary.
+    local function ReachReport()
+        local journal = Journal()
+        local reach = journal.reach
+        if type(reach) ~= "table" then
+            reach = {
+                target = { yes = 0, no = 0, silent = 0 },
+                softenemy = { yes = 0, no = 0, silent = 0 },
+                plate = { yes = 0, no = 0, silent = 0 },
+                proven = {},
+                left = {},
+                notes = {},
+            }
+            journal.reach = reach
+        end
+        return reach
+    end
+
+    --- Lists the ranges of the skills on the bars that go to an enemy, each with
+    --- the buttons to ask. A skill that hits all around you has no range of
+    --- its own and says nothing when asked: the ones that have answered before
+    --- come first, so that such a skill does not stand in the way of one that
+    --- does answer.
+    local function ListProbes()
+        probesAt = lastScan
+        for i = #probes, 1, -1 do
+            probes[i] = nil
+        end
+        local byRange = {}
+        for i = 1, #entries do
+            local entry = entries[i]
+            local info = entry.info
+            -- A skill the game calls harmful, or one it calls neither harmful
+            -- nor helpful that has a range of its own (a shout that needs a
+            -- target, say).
+            if info and entry.slot and type(info.range) == "number" and not liars[info.id]
+                and (info.harmful == true or (info.helpful ~= true and info.selfOnly ~= true and info.range > 0)) then
+                local most = info.range > 0 and info.range or MELEE
+                local least = type(info.least) == "number" and info.least or 0
+                if least < most then
+                    local name = least .. "-" .. most
+                    local probe = byRange[name]
+                    if not probe then
+                        probe = { least = least, most = most, name = name, proven = proven[name] }
+                        byRange[name] = probe
+                        probes[#probes + 1] = probe
+                    end
+                    local listed = false
+                    for c = 1, #probe do
+                        listed = listed or probe[c].info == info -- the same skill on two buttons
+                    end
+                    if not listed then
+                        if heard[info.id] then
+                            probe.heard = (probe.heard or 0) + 1
+                            tinsert(probe, probe.heard, entry)
+                        else
+                            probe[#probe + 1] = entry
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    --- Starts a round of asking: all of it happens in one moment, so a range
+    --- that gives two enemies different answers in it shows that the game
+    --- heeds whom it is asked about. With `pass`, a pass over the fight starts as well, and what
+    --- was worked out in the last one is dropped.
+    function Reach.Ask(pass)
+        ns.Wipe(probeYes)
+        ns.Wipe(probeNo)
+        if pass then
+            ns.Wipe(reachLo)
+            ns.Wipe(Reach.nobody)
+        end
+    end
+
+    --- How many yards off the unit behind a token is at the least, as far as the
+    --- ranges of your skills tell. Nil when nothing is known of it and when what
+    --- is said does not add up. Of anybody but your target, a range is only
+    --- heeded once it is proven that the game heeds whom it is asked about.
+    local function FarAtLeast(unit, key)
+        local known = reachLo[key]
+        if known ~= nil then
+            return known or nil
+        end
+        if probesAt ~= lastScan then
+            ListProbes()
+        end
+        local report = ReachReport()
+        local tally = report[TokenKind(unit)] or report.plate
+        local lo, hi = 0, math.huge
+        local any = false
+        local mine = unit == "target"
+        for i = 1, #probes do
+            local probe = probes[i]
+            local answer, asked
+            -- Every skill of this range is tried until one of them has
+            -- answered; from then on the first few are enough.
+            for c = 1, probe.heard and min(#probe, max(PROBE_SKILLS, probe.heard)) or #probe do
+                asked = probe[c]
+                answer = ns.UnitInReach(asked.slot, asked.info.id, unit)
+                if answer ~= nil then
+                    if not heard[asked.info.id] then
+                        heard[asked.info.id] = true
+                        probe.heard = (probe.heard or 0) + 1
+                        tremove(probe, c)
+                        tinsert(probe, probe.heard, asked)
+                    end
+                    break
+                end
+            end
+            if answer == nil then
+                tally.silent = tally.silent + 1
+            else
+                local same, other = probeYes, probeNo
+                if answer then
+                    tally.yes = tally.yes + 1
+                else
+                    tally.no = tally.no + 1
+                    same, other = probeNo, probeYes
+                end
+                same[probe] = same[probe] or key
+                if not probe.proven and other[probe] and other[probe] ~= key then
+                    probe.proven = true
+                    proven[probe.name] = true
+                    if type(report.proven) == "table" then
+                        report.proven[probe.name] = true
+                    end
+                end
+                if not (mine or probe.proven) then
+                    answer = nil -- not believed of anybody but your target yet
+                elseif answer then
+                    -- Within this skill's range: no nearer than its shortest, no further than its longest.
+                    any = true
+                    lo, hi = max(lo, probe.least), min(hi, probe.most)
+                else
+                    any = true
+                end
+            end
+            answers[i], askedOf[i] = answer, asked
+        end
+        for i = #probes + 1, #answers do
+            answers[i], askedOf[i] = nil, nil
+        end
+        local result = false
+        if any and lo <= hi then
+            for i = 1, #probes do
+                local probe = probes[i]
+                if answers[i] == false and lo >= probe.least and hi <= probe.most then
+                    -- Out of range, of an enemy the others put inside its range:
+                    -- it cannot be used on that enemy at all, or it does not
+                    -- say what it is taken to say. Not asked again.
+                    answers[i] = nil
+                    local liar = askedOf[i].info
+                    liars[liar.id] = true
+                    probesAt = nil
+                    Keep(report.notes, format("%s %s said an enemy was out of its range that your other skills put "
+                        .. "inside it: not asked again", Stamp(ns.Now()), liar.name))
+                end
+            end
+            -- What a "no" adds: the enemy is beyond that skill's longest
+            -- range, once it is known not to be too close for the skill. One
+            -- such answer can settle what another one means, so they are gone
+            -- over until nothing more comes of it.
+            local changed = true
+            while changed do
+                changed = false
+                for i = 1, #probes do
+                    local probe = probes[i]
+                    if answers[i] == false and lo >= probe.least and probe.most > lo then
+                        lo, changed = probe.most, true
+                    end
+                end
+            end
+            if lo <= hi then
+                result = lo
+            end
+        end
+        reachLo[key] = result
+        return result or nil
+    end
+
+    --- How far off an enemy is at the least, when that is further than a skill
+    --- reaching `reach` yards around you gets. Nil for one it may get to.
+    function Reach.Beyond(unit, key, reach)
+        local lo = FarAtLeast(unit, key)
+        return lo and lo >= reach and lo or nil
+    end
+
+    --- Keeps in the saved report how often a skill began leaving an enemy out
+    --- of its count. `some` is whether it does so now.
+    function Reach.Leaves(name, some)
+        if some and not leftOut[name] then
+            local left = ReachReport().left
+            left[name] = (left[name] or 0) + 1
+        end
+        leftOut[name] = some or nil
+    end
+
+    --- A cast of an area skill showed on an enemy that was taken to be at least
+    --- `far` yards away, and so out of its reach (the tracker says so when it has
+    --- judged the cast).
+    function ns.NoteReached(name, far)
+        local reach = Spells:Outreached(name, far)
+        Keep(ReachReport().notes, format("%s %s showed on an enemy taken to be at least %d yards away: %s",
+            Stamp(ns.Now()), name, far, reach and format("it is taken to reach %d yards from now on", reach)
+                or "noted, in case it happens again"))
+        stateDirty = true
+    end
+
+    --- What is known of reach, for /se debug: the ranges the skills on the bars
+    --- give to ask about, each as { least, most, proven = true once its answers
+    --- about enemies other than your target are believed, [1..n] = bar entry },
+    --- and the saved report's counts.
+    function ns.ReachProbe()
+        if probesAt ~= lastScan then
+            ListProbes()
+        end
+        return probes, ReachReport()
+    end
+end
+
 --- A spell that hits every enemy in the fight, judged over the ones that
 --- could do with a cast. One that is immune and does not carry the effect is
 --- not counted either way: it never will carry it, and is no reason to cast.
 --- With nobody left who could take the effect, casting changes nothing.
-local function AreaState(name, now, calm, most, anyone)
+---
+--- An enemy that is proven to stand further off than the spell reaches is
+--- left out as well: casting does nothing for it. With every enemy out of
+--- reach there is nobody to judge it on: the second answer is then true, and
+--- the first is what it would be with all of them in reach, for where icons
+--- show on skills that cannot do anything right now.
+local function AreaState(info, name, now, calm, most, anyone)
     if fightSize == 0 then
         return false
     end
-    local full, bare = 0, 0
+    local reach = Spells:Reach(info)
+    local full, bare, near = 0, 0, 0 -- of the ones it may get to
+    local farFull, farBare = 0, 0 -- of the ones out of reach
     for i = 1, fightSize do
         local enemy = fight[i]
         local carries = Carries(enemy.unit, enemy.key, name, now, calm, "debuff", most, anyone)
-        if carries == "all" then
-            full = full + 1
-        elseif not ImmuneTo(enemy.key, name, now) then
-            bare = bare + 1
+        local wants = carries ~= "all" and not ImmuneTo(enemy.key, name, now)
+        if reach and Reach.Beyond(enemy.unit, enemy.key, reach) then
+            if carries == "all" then
+                farFull = farFull + 1
+            elseif wants then
+                farBare = farBare + 1
+            end
+        else
+            near = near + 1
+            if carries == "all" then
+                full = full + 1
+            elseif wants then
+                bare = bare + 1
+            end
         end
     end
-    if bare == 0 then
-        return "all"
-    elseif full == 0 then
-        return "none"
+    local nobody = near == 0
+    Reach.Leaves(name, near < fightSize)
+    if nobody then
+        full, bare = farFull, farBare
     end
-    return "some"
+    if bare == 0 then
+        return "all", nobody
+    elseif full == 0 then
+        return "none", nobody
+    end
+    return "some", nobody
+end
+
+--- A skill that goes to one enemy, with none targeted in the middle of a
+--- fight: your target has just died, or the next one is not picked yet. It
+--- is judged on the enemies of the fight that are in sight, any of whom it
+--- may go to next. With every one of them carrying its effect or immune to
+--- it, there is nobody to use it for, which is the red X. With one that
+--- could do with it, and with none of them in sight, it is the green check.
+local function Unaimed(name, now, calm, kind, most, anyone)
+    for i = 1, fightSize do
+        local enemy = fight[i]
+        if Carries(enemy.unit, enemy.key, name, now, calm, kind, most, anyone) ~= "all"
+            and not ImmuneTo(enemy.key, name, now) then
+            return "none"
+        end
+    end
+    return fightSize > 0 and "all" or "none"
 end
 
 --- A buff is judged on the friend you have targeted when the spell can be
@@ -1836,6 +2229,7 @@ local function Refresh(now)
     ns.Wipe(engagedKeys)
     ns.Wipe(inFight)
     ns.Wipe(states)
+    Reach.Ask(true)
     fightSize = 0
 
     local calm = not ns.AurasSecret()
@@ -1850,8 +2244,9 @@ local function Refresh(now)
         end
     end
 
-    -- Nameplates are only walked when an area spell or a cast in flight needs them.
-    if sweepWanted or Tracker:HasPending("debuff") then
+    -- Nameplates are only walked when an area spell or a cast in flight needs
+    -- them, or a skill has to be judged with no enemy targeted in a fight.
+    if sweepWanted or Tracker:HasPending("debuff") or (not primaryUnit and ns.InCombat()) then
         for i = 1, #plateTokens do
             local token = plateTokens[i]
             if Attackable(token) then
@@ -1925,30 +2320,38 @@ local function Refresh(now)
                     if kind == "buff" then
                         state = BuffState(info, now, calm, most, anyone)
                     elseif area then
-                        state = AreaState(name, now, calm, most, anyone)
+                        state, Reach.nobody[name] = AreaState(info, name, now, calm, most, anyone)
                     elseif primaryKey then
                         state = Carries(primaryUnit, primaryKey, name, now, calm, kind, most, anyone)
                         if state == "none" and ImmuneTo(primaryKey, name, now) then
                             state = "all" -- it never will carry it: casting changes nothing
                         end
+                    elseif fighting then
+                        state = Unaimed(name, now, calm, kind, most, anyone)
                     else
                         state = false
                     end
                     if state == false and fighting then
-                        -- No enemy to judge it on in the middle of a fight:
-                        -- your target has just died, or the next one is not
-                        -- picked yet. Nobody the skill could go to has its
-                        -- effect, and that is the green check.
+                        -- No enemy to judge it on in the middle of a fight,
+                        -- and none of the fight in sight: nobody the skill
+                        -- could go to is known to have its effect, and that
+                        -- is the green check.
                         state = "none"
                     end
                     states[name] = state
+                end
+                if usableOnly and Reach.nobody[name] then
+                    -- Every enemy stands further off than it reaches: it can
+                    -- do nothing right now, like a skill whose target is out
+                    -- of range.
+                    state = nil
                 end
                 if kind == "buff" then
                     wantBuffs = true
                     if CastOnFriends(info) then
                         wantFriend = true
                     end
-                elseif area then
+                elseif area or (not primaryKey and fighting) then
                     wantSweep = true
                 end
             end
@@ -2012,6 +2415,13 @@ end
 local function Snapshot(info, area, now, late, kind)
     local snapshot = { name = info.name, kind = kind, time = now, late = late or nil, units = {} }
     local calm = not ns.AurasSecret()
+    -- An enemy that stands further off than an area spell reaches is marked
+    -- for it (`far`, with how far off it is at the least): nothing is to be
+    -- expected of the cast there.
+    local reach = area and kind ~= "buff" and Spells:Reach(info) or nil
+    if reach then
+        Reach.Ask()
+    end
     if kind == "buff" then
         local unit = BuffUnit(info)
         local key = KeyOf(unit, kind)
@@ -2030,6 +2440,7 @@ local function Snapshot(info, area, now, late, kind)
         snapshot.units[key] = Follow({
             pre = not late and Sample(unit, now, calm, kind) or nil,
             engaged = ns.IsEngaged(unit),
+            far = reach and Reach.Beyond(unit, key, reach) or nil,
         }, unit)
     end
     if area then
@@ -2042,6 +2453,7 @@ local function Snapshot(info, area, now, late, kind)
                     snapshot.units[key] = Follow({
                         pre = not late and Sample(token, now, calm, kind) or nil,
                         engaged = ns.IsEngaged(token),
+                        far = reach and Reach.Beyond(token, key, reach) or nil,
                     }, token)
                 end
             end

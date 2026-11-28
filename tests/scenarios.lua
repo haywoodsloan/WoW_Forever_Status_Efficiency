@@ -4472,7 +4472,8 @@ test("a new install shows the icons only during a fight, yours or your group's",
     local guard = w:addMob("Guard", { hostile = false })
     w:target(guard)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "check", "a friend is not an enemy: nobody you have picked has Rend")
+    eq(w:icon("ActionButton1"), "cross", "a friend is not an enemy: Rend is judged on the boar, the one enemy of "
+        .. "the fight, and the boar has it")
     eq(w:icon("ActionButton3"), "check", "and the fight keeps the icons on")
 
     w:kill(boar)
@@ -4563,7 +4564,8 @@ test("/se when combat shows the icons only while you are in combat yourself", fu
 
     w:target(nil)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "check", "nobody to judge Rend on, in the middle of a fight")
+    eq(w:icon("ActionButton1"), "cross", "nobody targeted in the middle of a fight: the boar is the one enemy Rend "
+        .. "could go to, and has it")
     eq(w:icon("ActionButton3"), "check", "the buff does not need an enemy")
 
     w:leaveCombat()
@@ -6817,8 +6819,8 @@ test("immune: an enemy the game calls immune to a skill gets the red X on it, an
     eq(report.verdicts.immune, 1)
     check(Last(report.combat.immune):find("in the moment of Rend, said just after the cast was announced: taken as its "
         .. "answer", 1, true), Last(report.combat.immune))
-    check(Last(report.combat.learned):find("Rend on Fire Elemental: immune for now, and for good once it is said of "
-        .. "its kind again", 1, true), Last(report.combat.learned))
+    check(Last(report.combat.learned):find("Rend on Fire Elemental: that enemy is left out from now on, and its kind "
+        .. "once this is proven or said of the kind again", 1, true), Last(report.combat.learned))
     eq(Kept(ns, "Rend", elemental).seen, 1)
     eq(Kept(ns, "Rend", elemental).name, "Fire Elemental")
     eq(report.combat.target.heard, 1)
@@ -6827,16 +6829,20 @@ test("immune: an enemy the game calls immune to a skill gets the red X on it, an
     check(report.combat.listening > 40, "listened for on your target, your soft target and the nameplates")
     eq(report.combat.kinds.calm.number, 1, "and the game named the elemental's kind by its number")
 
-    -- One word is not counted on for long: an immunity can pass.
+    -- The X does not give way to the check again after a while: an
+    -- elemental that does not bleed will not start to.
     w:advance(11)
     eq(w:icon("ActionButton1"), "cross", "eleven seconds on")
     w:advance(1.5)
-    eq(w:icon("ActionButton1"), "check", "and after twelve the skill is worth a try again")
+    eq(w:icon("ActionButton1"), "cross", "and after twelve, which is how long the X once held")
+    w:advance(120)
+    eq(w:icon("ActionButton1"), "cross", "and two minutes on")
+    eq(Kept(ns, "Rend", elemental).seen, 1, "its kind has been called immune once so far")
 
-    w:cast(REND)
+    w:cast(REND) -- through the red X
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross")
-    eq(Kept(ns, "Rend", elemental).seen, 2, "said again after that while: that is its kind")
+    eq(Kept(ns, "Rend", elemental).seen, 2, "said again on another occasion: that is its kind")
     check(Last(report.combat.learned):find("its kind is counted on as immune from now on (said 2 times)", 1, true),
         Last(report.combat.learned))
     w:advance(60)
@@ -6883,10 +6889,10 @@ test("immune: said again of the same enemy within the first while, it is one occ
     eq(Kept(ns, "Rend", elemental).seen, 1, "the same shield could be up both times")
     check(Last(ns.db.report.combat.learned):find("Rend on Fire Elemental: said again of the same enemy", 1, true),
         Last(ns.db.report.combat.learned))
-    w:advance(11)
-    eq(w:icon("ActionButton1"), "cross", "the while starts over with the second word")
-    w:advance(1.5)
-    eq(w:icon("ActionButton1"), "check")
+    w:advance(12.5)
+    eq(w:icon("ActionButton1"), "cross", "and the X stays on that enemy all the same")
+    Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "check", "the next one of its kind is not known for it yet")
     Clean(w)
 end)
 
@@ -6925,7 +6931,7 @@ test("immune: a miss, a dodge or a resist is the game's word for a cast that lef
     eq(#report.combat.immune, 0)
     eq(#report.combat.learned, 0)
 
-    -- A hit says nothing either way, and is not passed on at all.
+    -- A hit is no word for a cast that left nothing: it is not put down to the cast.
     w:cast(REND)
     w:said(w.tokens.target, "WOUND", "CRITICAL")
     w:advance(0.5)
@@ -6933,6 +6939,16 @@ test("immune: a miss, a dodge or a resist is the game's word for a cast that lef
         Last(report.casts))
     check(not Last(report.casts):find("the game said", 1, true), Last(report.casts))
     eq(report.combat.words.WOUND, 2)
+
+    -- Nor is a heal on the enemy.
+    w:advance(22)
+    w:cast(REND)
+    w:said(w.tokens.target, "HEAL")
+    w:advance(0.5)
+    check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): changed, 0.00s after the cast", 1, true),
+        Last(report.casts))
+    check(not Last(report.casts):find("the game said", 1, true), Last(report.casts))
+    eq(report.combat.words.HEAL, 2)
     Clean(w)
 end)
 
@@ -6943,10 +6959,11 @@ test("immune: an enemy seen to carry the effect after all is not immune, and its
     eq(w:icon("ActionButton1"), "cross")
     eq(Kept(ns, "Rend", elemental).seen, 1)
 
-    -- It was a shield, and the shield is gone.
+    -- It was a shield that nothing else showed up, and the shield is gone.
+    -- Rend is used through the red X.
     elemental.immune = nil
     w:advance(12.5)
-    eq(w:icon("ActionButton1"), "check")
+    eq(w:icon("ActionButton1"), "cross", "nothing has said that it was a shield")
     w:cast(REND)
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "cross", "Rend is on it now")
@@ -7154,13 +7171,13 @@ test("immune: a skill that hits every enemy leaves the immune ones out", functio
         .. "the cast; the game said IMMUNE", 1, true), Last(report.casts))
     eq(Kept(ns, "Thunder Clap", elemental).seen, 1)
 
-    -- One word is not counted on for long, and then one enemy of three is without it.
+    -- The elemental stays left out, however long ago the game said so.
     w:advance(12.5)
-    eq(w:icon("ActionButton1"), "partial", "the elemental is worth a try again")
+    eq(w:icon("ActionButton1"), "cross", "the elemental is no reason to cast it again")
     w:cast(CLAP, { hits = all })
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross")
-    eq(Kept(ns, "Thunder Clap", elemental).seen, 2, "said again: that is its kind")
+    eq(Kept(ns, "Thunder Clap", elemental).seen, 2, "said again on another occasion: that is its kind")
     w:advance(29)
     eq(w:icon("ActionButton1"), "cross", "for as long as the kobolds carry it")
     w:advance(1.5)
@@ -7584,18 +7601,19 @@ test("immune: where the game hides what kind of creature an enemy is, only that 
     eq(w:icon("ActionButton1"), "check")
     w:cast(REND)
     w:advance(0.3)
-    eq(w:icon("ActionButton1"), "cross", "that one enemy, for now")
+    eq(w:icon("ActionButton1"), "cross", "that one enemy")
     eq(Kept(ns, "Rend", first).seen, 1, "nothing is added to what is known of fire elementals")
     local report = ns.db.report
-    check(Last(report.combat.learned):find("Rend on an enemy the game does not name: that one enemy is immune for now",
-        1, true), Last(report.combat.learned))
+    check(Last(report.combat.learned):find("Rend on an enemy the game does not name: that one enemy is left out from "
+        .. "now on", 1, true), Last(report.combat.learned))
     w:advance(12.5)
-    eq(w:icon("ActionButton1"), "check", "worth another try after a while")
-    w:cast(REND)
+    eq(w:icon("ActionButton1"), "cross", "and it stays left out")
+    local learned = #report.combat.learned
+    w:cast(REND) -- through the red X
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross")
-    check(Last(report.combat.learned):find("Rend on an enemy the game does not name: that one enemy is immune from "
-        .. "now on", 1, true), Last(report.combat.learned))
+    eq(#report.combat.learned, learned + 1, "said on another occasion: noted, and nothing changes")
+    eq(Kept(ns, "Rend", first).seen, 1)
     -- Said once more a moment later, of a cast through the red X: it stays as it is.
     w:advance(3)
     w:cast(REND)
@@ -7621,7 +7639,9 @@ test("immune: where the game hides what kind of creature an enemy is, only that 
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "cross", "Rend is on it now")
     check(Booked(ns, "Rend"), "in the books")
-    eq(#ns.Tracker:Immunities(ns.Now()), 0)
+    local left = ns.Tracker:Immunities(ns.Now())
+    eq(#left, 1, "only the first one is still taken to be immune")
+    eq(left[1].key, first.guid)
     w:advance(21.5)
     eq(w:icon("ActionButton1"), "check", "and when Rend has run out it is worth casting again")
     Clean(w)
@@ -7732,9 +7752,12 @@ test("/se immune lists what was learned, marks a kind by hand and forgets", func
     local help = w:drain()
     check(help:find("/se immune - lists the enemies that are immune to a skill", 1, true), help)
     check(help:find("/se immune forget [skill] - clears the list", 1, true), help)
-    w:slash("immune")
-    check(w:drain():find("No enemy has been found immune to one of your skills yet. When the game says \"Immune\" as "
-        .. "you use a skill on an enemy, the addon remembers it", 1, true), "nothing to list yet")
+    Replies(w, "immune", "No enemy has been found immune to one of your skills yet. When the game says \"Immune\" as "
+        .. "you use a skill on an enemy, the icon stops telling you to use that skill on that enemy. Once the addon "
+        .. "is sure the enemy was not just shielded for a moment, it does the same for every enemy of that kind. It "
+        .. "is sure at once when you fight alone and your other hits land on that enemy, and otherwise when the game "
+        .. "says \"Immune\" of that kind a second time. To add a kind of enemy yourself, target one and type /se "
+        .. "immune <skill>.")
 
     w:cast(REND)
     w:advance(0.3)
@@ -7748,8 +7771,7 @@ test("/se immune lists what was learned, marks a kind by hand and forgets", func
     local debug = w:drain()
     check(debug:find("What the game said attacks did to enemies: heard 2 times, kept secret 0 times. Of those "
         .. "\"immune\": 2.", 1, true), debug)
-    check(debug:find("Rend: Fire Elemental is taken to be immune, 12s more unless the game says so again", 1, true),
-        debug)
+    check(debug:find("Rend: Fire Elemental is taken to be immune, for as long as it is about", 1, true), debug)
     check(debug:find("0 left something, 1 left nothing, 0 could not be judged", 1, true), debug)
 
     w:advance(13)
@@ -7950,8 +7972,13 @@ test("immune: where casts are taken to land for want of reports, the game's word
     eq(w:icon("ActionButton1"), "cross", "by its word now")
     eq(Kept(ns, "Rend", elemental).seen, 1)
     w:advance(12.5)
-    eq(w:icon("ActionButton1"), "check", "and when the word is no longer counted on, the skill is worth a try: "
-        .. "nothing is left in the books that would say Rend is on it")
+    eq(w:icon("ActionButton1"), "cross", "and it stays by its word")
+    -- Nothing is left in the books that would say Rend is on it: with the
+    -- word forgotten, the skill is worth casting.
+    w:slash("immune forget")
+    w:drain()
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
     Clean(w)
 end)
 
@@ -10986,8 +11013,9 @@ panel("Skills tab: the kinds of enemy found immune to a skill", function(options
     local title, says = Says(w, pane.immuneLabel)
     eq(title, "Immune")
     eq(says, "These are the enemies this skill does not work on. When the game says \"Immune\" after one of your casts, "
-        .. "the addon remembers what kind of enemy that was. From the second time on, the icon stops asking you to cast "
-        .. "the skill on enemies of that kind.")
+        .. "the icon stops asking you to cast the skill on that enemy. The addon also remembers what kind of enemy it "
+        .. "was. Once it is sure the enemy was not just shielded for a moment, it does the same for every enemy of "
+        .. "that kind.")
 
     -- The ones the addon counts on come first, then the ones the game said once.
     eq(pane.immuneNote:GetText(), "Immune: Fire Elemental, Rock Elemental. Seen immune once so far: Water Elemental.")
@@ -12622,6 +12650,791 @@ test("the addon keeps its hands off the global namespace", function()
     w:slash("reset")
     w:advance(1)
     Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Immune enemies: a lasting immunity and a passing shield
+--
+-- The game says "immune" both of a creature that never takes an effect and of
+-- one behind a shield that turns everything away for a few seconds. What tells
+-- them apart is what else the game says of the enemy around that moment: a
+-- shield turns your swings away too, and an enemy that only refuses the one
+-- skill goes on taking your hits.
+--------------------------------------------------------------------------------
+
+--- The lines of the saved report on what was learned of immune enemies.
+local function Learned(ns)
+    return ns.db.report.combat.learned
+end
+
+test("immune: fighting alone, hits that land right before and right after the game's word make it the enemy's kind at once", function()
+    local w, ns, elemental = Elemental()
+    w:said(elemental, "WOUND") -- your swing lands
+    w:advance(1.5)
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+    eq(Kept(ns, "Rend", elemental).proven, nil, "no hit has landed since the word")
+    w:advance(1.2)
+    w:said(elemental, "WOUND") -- and so does the next one
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental).proven, true)
+    eq(Kept(ns, "Rend", elemental).seen, 1, "it is still the one occasion")
+    check(Last(Learned(ns)):find("Rend on Fire Elemental: your hits landed on it right before and right after, so it "
+        .. "is behind no shield: its kind is counted on as immune from now on", 1, true), Last(Learned(ns)))
+    eq(#Learned(ns), 2)
+
+    -- The next one of its kind is known for it at first sight.
+    Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "cross", "another fire elemental, before any cast at it")
+    eq(w:icon("ActionButton2"), "check", "which says nothing of Sunder Armor")
+    Meet(w, "Boar")
+    eq(w:icon("ActionButton1"), "check", "a boar is another kind of creature")
+    Clean(w)
+
+    -- And in the next session.
+    local w2 = Elemental({ saved = w.env.StatusEfficiencyDB })
+    eq(w2:icon("ActionButton1"), "cross", "kept over a reload")
+    Clean(w2)
+end)
+
+test("immune: a hit that lands in the very moment of the game's word settles it at once", function()
+    -- A skill that does damage and leaves an effect: the damage lands and the effect is turned away.
+    local w, ns, elemental = Elemental()
+    w:said(elemental, "WOUND")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", elemental).proven, true)
+    check(Last(Learned(ns)):find("Rend on Fire Elemental: a hit landed on it in that very moment, so it is behind no "
+        .. "shield: its kind is counted on as immune from now on", 1, true), Last(Learned(ns)))
+    Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "cross", "the next one of its kind")
+    Clean(w)
+end)
+
+test("immune: hits that land too long before or after the game's word, or on one side of it only, prove nothing", function()
+    local w, ns, first = Elemental()
+    -- The last hit landed more than four seconds before the word.
+    w:said(first, "WOUND")
+    w:advance(4.5)
+    w:cast(REND)
+    w:advance(1)
+    w:said(first, "WOUND")
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", first).proven, nil, "four and a half seconds before")
+    eq(w:icon("ActionButton1"), "cross", "that one enemy is left out all the same")
+
+    -- The next hit lands more than four seconds after it.
+    local second = Meet(w, "Water Elemental", { immune = { Rend = true } })
+    w:said(second, "WOUND")
+    w:advance(1)
+    w:cast(REND)
+    w:advance(4.5)
+    w:said(second, "WOUND")
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", second).proven, nil, "four and a half seconds after")
+    eq(Kept(ns, "Rend", second).seen, 1)
+
+    -- No hit landed before the word at all.
+    local third = Meet(w, "Air Elemental", { immune = { Rend = true } })
+    w:cast(REND)
+    w:advance(1)
+    w:said(third, "WOUND")
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", third).proven, nil, "nothing before it")
+
+    -- A hit on one enemy says nothing of another.
+    local fourth = Meet(w, "Earth Elemental", { immune = { Rend = true } })
+    w:said(third, "WOUND")
+    w:advance(1)
+    w:cast(REND)
+    w:advance(1)
+    w:said(third, "WOUND")
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", fourth).proven, nil, "the hits landed on somebody else")
+    eq(w:icon("ActionButton1"), "cross")
+    Meet(w, "Earth Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "check", "the next one of that kind is not known for it yet")
+    Clean(w)
+end)
+
+test("immune: in a group, hits around the game's word prove nothing, and it takes the word twice", function()
+    -- Somebody else's hit may be the one that landed.
+    local w, ns = Party(nil, REND, SUNDER)
+    local elemental = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    w:said(elemental, "WOUND")
+    w:advance(1.5)
+    w:cast(REND)
+    w:advance(1.5)
+    w:said(elemental, "WOUND")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "that one enemy is left out")
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+    eq(Kept(ns, "Rend", elemental).proven, nil)
+    local second = Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "check", "its kind is not counted on as immune yet")
+    w:cast(REND)
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", second).seen, 2)
+    Meet(w, "Fire Elemental", { immune = { Rend = true } })
+    eq(w:icon("ActionButton1"), "cross", "said of two of them: that is their kind")
+    Clean(w)
+end)
+
+test("immune: an enemy that turns your swings away as well is behind a shield, which is gone when a hit lands", function()
+    local w, ns = Bar({ saved = Proven() }, REND, SUNDER, DEMO)
+    local guard = Meet(w, "Shield Guard")
+    guard.immune = true -- its shield is up
+    w:said(guard, "IMMUNE") -- a swing of yours is turned away
+    w:advance(1)
+    w:cast(REND)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "turned away: nothing to gain while the shield holds")
+    eq(next(ns.db.immune), nil, "nothing is held against its kind")
+    check(Last(Learned(ns)):find("Rend on Shield Guard: other attacks were turned away there too with no hit landing "
+        .. "in between, so this may be a shield: that enemy is left out until a hit lands on it again, and nothing is "
+        .. "held against its kind", 1, true), Last(Learned(ns)))
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("Rend: Shield Guard is taken to be immune, behind a shield: until a hit lands on it, or 1%ds more "
+        .. "unless the game says so again"), debug)
+
+    -- Swings go on being turned away: the X holds past twelve seconds.
+    for _ = 1, 5 do
+        w:advance(3)
+        w:said(guard, "IMMUNE")
+    end
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross", "sixteen seconds on, with the shield still up")
+
+    guard.immune = nil -- the shield drops
+    w:said(guard, "WOUND")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "a hit landed: the shield is gone")
+    check(Last(Learned(ns)):find("Rend on Shield Guard: a hit landed on it again, so the shield is gone: no longer "
+        .. "left out", 1, true), Last(Learned(ns)))
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    check(Booked(ns, "Rend"), "Rend is on it now")
+    eq(next(ns.db.immune), nil)
+    Clean(w)
+end)
+
+test("immune: a shield that nothing more is heard of is forgotten twelve seconds after the last word", function()
+    local w, ns = Bar({ saved = Proven() }, REND, SUNDER, DEMO)
+    local guard = Meet(w, "Shield Guard")
+    guard.immune = true
+    w:cast(REND)
+    w:advance(1)
+    w:said(guard, "IMMUNE") -- a swing is turned away as well, before any hit landed
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(11)
+    eq(w:icon("ActionButton1"), "cross", "eleven seconds after the last word")
+    w:advance(1.5)
+    eq(w:icon("ActionButton1"), "check", "and after twelve: it may be down by now")
+    eq(next(ns.db.immune), nil)
+    Clean(w)
+end)
+
+test("immune: the skill turned away once more keeps the red X of a shield for another twelve seconds", function()
+    local w, ns = Bar({ saved = Proven() }, REND, SUNDER, DEMO)
+    local guard = Meet(w, "Shield Guard", { immune = true })
+    w:said(guard, "IMMUNE") -- a swing
+    w:advance(1)
+    w:cast(REND)
+    w:advance(9)
+    w:cast(REND) -- through the red X, ten seconds after the swing
+    w:advance(5)
+    eq(w:icon("ActionButton1"), "cross", "fifteen seconds after the swing, five after the last word")
+    check(Last(Learned(ns)):find("Rend on Shield Guard: said again of the same enemy", 1, true), Last(Learned(ns)))
+    w:advance(7.5)
+    eq(w:icon("ActionButton1"), "check", "twelve seconds after the last word")
+    eq(next(ns.db.immune), nil)
+    Clean(w)
+end)
+
+test("immune: a swing turned away after the game's word and before any hit takes the occasion back from the kind", function()
+    local w, ns, elemental = Elemental()
+    w:cast(REND)
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental).seen, 1, "counted for its kind at first")
+    w:advance(1)
+    w:said(elemental, "IMMUNE") -- and then a swing is turned away too
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental), nil, "taken back: it looks like a shield")
+    check(Last(Learned(ns)):find("Rend on Fire Elemental: something else was turned away there before a hit landed, "
+        .. "so this may be a shield: left out until a hit lands on it again, and not held against its kind", 1, true),
+        Last(Learned(ns)))
+    eq(w:icon("ActionButton1"), "cross", "left out while the shield may hold")
+
+    -- Said of it again on another occasion, with hits landing around the word: now it counts.
+    w:advance(2)
+    w:said(elemental, "WOUND")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check", "the shield is gone")
+    w:advance(1)
+    w:cast(REND)
+    w:advance(1)
+    w:said(elemental, "WOUND")
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(Kept(ns, "Rend", elemental).seen, 1)
+    eq(Kept(ns, "Rend", elemental).proven, true, "refused with hits landing right before and right after")
+    Clean(w)
+end)
+
+test("immune: something else turned away once a hit has landed since the game's word changes nothing", function()
+    local w, ns, elemental = Elemental()
+    w:cast(REND)
+    w:advance(1)
+    w:said(elemental, "WOUND") -- it takes your hits
+    w:advance(1)
+    w:said(elemental, "IMMUNE") -- and turns something else away later
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", elemental).seen, 1, "the occasion stands")
+    eq(w:icon("ActionButton1"), "cross")
+    w:advance(30)
+    eq(w:icon("ActionButton1"), "cross", "and the X stays")
+    eq(#Learned(ns), 1, "nothing more was made of it")
+
+    -- Something turned away before the word, with a hit landing in between, is no sign of a shield either.
+    local second = Meet(w, "Water Elemental", { immune = { Rend = true } })
+    w:said(second, "IMMUNE")
+    w:advance(1)
+    w:said(second, "WOUND")
+    w:advance(1)
+    w:cast(REND)
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", second).seen, 1, "counted for its kind")
+    w:advance(13)
+    eq(w:icon("ActionButton1"), "cross", "and left out for good")
+
+    -- Nor is something turned away in the very moment a hit lands: it took that hit.
+    local third = Meet(w, "Air Elemental", { immune = { Rend = true } })
+    w:cast(REND)
+    w:advance(1)
+    w:said(third, "WOUND")
+    w:said(third, "IMMUNE")
+    w:advance(0.3)
+    eq(Kept(ns, "Rend", third).seen, 1, "the occasion stands")
+    w:advance(13)
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("immune: a skill without an icon that is turned away counts like a swing", function()
+    local w, ns = Bar({ saved = Proven() }, REND, HEROIC, SUNDER)
+    local guard = Meet(w, "Shield Guard", { immune = true })
+    w:cast(REND)
+    w:advance(0.5)
+    eq(Kept(ns, "Rend", guard).seen, 1)
+    w:cast(HEROIC)
+    w:said(guard, "IMMUNE")
+    w:advance(0.5)
+    eq(Kept(ns, "Rend", guard), nil, "Heroic Strike was turned away too: a shield")
+    eq(w:icon("ActionButton1"), "cross")
+    Clean(w)
+end)
+
+test("immune: two skills with icons turned away one after the other are two immunities, and no shield", function()
+    local w, ns = Bar({ saved = Proven() }, REND, SUNDER)
+    local golem = Meet(w, "Stone Golem", { immune = { Rend = true, ["Sunder Armor"] = true } })
+    w:cast(REND)
+    w:advance(1.5)
+    w:cast(SUNDER)
+    w:advance(0.5)
+    eq(Kept(ns, "Rend", golem).seen, 1)
+    eq(Kept(ns, "Sunder Armor", golem).seen, 1)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(w:icon("ActionButton2"), "cross")
+    w:advance(60)
+    eq(w:icon("ActionButton1"), "cross", "and both stay")
+    eq(w:icon("ActionButton2"), "cross")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- No enemy targeted in the middle of a fight
+--------------------------------------------------------------------------------
+
+test("with no enemy targeted in a fight, a skill for one enemy is judged on the enemies of the fight", function()
+    local saved = Seasoned()
+    saved.immune = { Rend = { ["#77"] = { name = "Fire Elemental", seen = 2 } } }
+    local w = Bar({ saved = saved }, REND, SUNDER)
+    local first, second = w:addMob("Boar"), w:addMob("Boar")
+    w:showPlate(first)
+    w:showPlate(second)
+    w:target(first)
+    first.engaged, second.engaged = true, true
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "Rend is on your target")
+
+    w:target(nil)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "nobody targeted: the other boar could do with it")
+    w:advance(9)
+    w:target(second)
+    w:advance(0.3)
+    w:cast(REND)
+    w:advance(0.5)
+    w:target(nil)
+    w:advance(0.1)
+    eq(w:icon("ActionButton1"), "cross", "both boars carry it: nobody to use it for, and no check in between")
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross")
+    eq(w:icon("ActionButton2"), "check", "Sunder Armor is on neither")
+
+    -- An enemy that is immune to it is nobody to use it for either.
+    local elemental = w:addMob("Fire Elemental", { kind = 77, immune = { Rend = true }, engaged = true })
+    w:showPlate(elemental)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "two that carry it and one that never will")
+    w:advance(10)
+    eq(w:icon("ActionButton1"), "check", "it ran out on the first boar")
+
+    -- With none of them in sight there is nothing to go by, which is the green check.
+    w:hidePlate(first)
+    w:hidePlate(second)
+    w:hidePlate(elemental)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "nobody in sight")
+    Clean(w)
+end)
+
+--------------------------------------------------------------------------------
+-- Enemies out of reach
+--
+-- A skill that hits every enemy around you is judged on the ones it can
+-- reach. How far off an enemy stands is not told; whether it is within the
+-- range of each skill on the bars is, and that is put together.
+--------------------------------------------------------------------------------
+
+local CHARGE, INTIMIDATE, HEX, DUST = 6178, 5246, 150, 151
+
+--- A warrior's bars: Thunder Clap (reaches 8 yards around you) and
+--- Demoralizing Shout (10) on the first two buttons, then the skills whose
+--- ranges tell how far off an enemy stands: Rend (5 yards), Charge (8 to 25)
+--- and Intimidating Shout (10). Reports are known to arrive and the skills
+--- have long been seen to work.
+local function Warband(options)
+    options = options or {}
+    local w = World(options)
+    w.spells[REND].melee = true
+    w.spells[CLAP].effect.radius = 8
+    w.spells[DEMO].effect.radius = 10
+    w:addSpell(CHARGE, {
+        name = "Charge", harmful = true, range = 25, minRange = 8,
+        description = "Charge an enemy, generate 9 rage, and stun it for 1 sec. Cannot be used in combat.",
+        effect = { duration = 1 },
+    })
+    w:addSpell(INTIMIDATE, {
+        name = "Intimidating Shout", harmful = true, range = 10,
+        description = "The warrior shouts, causing the targeted enemy to cower in fear for 8 sec.",
+        effect = { duration = 8 },
+    })
+    w:addSpell(HEX, {
+        name = "Hex", harmful = true, range = 30,
+        description = "Curses the target, slowing its attacks by 10% for 20 sec.",
+        effect = { duration = 20 },
+    })
+    w:addSpell(DUST, {
+        -- It hits all around you, and nothing says how far.
+        name = "Dust Cloud", harmful = false, helpful = false,
+        description = "Blinds every enemy around you, reducing their chance to hit by 10% for 12 sec.",
+        effect = { area = true, duration = 12 },
+    })
+    local bar = options.bar or { CLAP, DEMO, REND, CHARGE, INTIMIDATE }
+    for i = 1, #bar do
+        w:addButton("ActionButton" .. i, i, bar[i])
+    end
+    local ns = w:load(options.saved or Seasoned())
+    return w, ns
+end
+
+--- An enemy joins the fight, so many yards off, with its nameplate showing.
+local function Foe(w, name, distance)
+    local mob = w:addMob(name, { distance = distance, engaged = true })
+    w:showPlate(mob)
+    return mob
+end
+
+--- A bandit three yards off, targeted, and a mage twenty yards off, both in
+--- the fight.
+local function Skirmish(options)
+    local w, ns = Warband(options)
+    local bandit = Foe(w, "Bandit", 3)
+    local mage = Foe(w, "Bandit Mage", 20)
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(0.5)
+    return w, ns, bandit, mage
+end
+
+test("reach: an enemy that stands further off than a skill reaches is left out when the skill is judged", function()
+    local w, ns, bandit, mage = Skirmish()
+    eq(w:icon("ActionButton1"), "check", "nobody has Thunder Clap")
+    w:cast(CLAP) -- it reaches eight yards: the mage is not hit
+    w:advance(0.5)
+    eq(#mage.auras, 0, "the mage is too far off for it")
+    eq(w:icon("ActionButton1"), "cross", "the only enemy within reach has it: casting again changes nothing")
+    eq(w:icon("ActionButton2"), "check", "Demoralizing Shout is on nobody")
+    w:cast(DEMO)
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "cross", "ten yards do not get to the mage either")
+    local report = ns.db.report
+    eq(report.reach.left["Thunder Clap"], 1)
+    eq(report.reach.left["Demoralizing Shout"], 1)
+    eq(report.reach.proven["0-5"], true, "Rend reaches the bandit and not the mage: the game heeds whom it is asked about")
+    eq(report.reach.proven["8-25"], true)
+    eq(report.reach.proven["0-10"], true)
+    check(report.reach.plate.no > 0 and report.reach.plate.yes > 0 and report.reach.target.yes > 0)
+    eq(report.spells["Thunder Clap"].reach, 8)
+    eq(report.spells["Demoralizing Shout"].reach, 10)
+    eq(report.spells["Demoralizing Shout"].around, "within 10 yards")
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("Enemies out of reach: told by skills that reach 0 to 5 yards, 8 to 25 yards, 0 to 10 yards. "
+        .. "Asked about your target, the game answered %d+ times and said nothing 0 times; about other enemies, %d+ "
+        .. "and 0 times."), debug)
+    check(debug:find("Began leaving an enemy out, by skill and how often: Demoralizing Shout (1), Intimidating Shout "
+        .. "(1), Thunder Clap (1).", 1, true), debug)
+
+    -- The mage walks up: now it counts.
+    mage.distance = 4
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "one of two within reach has it")
+    eq(w:icon("ActionButton2"), "partial")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "both have it")
+
+    -- And backs off again, to where Charge would reach it and nothing else would.
+    w:removeAura(mage, "Thunder Clap")
+    mage.distance = 15
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "out of reach once more")
+    eq(report.reach.left["Thunder Clap"], 2)
+    Clean(w)
+end)
+
+test("reach: an enemy too far for Rend and too close for Charge is still within Thunder Clap's reach", function()
+    -- With no skill of ten yards on the bars, two skills say "out of range" of an enemy six yards off.
+    local w, ns = Warband({ bar = { CLAP, DEMO, REND, CHARGE } })
+    local bandit = Foe(w, "Bandit", 6)
+    local mage = Foe(w, "Bandit Mage", 30) -- too far for both as well, and told apart by nothing
+    w:target(bandit)
+    w:enterCombat()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "the bandit is taken to be at least five yards off, which Thunder Clap reaches")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "the mage could be as near as the bandit for all that is known")
+    eq(#mage.auras, 0)
+    eq(ns.db.report.reach.left["Thunder Clap"], nil, "nobody was left out")
+
+    -- Charge reaching the mage tells the two apart.
+    mage.distance = 20
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "now the mage is known to be out of reach")
+    Clean(w)
+end)
+
+test("reach: a range that has told two enemies apart is believed for the rest of the session", function()
+    local w, _, bandit = Skirmish()
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the mage is left out")
+    w:kill(bandit)
+    w:advance(3) -- long enough for the bars to be read again
+    eq(w:icon("ActionButton1"), nil, "the mage alone, not targeted, is still known to be out of reach")
+    w:slash("usable off")
+    w:drain()
+    w:advance(3)
+    eq(w:icon("ActionButton1"), "check", "shown on every skill: judged as if it were within reach")
+    Clean(w)
+end)
+
+test("reach: an enemy whose distance cannot be told counts as it always did", function()
+    local w, _, _, mage = Skirmish()
+    local archer = w:addMob("Bandit Archer", { engaged = true }) -- the game says nothing of range for this one
+    w:showPlate(archer)
+    w:advance(0.5)
+    w:cast(CLAP, { hits = { w.tokens.target } })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "the archer may be within reach, and lacks it")
+    w:applyAura(archer, "Thunder Clap", 30, true)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "everyone who may be within reach has it")
+    eq(#mage.auras, 0)
+    Clean(w)
+end)
+
+test("reach: between eight and ten yards off, an enemy is out of Thunder Clap's reach and within Demoralizing Shout's", function()
+    local w, _, bandit = Skirmish()
+    local scout = Foe(w, "Bandit Scout", 9) -- Charge reaches it, and so does Intimidating Shout
+    w:advance(0.5)
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "only the bandit is within eight yards, and has it")
+    eq(#scout.auras, 0)
+    eq(w:icon("ActionButton2"), "check", "Demoralizing Shout is on neither of the two within ten yards")
+    w:cast(DEMO, { hits = { bandit } }) -- the scout shrugs it off
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "partial", "the scout is within ten yards, and could do with it")
+    w:cast(DEMO)
+    w:advance(0.5)
+    eq(w:icon("ActionButton2"), "cross", "the bandit and the scout have it, and the mage is out of reach")
+    Clean(w)
+end)
+
+test("reach: with every enemy out of reach the icon is hidden, or judged on all of them where icons show on every skill", function()
+    local w, ns = Warband()
+    local mage = Foe(w, "Bandit Mage", 20)
+    w:target(mage)
+    w:enterCombat()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), nil, "nobody within reach: Thunder Clap can do nothing right now")
+    eq(w:icon("ActionButton2"), nil)
+    mage.distance = 6
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "check", "within reach now")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "and it has Thunder Clap")
+    mage.distance = 20
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), nil, "out of reach again")
+
+    w:slash("usable off")
+    w:drain()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "shown on every skill: judged as if it were within reach")
+    eq(w:icon("ActionButton2"), "check")
+    w:advance(31)
+    eq(w:icon("ActionButton1"), "check", "it ran out")
+    eq(ns.db.report.reach.left["Thunder Clap"], 2)
+    Clean(w)
+end)
+
+test("reach: a cast with nobody within reach is not held against the skill", function()
+    -- Thunder Clap has only its tooltip to speak for it: three casts that leave nothing would cost it its icon.
+    local w, ns = Warband({ saved = Proven() })
+    local mage = Foe(w, "Bandit Mage", 20)
+    w:target(mage)
+    w:enterCombat()
+    w:slash("usable off")
+    w:drain()
+    w:advance(0.5)
+    for _ = 1, 4 do
+        w:cast(CLAP)
+        w:advance(3)
+    end
+    local report = ns.db.report
+    check(Last(report.casts):find("Thunder Clap (debuff, hidden, waited for a report): out of reach", 1, true),
+        Last(report.casts))
+    eq(report.verdicts["out of reach"], 4)
+    eq(w:icon("ActionButton1"), "check", "it still has its icon")
+    local learned = ns.db.learned["Thunder Clap"]
+    eq(learned and learned.casts or 0, 0, "nothing was learned of it from those casts")
+    Clean(w)
+end)
+
+test("reach: a skill seen to land on an enemy taken to be out of its reach is given a longer reach the second time", function()
+    local w, ns, bandit = Skirmish()
+    w.spells[CLAP].effect.radius = 12 -- it reaches further than the well known eight yards
+    local scout = Foe(w, "Bandit Scout", 9)
+    w:advance(0.5)
+    w:cast(CLAP)
+    w:advance(3) -- the cast is judged once the mage, who is out of reach, has had its time to show it
+    check(#scout.auras > 0, "the scout was hit")
+    local report = ns.db.report
+    check(Last(report.reach.notes):find("Thunder Clap showed on an enemy taken to be at least 8 yards away: noted, in "
+        .. "case it happens again", 1, true), Last(report.reach.notes))
+    eq(ns.db.learned["Thunder Clap"].reach, nil, "once could be a coincidence")
+    eq(w:icon("ActionButton1"), "cross")
+
+    w:advance(31)
+    eq(w:icon("ActionButton1"), "check", "it ran out")
+    w:cast(CLAP)
+    w:advance(3)
+    check(Last(report.reach.notes):find("Thunder Clap showed on an enemy taken to be at least 8 yards away: it is "
+        .. "taken to reach 9 yards from now on", 1, true), Last(report.reach.notes))
+    eq(ns.db.learned["Thunder Clap"].reach, 9)
+    eq(#report.reach.notes, 2)
+
+    -- The scout counts from now on.
+    w:advance(31)
+    w:cast(CLAP, { hits = { bandit } }) -- this time the scout shrugs it off
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "the scout is taken to be within reach, and lacks it")
+    eq(report.spells["Thunder Clap"].reach, 9)
+    eq(#report.reach.notes, 2)
+    Clean(w)
+
+    -- Kept for the next session.
+    local w2 = Skirmish({ saved = w.env.StatusEfficiencyDB })
+    local scout2 = Foe(w2, "Bandit Scout", 9)
+    w2:advance(0.5)
+    w2:cast(CLAP, { hits = { w2.tokens.target } })
+    w2:advance(0.5)
+    eq(w2:icon("ActionButton1"), "partial", "nine yards are within its reach from the start")
+    check(scout2 ~= nil)
+    Clean(w2)
+end)
+
+test("reach: where casts are taken to land for want of reports, one is not taken to land on an enemy out of reach", function()
+    -- A client that never reports a unit's effects changing: every cast is taken to have landed.
+    local quiet = { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
+    local w, _, _, mage = Skirmish({ auraEvents = false, saved = quiet })
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "taken to be on the bandit, the only one within reach")
+    mage.distance = 4
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "the mage walked up, and was never taken to carry it")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "cast with both within reach: taken to be on both")
+    mage.distance = 20
+    w:advance(31)
+    eq(w:icon("ActionButton1"), "check", "it ran out on the bandit")
+    w:cast(CLAP)
+    w:advance(0.5)
+    mage.distance = 4
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "and the cast that followed did not start it over on the mage")
+    Clean(w)
+end)
+
+test("reach: a game that answers about your target whoever it is asked about leaves nobody out", function()
+    -- An older client: its range call takes no unit, and tells of your target.
+    local w, ns, bandit = Skirmish({ usableAPI = "globals" })
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "the mage is counted: nothing is known of how far off it is")
+    eq(next(ns.db.report.reach.proven), nil, "every enemy got the same answers")
+    w:slash("debug")
+    local debug = w:drain()
+    check(debug:find("Enemies out of reach: told by skills that reach 0 to 5 yards (believed of your target only so "
+        .. "far), 8 to 25 yards (believed of your target only so far), 0 to 10 yards (believed of your target only so "
+        .. "far).", 1, true), debug)
+    check(bandit ~= nil)
+    Clean(w)
+end)
+
+test("reach: where the action bar takes no unit, the skill itself is asked", function()
+    local w, ns = Skirmish({ usableAPI = "no unit" })
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the mage is out of reach")
+    eq(ns.db.report.reach.proven["0-5"], true)
+    Clean(w)
+end)
+
+test("reach: a game that keeps range to itself, or has no call for it, leaves nobody out", function()
+    for _, mode in ipairs({ "secret", "none" }) do
+        local w, ns = Skirmish({ usableAPI = mode })
+        w:cast(CLAP)
+        w:advance(0.5)
+        eq(w:icon("ActionButton1"), "partial", mode)
+        local reach = ns.db.report.reach
+        eq(next(reach.proven), nil, mode)
+        eq(reach.target.yes + reach.target.no + reach.plate.yes + reach.plate.no, 0, mode .. ": nothing was taken for an answer")
+        check(reach.target.silent > 0 and reach.plate.silent > 0, mode .. ": asked, and counted as saying nothing")
+        Clean(w)
+    end
+end)
+
+test("reach: what a range says of enemies other than your target is not believed until it has told two of them apart", function()
+    local w, ns = Warband()
+    local mage = Foe(w, "Bandit Mage", 20)
+    local archer = Foe(w, "Bandit Archer", 22)
+    w:enterCombat()
+    w:advance(0.5)
+    -- Nobody targeted, and both get the same answers: that could be a game that heeds nobody's name.
+    w:slash("usable off")
+    w:drain()
+    w:cast(CLAP, { hits = { mage } })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "both are counted")
+    eq(next(ns.db.report.reach.proven), nil)
+    eq(ns.db.report.reach.left["Thunder Clap"], nil, "nobody is left out")
+
+    -- A third one close by gets other answers: now they are believed.
+    local bandit = Foe(w, "Bandit", 3)
+    w:advance(0.5)
+    eq(ns.db.report.reach.proven["0-5"], true)
+    eq(w:icon("ActionButton1"), "check", "the bandit is the only one within reach, and lacks it")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "and now has it")
+    eq(#archer.auras, 0, "the archer was never hit, and is not counted")
+    check(bandit ~= nil)
+    Clean(w)
+end)
+
+test("reach: a skill that says out of range of an enemy the others put inside its range is not asked again", function()
+    local w, ns, bandit, mage = Skirmish({ bar = { CLAP, DEMO, REND, CHARGE, INTIMIDATE, HEX } })
+    w:setRange(6, false) -- Hex cannot be used on the bandit at all, and the game calls that out of range
+    w:advance(0.5)
+    local notes = ns.db.report.reach.notes
+    check(Last(notes):find("Hex said an enemy was out of its range that your other skills put inside it: not asked "
+        .. "again", 1, true), Last(notes))
+    eq(#notes, 1)
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "the bandit is within reach all the same, and the mage is not")
+    w:advance(5)
+    eq(#notes, 1, "said once")
+    check(mage ~= nil and bandit ~= nil)
+    Clean(w)
+end)
+
+test("reach: a skill that says nothing of range does not stand in the way of one that does", function()
+    -- Two skills of Rend's range that never answer come before it on the bars.
+    local w, ns = Skirmish({ bar = { CLAP, DEMO, HEROIC, BLOODTHIRST, REND, CHARGE, INTIMIDATE } })
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "cross", "Rend was asked, and the mage is out of reach")
+    eq(ns.db.report.reach.proven["0-5"], true)
+    Clean(w)
+end)
+
+test("reach: a skill whose reach is not known leaves nobody out", function()
+    local saved = Seasoned()
+    saved.learned["Dust Cloud"] = { casts = 12, hits = 12 }
+    local w, _, bandit = Skirmish({ bar = { DUST, DEMO, REND, CHARGE, INTIMIDATE }, saved = saved })
+    eq(w:icon("ActionButton1"), "check")
+    w:cast(DUST, { hits = { bandit } })
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "partial", "Dust Cloud may well get to the mage")
+    Clean(w)
+end)
+
+test("reach: how far a skill reaches is read out of its description", function()
+    local w, ns = Bar(nil, SHOUT)
+    w:slash("debug")
+    check(w:drain():find("Enemies out of reach: no skill on your bars has a range to ask the game about, so every "
+        .. "enemy counts as within reach.", 1, true), "said in /se debug")
+    local Read = ns.Spells.ParseReach
+    eq(Read("Reduces the melee attack power of all enemies within 10 yards by 86 for 45 sec."), 10)
+    eq(select(2, Read("Reduces the melee attack power of all enemies within 10 yards by 86 for 45 sec.")), "within 10 yards")
+    eq(Read("Blasts enemies within 8 yds, slowing their attacks."), 8)
+    eq(Read("Stuns all enemies within 5 yd for 2 sec."), 5)
+    eq(Read("Roots every enemy within 12.5 yards."), 12.5)
+    eq(Read("Burns the target and all enemies within 8 yards of the target."), nil, "around somebody else")
+    eq(Read("Burns the target and all enemies within 8 yards of it for 6 sec."), nil)
+    eq(Read("Explodes within 3 sec, burning enemies within 10 yards of the impact."), nil)
+    eq(Read("Explodes within 3 sec, burning enemies within 10 yards."), 10, "the first figure is a time")
+    eq(Read("Blasts nearby enemies, slowing their attacks by 10% for 30 sec."), nil)
+    eq(Read(""), nil)
+    eq(Read(nil), nil)
 end)
 
 return tests

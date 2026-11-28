@@ -89,15 +89,26 @@ local SEED_IDS = {
     8122, -- Psychic Scream
 }
 
+-- How far around you each of them reaches, in yards, for one whose description
+-- does not say. Where versions of the game differ, the longer reach: an
+-- enemy is only left out of a skill's count when it is proven to be further
+-- off than this (see "Enemies out of reach" in Core.lua).
+local SEED_REACH = {
+    [6343] = 8, [1160] = 10, [12323] = 12, [5246] = 10, [1161] = 10, [99] = 10, [5209] = 10,
+    [122] = 12, [120] = 12, [11113] = 10, [31661] = 12, [5484] = 10, [8122] = 8,
+}
+
 local seedNames -- name -> true, built on first use
+local seedReach -- name -> yards
 
 local function IsSeed(name)
     if not seedNames then
-        seedNames = {}
+        seedNames, seedReach = {}, {}
         for i = 1, #SEED_IDS do
             local seedName = ns.SpellName(SEED_IDS[i])
             if seedName then
                 seedNames[seedName] = true
+                seedReach[seedName] = SEED_REACH[SEED_IDS[i]]
             end
         end
     end
@@ -374,6 +385,45 @@ function Spells.ParseOwn(text)
     return nil
 end
 
+local YARDS = { yards = true, yard = true, yds = true, yd = true }
+-- After "within 10 yards", words that put the middle of it somewhere else
+-- than where you stand.
+local ELSEWHERE = { " of the target", " of your target", " of the enemy", " of that", " of it", " of the impact",
+    " of the location", " of each other", " of one another", " of the totem", " of your pet", " of the pet" }
+
+--- How far around you a skill reaches, read out of its description: 10 for
+--- "all enemies within 10 yards", with the words it was read from. Nil when
+--- the description names no such distance, or names it around something
+--- else ("within 8 yards of the target").
+function Spells.ParseReach(text)
+    if type(text) ~= "string" or text == "" then
+        return nil
+    end
+    text = Plainly(text)
+    local position = 1
+    while true do
+        local first, last, number, word = text:find("within (%d+[%.,]?%d*) ?([^%s%d%p]+)", position)
+        if not first then
+            return nil
+        end
+        if YARDS[word] then
+            local after = text:sub(last + 1, last + 20)
+            local elsewhere = false
+            for i = 1, #ELSEWHERE do
+                if after:sub(1, #ELSEWHERE[i]) == ELSEWHERE[i] then
+                    elsewhere = true
+                    break
+                end
+            end
+            local yards = tonumber((number:gsub(",", ".")))
+            if not elsewhere and yards and yards > 0 then
+                return yards, text:sub(first, last)
+            end
+        end
+        position = last + 1
+    end
+end
+
 --------------------------------------------------------------------------------
 -- What the client says about a spell
 --------------------------------------------------------------------------------
@@ -396,12 +446,13 @@ local function Load(info, now)
             info.selfOnly = ns.SpellIsSelfOnly(id)
         end
         info.passive = ns.SpellIsPassive(id)
-        info.range = ns.SpellRange(id)
+        info.range, info.least = ns.SpellRange(id)
         local text = ns.SpellDescription(id)
         if text and text ~= "" then
             info.tooltipDuration, info.tooltipRead, info.tooltipPassed = Spells.ParseDuration(text)
             info.tooltipStacks, info.stacksRead = Spells.ParseStacks(text)
             info.ownRead = Spells.ParseOwn(text)
+            info.tooltipReach, info.reachRead = Spells.ParseReach(text)
             info.described = true
             info.done = true
         end
@@ -418,12 +469,16 @@ local function Load(info, now)
 end
 
 --- Static facts about a spell: { id, name, harmful, helpful, selfOnly, passive,
---- range, tooltipDuration, tooltipRead, tooltipPassed, tooltipStacks,
---- stacksRead, ownRead, described, gameStacks }. `tooltipRead` and `tooltipPassed` are the
+--- range, least, tooltipDuration, tooltipRead, tooltipPassed, tooltipStacks,
+--- stacksRead, ownRead, tooltipReach, reachRead, described, gameStacks }.
+--- `range` and `least` are how far the spell goes and how near its target
+--- may be. `tooltipRead` and `tooltipPassed` are the
 --- words the duration was read from and the first time in the description
 --- that was not taken for one. `stacksRead` is the words the most stacks were
 --- read from, `ownRead` the words that show the effect to be each caster's
---- own, and `described` is true once a description was there to read.
+--- own, `tooltipReach` and `reachRead` how far around you the description
+--- says the spell reaches and the words for it, and `described` is true once
+--- a description was there to read.
 --- Returns nil while the client does not know the spell's name, with a second
 --- value of true if it is still worth asking again.
 function Spells:Get(spellID, now)
@@ -869,6 +924,66 @@ function Spells:ForgetCopies()
 end
 
 --------------------------------------------------------------------------------
+-- How far an area skill reaches
+--
+-- A skill that hits every enemy around you does nothing for one that stands
+-- further off than it reaches (see "Enemies out of reach" in Core.lua). How
+-- far that is comes from the skill's description where it says ("all
+-- enemies within 10 yards"), and from the list of well known area debuffs
+-- for one of those. For any other skill it is not known, and no enemy is
+-- ever left out of its count.
+--
+-- That figure can be too small: a talent, another version of the game. A
+-- cast that shows on an enemy taken to be out of reach says so. One such
+-- cast could be a coincidence, somebody else's effect arriving there in the
+-- same moment. From the second on, the skill is taken to reach past where
+-- the nearest of those enemies stood, and that is kept with the settings.
+--------------------------------------------------------------------------------
+
+local REACH_PROOF = 2 -- casts seen to show on an enemy out of reach before the reach is put further
+local REACH_PAST = 1 -- yards past where that enemy stood
+
+--- How far around you an area skill reaches, in yards, or nil when that is
+--- not known.
+function Spells:Reach(info)
+    local reach = info.tooltipReach
+    if not reach then
+        IsSeed(info.name)
+        reach = seedReach[info.name]
+    end
+    if not reach then
+        return nil
+    end
+    local learned = ns.db.learned[info.name]
+    local further = learned and learned.reach
+    if type(further) == "number" and further > reach then
+        reach = further
+    end
+    return reach
+end
+
+--- A cast of this skill showed on an enemy that was taken to be at least
+--- `far` yards away, which is further than the skill was thought to reach.
+--- Returns the reach it is given from now on when that makes it further,
+--- and nil while one such cast is all there is.
+function Spells:Outreached(name, far)
+    local learned = Learned(name)
+    local seen = (type(learned.beyond) == "number" and learned.beyond or 0) + 1
+    local nearest = type(learned.beyondAt) == "number" and learned.beyondAt < far and learned.beyondAt or far
+    if seen < REACH_PROOF then
+        learned.beyond, learned.beyondAt = seen, nearest
+        return nil
+    end
+    learned.beyond, learned.beyondAt = nil, nil
+    local reach = nearest + REACH_PAST
+    if type(learned.reach) == "number" and learned.reach >= reach then
+        return nil
+    end
+    learned.reach = reach
+    return reach
+end
+
+--------------------------------------------------------------------------------
 -- Creatures that are immune
 --
 -- When the game calls an enemy immune to a skill of yours (see "Immune units"
@@ -877,16 +992,20 @@ end
 -- settings, and the next one of that kind is known for it before the first
 -- cast.
 --
--- Not on one word, though. An immunity can be passing (a shield, a
+-- Not on the bare word, though. An immunity can be passing (a shield, a
 -- banishment), and the word can be about someone else's attack in the moment
 -- yours missed. A kind is counted on as immune once the game has said so on
--- two occasions and no creature of that kind has been seen to carry the
--- effect. A kind that was both called immune and seen to carry the effect
--- has an immunity that comes and goes: that is kept too, and such a kind is
--- never counted on as immune, in this session or a later one.
+-- two occasions, or on one that was proven: you were on your own, and your
+-- hits landed on the creature right before and right after it turned the
+-- spell away, so that it was behind no shield (see "Immune units" in
+-- Tracker.lua). And only while no creature of that kind has been seen to
+-- carry the effect. A kind that was both called immune and seen to carry
+-- the effect has an immunity that comes and goes: that is kept too, and
+-- such a kind is never counted on as immune, in this session or a later one.
 --
 -- ns.db.immune[spell name][kind] = {
 --     seen    on how many occasions the game called that kind immune
+--     proven  true once one of them was proven to be no shield
 --     name    the creature's name, for showing
 --     told    true when you said so yourself (/se immune): that stands until
 --             you take it back
@@ -931,7 +1050,13 @@ end
 --- named yourself, or one the game called immune that has not been seen to
 --- carry the effect since.
 local function Held(entry)
-    return type(entry) == "table" and (entry.told == true or (entry.passes ~= true and Seen(entry) > 0))
+    return type(entry) == "table"
+        and (entry.told == true or (entry.passes ~= true and (Seen(entry) > 0 or entry.proven == true)))
+end
+
+--- True for a saved entry whose kind is counted on as immune.
+local function Sure(entry)
+    return entry.told == true or (entry.passes ~= true and (entry.proven == true or Seen(entry) >= SURE))
 end
 
 --- The game called a creature of this kind immune to a spell, on a new
@@ -952,12 +1077,43 @@ function Spells:SawImmune(name, kind, shown, carried)
     if carried or entry.passes == true or (took and took[kind]) then
         if entry.told ~= true then
             entry.passes = true
-            entry.seen = nil
+            entry.seen, entry.proven = nil, nil
         end
         return "passing"
     end
     entry.seen = min(SEEN_CAP, Seen(entry) + 1)
-    return entry.told == true or entry.seen >= SURE, entry.seen
+    return Sure(entry), entry.seen
+end
+
+--- The last occasion on which a creature of this kind was called immune was
+--- proven to be no shield: its kind is counted on as immune from now on.
+--- Returns true when that is news.
+function Spells:ProveImmune(name, kind)
+    local kinds = Kinds(name)
+    local entry = kinds and kinds[kind]
+    if type(entry) ~= "table" or entry.passes == true or Seen(entry) < 1 then
+        return false -- nothing the game said is kept of it, or its immunity comes and goes
+    end
+    local news = not Sure(entry)
+    entry.proven = true
+    return news
+end
+
+--- An occasion on which a creature of this kind was called immune turned
+--- out to be a shield: it is not held against the kind after all.
+function Spells:Unsee(name, kind)
+    local kinds = Kinds(name)
+    local entry = kinds and kinds[kind]
+    if type(entry) ~= "table" or entry.passes == true or Seen(entry) < 1 then
+        return
+    end
+    entry.seen = Seen(entry) - 1
+    if entry.seen == 0 and entry.told ~= true and entry.proven ~= true then
+        kinds[kind] = nil
+        if next(kinds) == nil then
+            ns.db.immune[name] = nil
+        end
+    end
 end
 
 --- A creature of this kind was seen to carry the spell's effect, so the kind
@@ -983,7 +1139,7 @@ function Spells:Takes(name, kind)
         return false -- you said so yourself, or known for it already
     end
     entry.passes = true
-    entry.seen = nil
+    entry.seen, entry.proven = nil, nil
     return true
 end
 
@@ -991,7 +1147,7 @@ end
 function Spells:KindImmune(name, kind)
     local kinds = Kinds(name)
     local entry = kinds and kinds[kind]
-    return type(entry) == "table" and (entry.told == true or (entry.passes ~= true and Seen(entry) >= SURE))
+    return type(entry) == "table" and Sure(entry)
 end
 
 --- You said it yourself: this kind of creature is immune to the spell.
@@ -1023,7 +1179,7 @@ function Spells:ImmuneKinds(name)
                     name = type(entry.name) == "string" and entry.name or tostring(kind),
                     seen = Seen(entry),
                     told = told or nil,
-                    sure = told or Seen(entry) >= SURE,
+                    sure = Sure(entry),
                 }
             end
         end
