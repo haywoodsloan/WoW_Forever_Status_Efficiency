@@ -188,7 +188,7 @@ local function Report(err)
     if not reported[err] and reportCount < 3 then
         reported[err] = true
         reportCount = reportCount + 1
-        ns.Print("hit a problem and skipped an update. /se debug shows the details. (" .. err .. ")")
+        ns.Print("The addon hit a problem and skipped an update. Type /se debug to see the details. (" .. err .. ")")
         if ns.Journal then
             pcall(KeepProblem, err)
         end
@@ -1098,11 +1098,11 @@ end
 
 local VERDICTS = { "seen", "changed", "immune", "nothing new", "silent", "unproven", "unclear", "assumed", "unknown" }
 
--- Whose changes each kind of unit token reports, for a line in chat.
+-- Whose effects each kind of unit token reports changes to, for a line in chat.
 local WHOSE = {
-    player = "your own effects",
+    player = "you",
     target = "your target",
-    softenemy = "your soft target",
+    softenemy = "the enemy that is targeted for you",
     plate = "the enemies around your target",
 }
 
@@ -1129,13 +1129,19 @@ function ns.Note(cast, tally, delay, unheard, said)
                 Remark(format("nothing was reported through \"%s\" after %d casts in a row, so casts are taken to "
                     .. "land there until a change is reported", kind, state.quiet))
                 whose = whose or {}
-                whose[#whose + 1] = WHOSE[kind] or kind
+                whose[kind] = true
             end
         end
         if whose then
-            table.sort(whose)
-            ns.Print(format("the game has said nothing about %s changing after several casts in a row. Until it "
-                .. "does, a cast there is taken to have landed.", table.concat(whose, " or ")))
+            local words = {}
+            for i = 1, #TOKEN_KINDS do
+                if whose[TOKEN_KINDS[i]] then
+                    words[#words + 1] = WHOSE[TOKEN_KINDS[i]]
+                end
+            end
+            ns.Print(format("The game has not reported any change to the effects on %s after several of your casts "
+                .. "in a row. Until it does, the addon assumes that such a cast has landed.",
+                table.concat(words, " or ")))
         end
     end
 
@@ -1785,14 +1791,14 @@ local function TellDropped(name, kind, back, earned)
     if back then
         learned.told = nil
         if earned then
-            ns.Print(format("%s does leave a status effect behind: %d of its last %d casts did. Its icon is back.",
+            ns.Print(format("%s does leave an effect behind: %d of your last %d casts did. It has its icon back.",
                 name, hits, casts))
         end
         return
     end
     learned.told = true
-    ns.Print(format("%s left no status effect behind after %d of %d casts, so it gets no icon for now. It gets "
-        .. "the icon back by itself once its casts are seen to leave one, or at once with /se track %s.",
+    ns.Print(format("%s lost its icon because %d of your %d casts left no effect behind. It gets the icon back "
+        .. "by itself once its casts are seen to leave one, or at once if you type /se track %s.",
         name, casts - hits, casts, name))
 end
 
@@ -2354,7 +2360,8 @@ local function OnUpdate()
     if failures >= 25 then
         ns.halted = true
         pcall(HideAll)
-        ns.Print("stopped after repeated problems. /se on starts it again, and /se debug shows the last one.")
+        ns.Print("The addon has stopped after repeated problems. Type /se on to start it again, or /se debug to "
+            .. "see the last problem.")
     end
 end
 

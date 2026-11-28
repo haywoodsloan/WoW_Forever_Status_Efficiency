@@ -22,7 +22,7 @@ end
 -- Finding the spell someone typed
 --------------------------------------------------------------------------------
 
---- Turns typed text (or a shift-clicked spell link) into the name of a spell on
+--- Turns typed text (or a shift-clicked spell link) into the name of a skill on
 --- the bars. Returns the name, or nil and a reason.
 local function ResolveSpell(text)
     text = Trim(text or "")
@@ -31,7 +31,7 @@ local function ResolveSpell(text)
         text = linked
     end
     if text == "" then
-        return nil, "Which spell? For example: /se track Thunder Clap"
+        return nil, "Which skill? Type its name after the command, as in /se track Thunder Clap."
     end
 
     local wanted = text:lower()
@@ -50,7 +50,7 @@ local function ResolveSpell(text)
     if partials == 1 then
         return partial
     elseif partials > 1 then
-        return nil, "More than one spell on your bars starts with \"" .. text .. "\". Type more of the name."
+        return nil, "More than one skill on your action bars starts with \"" .. text .. "\". Type more of the name."
     end
 
     -- Not on a bar right now, but maybe a spell the client knows by that name.
@@ -58,7 +58,7 @@ local function ResolveSpell(text)
     if name then
         return name
     end
-    return nil, "No spell called \"" .. text .. "\" is on your action bars."
+    return nil, "No skill called \"" .. text .. "\" is on your action bars."
 end
 
 local function Choice(name)
@@ -76,19 +76,28 @@ local function WithSpell(text, fn)
     ns.Options.RefreshAll() -- the Skills tab shows the same choices
 end
 
---- How a spell on the bars is treated right now: tracked, area, duration,
---- source, kind. A spell that is not on the bars gives nothing.
-local function Treatment(name)
+--- The skill of that name on the action bars, as ns.BarSpells lists it.
+local function OnBars(name)
     local list = ns.BarSpells()
     for i = 1, #list do
         if list[i].name == name then
-            return Spells:Tracking(list[i])
+            return list[i]
         end
     end
     return nil
 end
 
---- A length of time in words: "21s", "2 min", "an hour or more".
+--- How a spell on the bars is treated right now: tracked, area, duration,
+--- source, kind. A spell that is not on the bars gives nothing.
+local function Treatment(name)
+    local info = OnBars(name)
+    if info then
+        return Spells:Tracking(info)
+    end
+    return nil
+end
+
+--- A length of time in short, for /se debug: "21s", "2 min", "an hour or more".
 local function Span(seconds)
     if seconds >= Spells.MAX_DURATION then
         return "an hour or more"
@@ -98,6 +107,43 @@ local function Span(seconds)
     return floor(seconds + 0.5) .. "s"
 end
 
+--- A number of things in words: "1 second", "21 seconds".
+local function Count(number, one, many)
+    return number .. " " .. (number == 1 and one or many)
+end
+
+--- A length of time written out: "21 seconds", "2 minutes", "an hour or more".
+local function Lasting(seconds)
+    if seconds >= Spells.MAX_DURATION then
+        return "an hour or more"
+    elseif seconds >= 120 then
+        return Count(floor(seconds / 60 + 0.5), "minute", "minutes")
+    end
+    return Count(floor(seconds + 0.5), "second", "seconds")
+end
+
+--- True for a buff skill that can be used on a friend as well as on you: its
+--- icon looks at the friend you have targeted, when there is one.
+local function OnFriends(info)
+    return info ~= nil and info.helpful == true and info.selfOnly ~= true
+end
+
+--- Whom the icon of a buff skill looks at, as a sentence. `what` is how the
+--- buff was last spoken of: "its buff", or "it".
+local function BuffChecks(info, what)
+    if OnFriends(info) then
+        return "The icon checks you, or the friend you have targeted, for " .. what .. "."
+    end
+    return "The icon checks you for " .. what .. "."
+end
+
+--- What to say of a skill that was put on Always while it is on no action
+--- button. `as` is what its effect will be treated as, where that was said.
+local function NotOnBars(name, as)
+    return name .. " is now on Always" .. (as and (", and its effect is treated as " .. as) or "")
+        .. ", but it is not on your action bars right now. It will have an icon as soon as it is."
+end
+
 --------------------------------------------------------------------------------
 -- Commands
 --------------------------------------------------------------------------------
@@ -105,35 +151,41 @@ end
 local commands = {}
 
 local HELP = {
-    "icons on your action buttons show whether casting again is worth it.",
-    "  A debuff: green check = no enemy it would hit has it, yellow half circle = some do, red X = all do.",
-    "  A buff: green check = you do not have it, red X = you do.",
-    "  An effect that stacks: green check until the last stack is on, red X only then.",
-    "  An enemy that is immune to a skill is not counted. /se immune shows which the addon has learned.",
-    "  /se options - the settings window: when the icons appear, where they sit, how big they are, which icon",
-    "    means what, and how each spell on your bars is treated",
-    "  /se on | off   /se when <always | combat | group> - when the icons appear",
-    "  /se usable <on | off> - an icon only on a skill you can use right now, or on every skill",
-    "  /se list - the spells on your bars and how each is treated",
-    "  /se track <spell> | ignore <spell> | auto <spell>",
-    "  /se buff <spell> | debuff <spell> - track it as a buff on you, or as a debuff on enemies",
-    "  /se aoe <spell> | single <spell> - judge a debuff against every enemy in the fight, or only your target",
-    "  /se duration <spell> <seconds | auto>",
-    "  /se stacks <spell> <how many | auto> - how many times over a skill's effect goes on one unit",
-    "  /se anyone <spell> | mine <spell> - count another player's copy of its effect too, or only your own",
-    "  /se immune - the creatures found immune to a skill   /se immune <spell> - mark the kind you have targeted",
-    "  /se immune forget [spell] - forget them, for one skill or for all",
-    "  /se corner <tl | top | tr | left | center | right | bl | bottom | br>   /se size <pixels | auto>",
-    "  /se icon <green | yellow | red> <icon name | file ID | texture path | none | default>   /se icons lists the names",
-    "  /se debug - what the game lets the addon see right now",
-    "  /se log - show or hide what the tracker is doing",
-    "  /se plain - have the settings window draw its own buttons and sliders instead of the game's. It does",
+    "An icon on each action button shows whether using that skill again would do anything.",
+    "  For a debuff, the green check means that no enemy it would hit has it, the yellow half circle that some",
+    "    of them do, and the red X that all of them do.",
+    "  For a buff, the green check means that you do not have it, and the red X that you do.",
+    "  For an effect that stacks, the green check stays until all of its stacks are there.",
+    "  An icon never tells you to use a skill on an enemy that is immune to it. /se immune lists those enemies.",
+    "  /se options - opens the settings window, where all of this can be set with clicks",
+    "  /se on | off - turns the icons on or off",
+    "  /se when <always | combat | group> - sets when the icons appear",
+    "  /se usable <on | off> - shows an icon only on a skill you can use right now, or on every skill",
+    "  /se list - lists the skills on your action bars and what the addon does with each",
+    "  /se track <skill> - puts a skill on Always, so it has an icon",
+    "  /se ignore <skill> - puts a skill on Never, so it has no icon",
+    "  /se auto <skill> - puts a skill back on Auto, so the addon decides about it by itself again",
+    "  /se buff <skill> | debuff <skill> - treats a skill's effect as a buff on you, or as a debuff on enemies",
+    "  /se aoe <skill> | single <skill> - makes the icon check every enemy in the fight, or only your target",
+    "  /se duration <skill> <seconds | auto> - sets how long a skill's effect lasts",
+    "  /se stacks <skill> <number | auto> - sets the most stacks a skill's effect can have",
+    "  /se anyone <skill> | mine <skill> - counts another player's effect like your own, or ignores it",
+    "  /se immune - lists the enemies that are immune to a skill",
+    "  /se immune <skill> - adds the kind of enemy you have targeted to that list",
+    "  /se immune forget [skill] - clears the list, for one skill or for all of them",
+    "  /se corner <tl | top | tr | left | center | right | bl | bottom | br> - moves the icon on the button",
+    "  /se size <pixels | auto> - sets how big the icon is",
+    "  /se icon <green | yellow | red> <icon name | file ID | path | none | default> - picks the icon shown",
+    "    for one of the three results. /se icons lists the names",
+    "  /se debug - prints technical details, for tracking down a problem",
+    "  /se log - shows or hides a running log of what the addon notices",
+    "  /se plain - makes the settings window draw its own buttons and sliders instead of the game's. It does",
     "    that by itself where the game's are missing or do not work",
-    "  /se reset - forget every setting and everything learned",
+    "  /se reset - clears every setting and everything the addon has learned",
 }
 
 function commands.help()
-    Print("v" .. ns.VERSION .. ", " .. HELP[1])
+    Print("Version " .. ns.VERSION .. ". " .. HELP[1])
     for i = 2, #HELP do
         print(HELP[i])
     end
@@ -165,13 +217,14 @@ end
 function commands.on()
     ns.SetEnabled(true)
     ns.Options.RefreshAll()
-    Print("on. Icons appear " .. AppearWords(ns.db.appear) .. ", " .. UsableWords(ns.db.usableOnly) .. ".")
+    Print("The icons are on. They appear " .. AppearWords(ns.db.appear) .. ", and " .. UsableWords(ns.db.usableOnly)
+        .. ".")
 end
 
 function commands.off()
     ns.SetEnabled(false)
     ns.Options.RefreshAll()
-    Print("off. /se on turns it back on.")
+    Print("The icons are off. Type /se on to turn them back on.")
 end
 
 local APPEAR_WORDS = {
@@ -183,14 +236,14 @@ local APPEAR_WORDS = {
 function commands.when(rest)
     local when = APPEAR_WORDS[Trim(rest):lower()]
     if not when then
-        Print("icons appear " .. AppearWords(ns.db.appear) .. ". /se when <always | combat | group> changes that: "
-            .. "always, when you are in combat, or when you or your group are in combat.")
+        Print("The icons appear " .. AppearWords(ns.db.appear) .. ". To change that, type /se when always, /se when "
+            .. "combat (when you are in combat) or /se when group (when you or your group are in combat).")
         return
     end
     ns.Options.Change(function()
         ns.SetAppear(when)
     end)
-    Print("icons now appear " .. AppearWords(when) .. ".")
+    Print("The icons now appear " .. AppearWords(when) .. ".")
 end
 
 commands.appear = commands.when
@@ -205,7 +258,7 @@ local USABLE_WORDS = {
 --- said whether a skill can be used.
 local function UsableNote()
     if ns.db.usableOnly and ns.usableProbe.usable == "no" then
-        Print("this client is not telling the addon whether a skill can be used, so for now the icons show on "
+        Print("The game is not telling the addon whether a skill can be used, so for now the icons are shown on "
             .. "every skill.")
     end
 end
@@ -213,35 +266,37 @@ end
 function commands.usable(rest)
     local only = USABLE_WORDS[Trim(rest):lower()]
     if only == nil then
-        Print("icons appear " .. UsableWords(ns.db.usableOnly) .. ". /se usable <on | off> changes that: on for "
-            .. "only on a skill you can use right now, off for on every skill.")
+        Print("The icons appear " .. UsableWords(ns.db.usableOnly) .. ". To change that, type /se usable on (only "
+            .. "on skills you can use right now) or /se usable off (on every skill).")
         UsableNote()
         return
     end
     ns.Options.Change(function()
         ns.SetUsableOnly(only)
     end)
-    Print("icons now appear " .. UsableWords(only) .. ".")
+    Print("The icons now appear " .. UsableWords(only) .. ".")
     UsableNote()
 end
 
 function commands.track(rest)
     WithSpell(rest, function(name)
         Choice(name).track = true
+        local info = OnBars(name)
         local _, area, _, _, kind = Treatment(name)
-        if not kind then
-            Print(name .. " is now tracked. /se buff " .. name .. " treats it as a buff on you, and /se debuff "
-                .. name .. " as a debuff on enemies.")
+        local now = name .. " is now on Always, so it has an icon. "
+        if not info then
+            Print(NotOnBars(name) .. " If the addon then gets its effect wrong, type /se buff " .. name
+                .. " for a buff on you, or /se debuff " .. name .. " for a debuff on enemies.")
         elseif kind == "buff" then
-            Print(name .. " is now tracked, as a buff on you. /se debuff " .. name
-                .. " treats it as a debuff on enemies instead.")
+            Print(now .. BuffChecks(info, "its buff") .. " If " .. name
+                .. " puts a debuff on enemies instead, type /se debuff " .. name .. ".")
         elseif area then
-            Print(name .. " is now tracked, as a debuff on every enemy in the fight. /se buff " .. name
-                .. " treats it as a buff on you instead.")
+            Print(now .. "The icon checks every enemy in the fight for its debuff. If " .. name
+                .. " gives you a buff instead, type /se buff " .. name .. ".")
         else
-            Print(name .. " is now tracked, as a debuff on your target. /se aoe " .. name
-                .. " judges it against every enemy in the fight, and /se buff " .. name
-                .. " treats it as a buff on you instead.")
+            Print(now .. "The icon checks the enemy you have targeted for its debuff. If " .. name
+                .. " hits every enemy in the fight, type /se aoe " .. name .. ". If it gives you a buff instead, "
+                .. "type /se buff " .. name .. ".")
         end
     end)
 end
@@ -251,7 +306,13 @@ function commands.buff(rest)
         local choice = Choice(name)
         choice.track, choice.kind = true, "buff"
         Tracker:Forget(name)
-        Print(name .. " is now tracked as a buff on you, or on the friend you have targeted if it can be cast on others.")
+        local info = OnBars(name)
+        if not info then
+            Print(NotOnBars(name, "a buff"))
+        else
+            Print(name .. " is now on Always, so it has an icon, and its effect is treated as a buff. "
+                .. BuffChecks(info, "it"))
+        end
     end)
 end
 
@@ -260,8 +321,17 @@ function commands.debuff(rest)
         local choice = Choice(name)
         choice.track, choice.kind = true, "debuff"
         Tracker:Forget(name)
-        Print(name .. " is now tracked as a debuff on enemies. /se aoe " .. name .. " and /se single " .. name
-            .. " say which enemies.")
+        local _, area = Treatment(name)
+        local now = name .. " is now on Always, so it has an icon, and its effect is treated as a debuff. "
+        if not OnBars(name) then
+            Print(NotOnBars(name, "a debuff on enemies"))
+        elseif area then
+            Print(now .. "The icon checks every enemy in the fight for it. If " .. name
+                .. " only hits your target, type /se single " .. name .. ".")
+        else
+            Print(now .. "The icon checks the enemy you have targeted for it. If " .. name
+                .. " hits every enemy in the fight, type /se aoe " .. name .. ".")
+        end
     end)
 end
 
@@ -269,7 +339,7 @@ function commands.ignore(rest)
     WithSpell(rest, function(name)
         Choice(name).track = false
         Tracker:Forget(name)
-        Print(name .. " will no longer get an icon.")
+        Print(name .. " is now on Never, so it has no icon. Type /se track " .. name .. " to give it one again.")
     end)
 end
 
@@ -277,56 +347,59 @@ function commands.auto(rest)
     WithSpell(rest, function(name)
         ns.db.spells[name] = nil
         ns.db.learned[name] = nil
-        Print(name .. " is back to automatic, and what was learned about it is forgotten.")
+        Print(name .. " is back on Auto, so the addon decides everything about it by itself again. Your own "
+            .. "choices for it are cleared, and so is what the addon had learned about it.")
     end)
 end
 
 --- Which enemies a debuff is judged against. It is remembered for a buff
---- too, but only comes into play if the spell is made a debuff.
+--- too, but only comes into play if the spell is made a debuff. `said` is
+--- the sentence for a debuff, with %s for the skill's name.
 local function SetArea(name, area, said)
     Choice(name).aoe = area
     local _, _, _, _, kind = Treatment(name)
     if kind == "buff" then
-        Print(name .. " is tracked as a buff on you, so that changes nothing for now. It would only matter after /se debuff "
-            .. name)
+        Print("The effect of " .. name .. " is treated as a buff, so this changes nothing for now. It would only "
+            .. "matter if you made it a debuff with /se debuff " .. name .. ".")
     else
-        Print(name .. said)
+        Print(format(said, name))
     end
 end
 
 function commands.aoe(rest)
     WithSpell(rest, function(name)
-        SetArea(name, true, " is now judged against every enemy in the fight.")
+        SetArea(name, true, "The icon for %s now checks every enemy in the fight.")
     end)
 end
 
 function commands.single(rest)
     WithSpell(rest, function(name)
-        SetArea(name, false, " is now judged against your target only.")
+        SetArea(name, false, "The icon for %s now checks only the enemy you have targeted.")
     end)
 end
 
 function commands.duration(rest)
     local spell, value = Trim(rest):match("^(.-)%s+(%S+)$")
     if not spell then
-        Print("Usage: /se duration <spell> <seconds | auto>")
+        Print("Type the skill's name and then how long its effect lasts in seconds. For example: /se duration "
+            .. "Thunder Clap 30, or /se duration Thunder Clap auto to let the addon work it out.")
         return
     end
     local seconds = tonumber(value)
     if value:lower() ~= "auto" and not (seconds and seconds >= 1 and seconds <= 3600) then
-        Print("Give the duration in seconds, from 1 to 3600, or auto.")
+        Print("Type how long the effect lasts in seconds, from 1 to 3600, or type auto to let the addon work it out.")
         return
     end
     WithSpell(spell, function(name)
         if seconds then
             Choice(name).duration = seconds
-            Print(name .. " is now assumed to last " .. seconds .. " seconds.")
+            Print("The effect of " .. name .. " is now set to last " .. Count(seconds, "second", "seconds") .. ".")
         else
             local choice = ns.db.spells[name]
             if choice then
                 choice.duration = nil
             end
-            Print(name .. " uses its own duration again.")
+            Print("The addon works out by itself again how long the effect of " .. name .. " lasts.")
         end
     end)
 end
@@ -334,29 +407,32 @@ end
 function commands.stacks(rest)
     local spell, value = Trim(rest):match("^(.-)%s+(%S+)$")
     if not spell then
-        Print("Usage: /se stacks <spell> <how many | auto>")
+        Print("Type the skill's name and then the most stacks its effect can have. For example: /se stacks Sunder "
+            .. "Armor 5, or /se stacks Sunder Armor auto to let the addon work it out.")
         return
     end
     local most = tonumber(value)
     if value:lower() ~= "auto" and not (most and most >= 1 and most <= 100 and most == floor(most)) then
-        Print("Give the most stacks as a whole number from 1 to 100, with 1 for an effect that does not stack, or auto.")
+        Print("Type the most stacks the effect can have as a whole number from 1 to 100, where 1 means that it does "
+            .. "not stack, or type auto to let the addon work it out.")
         return
     end
     WithSpell(spell, function(name)
         if most and most > 1 then
             Choice(name).stacks = most
-            Print(format("%s is now full at %d stacks: the green check below that, the red X at %d.",
-                name, most, most))
+            Print(format("The effect of %s can now have up to %d stacks. The icon shows the green check until all %d "
+                .. "are there.", name, most, most))
         elseif most then
             Choice(name).stacks = most
-            Print(name .. " now counts as an effect that does not stack.")
+            Print("The effect of " .. name .. " is now set as one that does not stack.")
         else
             local choice = ns.db.spells[name]
             if choice then
                 choice.stacks = nil
                 Spells:Tidy(name)
             end
-            Print(name .. " goes by the game and its tooltip again for how often its effect stacks.")
+            Print("The addon works out by itself again how many stacks the effect of " .. name .. " can have, from "
+                .. "the game and from the skill's tooltip.")
         end
     end)
 end
@@ -364,7 +440,7 @@ end
 function commands.anyone(rest)
     WithSpell(rest, function(name)
         Choice(name).shared = true
-        Print(name .. ": another player's copy of its effect now counts like your own.")
+        Print("The icon for " .. name .. " now treats another player's " .. name .. " like your own.")
     end)
 end
 
@@ -372,7 +448,7 @@ function commands.mine(rest)
     WithSpell(rest, function(name)
         Choice(name).shared = false
         Tracker:ForgetTheirs(name)
-        Print(name .. ": only an effect you put there yourself counts now.")
+        Print("The icon for " .. name .. " now only looks for your own " .. name .. ". Another player's is ignored.")
     end)
 end
 
@@ -386,7 +462,7 @@ local function ListImmune()
         for k = 1, #kinds do
             local kind = kinds[k]
             if kind.sure then
-                counted[#counted + 1] = kind.name .. (kind.told and " (you said so)" or "")
+                counted[#counted + 1] = kind.name .. (kind.told and " (added by you)" or "")
             else
                 heard[#heard + 1] = kind.name
             end
@@ -399,26 +475,34 @@ local function ListImmune()
         end
     end
     if #sure == 0 and #once == 0 then
-        Print("no creature has been found immune to a skill of yours yet. The addon learns it when the game says "
-            .. "\"immune\" as you use a skill on one, and counts on it for that kind of creature once it has heard "
-            .. "so twice. /se immune <spell> marks the kind you have targeted yourself.")
+        Print("No enemy has been found immune to one of your skills yet. When the game says \"Immune\" as you use a "
+            .. "skill on an enemy, the addon remembers it, and from the second time on it treats every enemy of that "
+            .. "kind as immune to that skill. To add one yourself, target it and type /se immune <skill>.")
         return
     end
     if #sure > 0 then
-        Print("creatures taken to be immune, by skill. They are left out when the skill is judged:")
+        Print("These enemies are immune to these skills. An icon never tells you to use a skill on an enemy that is "
+            .. "immune to it:")
         for i = 1, #sure do
             print(sure[i])
         end
     else
-        Print("no kind of creature is counted on as immune yet.")
+        Print("No kind of enemy counts as immune to one of your skills yet.")
     end
     if #once > 0 then
-        print("  Heard once, and counted on when the game says so again:")
+        print("  Seen immune once so far. These count as immune when the game says so a second time:")
         for i = 1, #once do
             print("  " .. once[i])
         end
     end
-    print("  /se immune forget [spell] forgets them. A skill seen to land on one drops it by itself.")
+    print("  Type /se immune forget to clear the list, or /se immune forget <skill> to clear it for one skill. An "
+        .. "enemy that the addon added also comes off the list by itself when the skill is seen to work on one of "
+        .. "its kind.")
+end
+
+--- How many kinds of enemy a cleared list held, as a sentence.
+local function Held(dropped)
+    return "It held " .. Count(dropped, "kind of enemy", "kinds of enemy") .. "."
 end
 
 function commands.immune(rest)
@@ -432,28 +516,36 @@ function commands.immune(rest)
         if more == "" then
             local dropped = ns.ForgetImmune()
             ns.Options.RefreshAll()
-            Print(format("forgot every creature that was found immune to a skill (%d kept until now).", dropped))
+            if dropped > 0 then
+                Print("The list of immune enemies is cleared for every skill. " .. Held(dropped))
+            else
+                Print("The list of immune enemies was already empty.")
+            end
             return
         end
         WithSpell(more, function(name)
             local dropped = ns.ForgetImmune(name)
-            Print(format("forgot the creatures that were found immune to %s (%d kept until now).", name, dropped))
+            if dropped > 0 then
+                Print("The list of enemies immune to " .. name .. " is cleared. " .. Held(dropped))
+            else
+                Print("No enemy was on the list as immune to " .. name .. ".")
+            end
         end)
         return
     end
     WithSpell(rest, function(name)
         local who, why = ns.MarkImmune(name)
         if who then
-            Print(format("%s now counts as immune to %s, on your say-so, until you take it back with /se immune "
-                .. "forget %s.", who, name, name))
+            Print(format("You added %s to the enemies that are immune to %s. It stays on that list until you clear "
+                .. "it with /se immune forget %s.", who, name, name))
         elseif why == "player" then
-            Print("that is a player, and no kind of creature: only creatures can be marked as immune to a skill.")
+            Print("Your target is a player. Only creatures can be added as immune to a skill.")
         elseif why == "hidden" then
-            Print("the game will not say what kind of creature that is right now, so nothing was marked. Try again "
-                .. "when the fight is over.")
+            Print("The game does not say what kind of enemy your target is right now, so nothing was added. Try "
+                .. "again when the fight is over.")
         else
-            Print("target the creature first: /se immune <spell> marks the kind of creature you have targeted as "
-                .. "immune to that skill.")
+            Print("Target an enemy first. /se immune <skill> then adds every enemy of its kind as immune to that "
+                .. "skill.")
         end
     end)
 end
@@ -465,14 +557,15 @@ function commands.size(rest)
         ns.Options.Change(function()
             ns.db.size = 0
         end)
-        Print("icon size follows the button again.")
+        Print("The icon size follows the size of the button again.")
     elseif pixels and pixels >= ns.SIZE_MIN and pixels <= ns.SIZE_MAX then
         ns.Options.Change(function()
             ns.db.size = floor(pixels + 0.5)
         end)
-        Print("icon size is " .. ns.db.size .. ".")
+        Print("The icon size is now " .. Count(ns.db.size, "pixel", "pixels") .. ".")
     else
-        Print("Usage: /se size <" .. ns.SIZE_MIN .. " to " .. ns.SIZE_MAX .. " | auto>")
+        Print("Type a size from " .. ns.SIZE_MIN .. " to " .. ns.SIZE_MAX .. " pixels, as in /se size 24, or type "
+            .. "/se size auto to let the icons follow the size of the button.")
     end
 end
 
@@ -492,13 +585,14 @@ function commands.corner(rest)
     local word = Trim(rest):lower():gsub("[%s%-_]", "")
     local corner = CORNER_WORDS[word]
     if not corner then
-        Print("Usage: /se corner <tl | top | tr | left | center | right | bl | bottom | br>")
+        Print("Type where the icon goes on the button: tl, top, tr, left, center, right, bl, bottom or br. For "
+            .. "example: /se corner tr puts it at the top right.")
         return
     end
     ns.Options.Change(function()
         ns.db.corner = corner
     end)
-    Print("icons moved to the " .. ns.Options.POSITION_NAMES[corner]:lower() .. " of each button.")
+    Print("The icons have moved to the " .. ns.Options.POSITION_NAMES[corner]:lower() .. " of each button.")
 end
 
 commands.position = commands.corner
@@ -521,7 +615,7 @@ commands.config = commands.options
 commands.settings = commands.options
 
 function commands.icons()
-    Print("icons you can pick with /se icon <green | yellow | red> <name>:")
+    Print("These are the icons you can pick with /se icon <green | yellow | red> <name>:")
     local line = {}
     for i = 1, #Icons.CHOICES do
         line[#line + 1] = Icons.CHOICES[i].key
@@ -530,8 +624,9 @@ function commands.icons()
             line = {}
         end
     end
-    print("  or a file ID such as 136243, a texture path such as Interface\\Icons\\INV_Misc_QuestionMark,")
-    print("  none for no icon at all, or default.")
+    print("  In place of a name you can type the file ID of a picture such as 136243, its path such as")
+    print("  Interface\\Icons\\INV_Misc_QuestionMark, none for no icon at all, or default for the usual one.")
+    print("  What the three results show now:")
     for i = 1, #Icons.STATES do
         local state = Icons.STATES[i]
         local current, custom = Icons.Current(state.key)
@@ -540,16 +635,20 @@ function commands.icons()
         elseif current == "custom" then
             current = tostring(custom)
         end
-        print(format("  %s: %s", state.title, current))
+        print(format("    %s: %s", state.title, current))
     end
 end
+
+-- The word the help names each of the three results by, for a line that says
+-- what to type.
+local RESULT_WORDS = { none = "green", some = "yellow", all = "red" }
 
 function commands.icon(rest)
     local word, choice = Trim(rest):match("^(%S+)%s*(.-)$")
     local state = Icons.StateFor(word)
     if not state or choice == "" then
-        Print("Usage: /se icon <green | yellow | red> <icon name | file ID | texture path | none | default>. "
-            .. "/se icons lists the names.")
+        Print("Type which result, green, yellow or red, and then the icon for it. For example: /se icon green "
+            .. "plus, or /se icon green default for the usual one. /se icons lists the names.")
         return
     end
     local title = Icons.State(state).title
@@ -568,112 +667,132 @@ function commands.icon(rest)
         ns.Options.Change(function()
             Icons.SetHidden(state)
         end)
-        Print("\"" .. title .. "\" now shows no icon. /se icon " .. state .. " default brings its icon back.")
+        Print("\"" .. title .. "\" now shows no icon. Type /se icon " .. (RESULT_WORDS[state] or state)
+            .. " default to bring its icon back.")
     else
         local texture = Icons.ParseCustom(choice)
         if not texture then
-            Print("\"" .. choice .. "\" is not an icon name, a file ID or a texture path. /se icons lists the names.")
+            Print("\"" .. choice .. "\" is not an icon name, and not the file ID or the path of a picture the game "
+                .. "knows. /se icons lists the names.")
             return
         end
         ns.Options.Change(function()
             Icons.SetCustom(state, texture)
         end)
-        Print("\"" .. title .. "\" now shows your own texture, " .. tostring(texture) .. ".")
+        Print("\"" .. title .. "\" now shows your own picture, " .. tostring(texture) .. ".")
     end
 end
 
 function commands.log()
     ns.db.log = not ns.db.log
-    Print(ns.db.log and "showing what the tracker does. /se log hides it again." or "tracker messages hidden.")
+    Print(ns.db.log and "The log is on: the addon now says in chat what it notices. Type /se log again to turn "
+        .. "it off." or "The log is off.")
 end
 
 function commands.plain()
     ns.db.plain = not ns.db.plain
     Print(ns.db.plain
-        and "the settings window will draw its own buttons and sliders. Type /reload to see it. /se plain again brings the game's own back."
-        or "the settings window will use the game's own buttons and sliders again, wherever they work on this "
-            .. "client. Type /reload to see it.")
+        and "The settings window will draw its own buttons and sliders. Type /reload to see it. Type /se plain "
+            .. "again to go back to the game's own."
+        or "The settings window will use the game's own buttons and sliders again, wherever they work. Type "
+            .. "/reload to see it.")
 end
 
 function commands.reset()
     ns.ResetSettings()
     ns.Options.PlaceWindow()
     ns.Options.RefreshAll()
-    Print("all settings and everything learned are back to the start.")
+    Print("Every setting is back to how it started, and everything the addon had learned is cleared.")
 end
 
+-- Why a skill has an icon. These are the sentences the Skills tab of the
+-- settings gives for the same reasons (WHY in Options.lua), so that the list
+-- in chat and the panel say one thing. A scenario holds the two together.
 local REASONS = {
     debuff = {
-        you = "you turned it on",
-        seen = "its debuff was read off an enemy",
-        ["built-in"] = "it is a well known area debuff",
-        tooltip = "it can be cast on enemies and its tooltip mentions a duration",
+        you = "You chose Always, so it has an icon.",
+        seen = "It has an icon because the addon has seen its debuff on an enemy.",
+        ["built-in"] = "It has an icon because it is a well-known debuff that hits every enemy around you.",
+        tooltip = "It has an icon because its tooltip describes a debuff that lasts for a while.",
     },
     buff = {
-        you = "you turned it on",
-        seen = "its buff was read off you",
-        tooltip = "it is cast on yourself or friends and its tooltip mentions a duration",
+        you = "You chose Always, so it has an icon.",
+        seen = "It has an icon because the addon has seen its buff on you.",
+        tooltip = "It has an icon because its tooltip describes a buff that lasts for a while.",
     },
 }
+local EARNED = "It has an icon because %d of your %d casts left an effect behind."
 
---- Where a tracked spell's effect is looked for, in words.
+--- What a skill with an icon does, to follow its name: where its effect is
+--- looked for, with %s for how long the effect lasts.
 local function Where(info, area, kind)
     if kind == "buff" then
-        if info.helpful == true and info.selfOnly ~= true then
-            return "a buff on you, or on the friend you have targeted"
+        if OnFriends(info) then
+            return "gives you, or the friend you have targeted, a buff that lasts %s"
         end
-        return "a buff on you"
+        return "gives you a buff that lasts %s"
     end
-    return area and "a debuff on every enemy in the fight" or "a debuff on your target"
+    return area and "puts a debuff that lasts %s on every enemy in the fight"
+        or "puts a debuff that lasts %s on your target"
 end
 
--- Where the most stacks of a spell comes from, for /se list. What was seen on
--- a unit is the weakest of them: the effect may go higher than it has been
--- seen to, and /se stacks says how high.
+-- How many stacks a skill's effect can have and who said so, for /se list,
+-- with %d for the number and %s for the skill's name. What was seen in the
+-- game is the weakest of them: the effect may go higher than it has been seen
+-- to, and /se stacks says how high.
+local STACKS = " Its effect can have up to %d stacks."
 local STACKS_FROM = {
-    you = "as you set it",
-    tooltip = "by its tooltip",
-    game = "by the game's own data",
-    seen = "the most seen on a unit so far",
+    you = STACKS .. " You set this yourself.",
+    tooltip = STACKS .. " The addon read this from the skill's tooltip.",
+    game = STACKS .. " The game gives this number for the skill.",
+    seen = " The addon has seen its effect reach %d stacks so far, and takes that as the most it can have. If it "
+        .. "can go higher, type /se stacks %s <number>.",
 }
 
 function commands.list()
     local list = ns.BarSpells()
     if #list == 0 then
-        Print("no spells found on your action bars yet.")
+        Print("No skills were found on your action bars yet.")
         return
     end
-    Print("spells on your action bars:")
+    Print("The skills on your action bars:")
     local quiet = 0
     for i = 1, #list do
         local info = list[i]
+        local name = info.name
         local tracked, area, duration, source, kind = Spells:Tracking(info)
-        local casts, hits = Spells:Record(info.name, kind)
+        local casts, hits = Spells:Record(name, kind)
         casts, hits = floor(casts + 0.5), floor(hits + 0.5)
         if tracked then
-            local why = REASONS[kind][source] or format("a new effect of yours followed %d of %d casts", hits, casts)
+            local why = REASONS[kind][source] or format(EARNED, hits, casts)
+            local line = format("  |cff40d040%s|r %s. %s", name, format(Where(info, area, kind), Lasting(duration)),
+                why)
             local most = Spells:Stacking(info)
-            local stacking = most and format(", stacking up to %d times (%s)", most,
-                STACKS_FROM[Spells:StackingSource(info)] or "by what is known of it") or ""
+            if most then
+                line = line .. format(STACKS_FROM[Spells:StackingSource(info)] or STACKS, most, name)
+            end
             -- Nobody else can put on you what a skill only ever puts on its caster.
-            local anyone = Spells:Shared(info) and not (kind == "buff" and info.selfOnly == true)
-            print(format("  |cff40d040%s|r: %s, lasting %s%s. Tracked because %s.%s", info.name,
-                Where(info, area, kind), Span(duration), stacking, why,
-                anyone and " Another player's copy counts too." or ""))
+            if Spells:Shared(info) and not (kind == "buff" and info.selfOnly == true) then
+                line = line .. " The icon treats another player's " .. name .. " like your own."
+            end
+            print(line)
         elseif source == "ignored" then
-            print(format("  |cff999999%s|r: no icon, you turned it off.", info.name))
+            print(format("  |cff999999%s|r is on Never, so it has no icon.", name))
         elseif source == "demoted" then
-            print(format("  |cff999999%s|r: no icon, no new effect of yours followed %d of %d casts.", info.name,
+            print(format("  |cff999999%s|r lost its icon because %d of your %d casts left no effect behind.", name,
                 casts - hits, casts))
         else
             quiet = quiet + 1
         end
     end
-    local ADD = " /se track <spell> adds one, and /se buff <spell> adds one as a buff on you. The Skills tab of /se options does the same with clicks."
+    local ADD = " an icon anyway, type /se track <skill>, or /se buff <skill> if its effect is a buff on you. The "
+        .. "Skills tab of /se options does the same with clicks."
     if quiet == 1 then
-        print("  1 other spell does not look like a status effect." .. ADD)
+        print("  1 other skill has no icon because it does not seem to leave a buff or a debuff behind. To give it"
+            .. ADD)
     elseif quiet > 1 then
-        print(format("  %d other spells do not look like status effects.", quiet) .. ADD)
+        print(format("  %d other skills have no icon because they do not seem to leave a buff or a debuff behind. To "
+            .. "give one of them", quiet) .. ADD)
     end
 end
 
@@ -749,7 +868,7 @@ function commands.debug()
     if not ok then
         version, build, interface = "?", "?", "?"
     end
-    Print(format("v%s on client %s (build %s), interface %s.", ns.VERSION,
+    Print(format("Version %s on client %s (build %s), interface %s.", ns.VERSION,
         tostring(ns.Plain(version)), tostring(ns.Plain(build)), tostring(ns.Plain(interface))))
     print(format("  Secret values: %s. Aura details hidden right now: %s. In combat: %s.",
         YesNo(ns.hasSecretValues), YesNo(ns.AurasSecret()), YesNo(ns.InCombat())))
@@ -827,7 +946,7 @@ function commands.debug()
     local said = journal.combat
     if next(ns.saying) == nil then
         print("  This client does not let an addon hear what attacks did to enemies, so which enemies are immune "
-            .. "is not learned. /se immune <spell> marks the kind you have targeted by hand.")
+            .. "is not learned. /se immune <skill> adds the kind you have targeted by hand.")
     elseif type(said) == "table" then
         local heard, unread = 0, 0
         for _, kind in pairs({ "target", "softenemy", "plate" }) do
@@ -916,7 +1035,7 @@ SLASH_STATUSEFFICIENCY2 = "/statusefficiency"
 SlashCmdList["STATUSEFFICIENCY"] = function(message)
     local ok, err = pcall(Run, message)
     if not ok then
-        Print("that command ran into a problem: " .. tostring(err))
+        Print("That command ran into a problem: " .. tostring(err))
     end
 end
 

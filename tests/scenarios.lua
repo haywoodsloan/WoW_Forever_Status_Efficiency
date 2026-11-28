@@ -826,7 +826,8 @@ test("reports: a client that stops reporting is found out, and casts are assumed
     eq(ns.db.doubt.target, BUILD, "and this build is on record as not reporting")
     eq(ns.Trusted("target"), false)
     local said = w:drain()
-    check(said:find("the game has said nothing about your target changing after several casts in a row", 1, true),
+    check(said:find("The game has not reported any change to the effects on your target after several of your casts "
+        .. "in a row. Until it does, the addon assumes that such a cast has landed.", 1, true),
         "it says so in chat: " .. said)
     w:cast(REND)
     w:advance(0.5)
@@ -1594,6 +1595,42 @@ test("kinds, buffs: a buff of yours running out is not another buff landing", fu
     end
 end)
 
+test("reports: the line in chat about a client that stopped reporting says whose effects it is silent about", function()
+    -- About yours: a buff, six casts of it in a fight, and nothing reported.
+    local w, ns = Bar({ auraEvents = "calm", saved = Proven() }, BLOCK)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:enterCombat()
+    w:advance(0.3)
+    for _ = 1, 5 do
+        w:cast(BLOCK)
+        w:advance(11)
+    end
+    eq(w:drain(), "", "five casts are waited for in silence")
+    w:cast(BLOCK)
+    w:advance(11)
+    eq(ns.db.doubt.player, BUILD)
+    eq(w:drain(), "|cff66ccffStatus Efficiency|r: The game has not reported any change to the effects on you after "
+        .. "several of your casts in a row. Until it does, the addon assumes that such a cast has landed.")
+    Clean(w)
+
+    -- About the enemy the game targets for you while you have none targeted.
+    local w2, ns2 = Bar({ auraEvents = false }, REND)
+    local wolf = w2:addMob("Wolf")
+    w2:softTarget(wolf)
+    w2:advance(0.3)
+    for _ = 1, 3 do
+        w2:cast(REND)
+        w2:advance(3.5)
+    end
+    eq(ns2.db.doubt.softenemy, BUILD)
+    eq(w2:drain(), "|cff66ccffStatus Efficiency|r: The game has not reported any change to the effects on the enemy "
+        .. "that is targeted for you after several of your casts in a row. Until it does, the addon assumes that "
+        .. "such a cast has landed.")
+    Clean(w2)
+end)
+
 test("reports: silence after a spell without an icon says nothing about the client", function()
     local w, ns = Simple()
     for _ = 1, 5 do
@@ -1705,7 +1742,7 @@ test("reports: a spell that lost its icon earns it back by landing", function()
     end
     eq(w:icon("ActionButton1"), nil, "one cast in six left something: not a status spell, as far as anyone can tell")
     local said = w:drain()
-    check(said:find("Mortal Strike left no status effect behind after 5 of 6 casts", 1, true), said)
+    check(said:find("Mortal Strike lost its icon because 5 of your 6 casts left no effect behind.", 1, true), said)
     check(said:find("gets the icon back by itself", 1, true), "and it says that this is not for good: " .. said)
 
     for landed = 1, 2 do
@@ -1721,7 +1758,7 @@ test("reports: a spell that lost its icon earns it back by landing", function()
     w:advance(0.8)
     eq(w:icon("ActionButton1"), "cross", "4 of 9: the icon is back, and knows about the cast that earned it")
     said = w:drain()
-    check(said:find("Mortal Strike does leave a status effect behind: 4 of its last 9 casts did. Its icon is back.", 1, true),
+    check(said:find("Mortal Strike does leave an effect behind: 4 of your last 9 casts did. It has its icon back.", 1, true),
         said)
     eq(ns.db.learned["Mortal Strike"].told, nil, "so the next time it is dropped will be told as well")
     w:advance(9.5)
@@ -1749,7 +1786,8 @@ test("reports: a status spell whose first three casts all miss has its icon back
         w:advance(3.5)
     end
     eq(w:icon("ActionButton1"), nil, "three misses to begin with look just like a skill that leaves nothing")
-    check(w:drain():find("Mortal Strike left no status effect behind after 3 of 3 casts", 1, true), "said in chat")
+    check(w:drain():find("Mortal Strike lost its icon because 3 of your 3 casts left no effect behind.", 1, true),
+        "said in chat")
 
     w:cast(MORTAL)
     w:advance(11)
@@ -1760,7 +1798,7 @@ test("reports: a status spell whose first three casts all miss has its icon back
     eq(ns.db.learned["Mortal Strike"].hits, 2)
     eq(ns.db.learned["Mortal Strike"].casts, 5)
     eq(w:icon("ActionButton1"), "cross", "2 of 5: the icon is back, and knows about the cast that earned it")
-    check(w:drain():find("Mortal Strike does leave a status effect behind: 2 of its last 5 casts did. Its icon is back.",
+    check(w:drain():find("Mortal Strike does leave an effect behind: 2 of your last 5 casts did. It has its icon back.",
         1, true), "said in chat as well")
     w:advance(9.5)
     eq(w:icon("ActionButton1"), "check", "and it runs out like any other")
@@ -1838,6 +1876,11 @@ test("reports: a spell nobody took for a status spell earns an icon by what the 
     eq(learning["Heroic Strike"].changed, 0)
     w:advance(12)
     eq(w:icon("ActionButton1"), "check", "and its effect runs out on the 12 seconds nothing better is known than")
+    w:drain()
+    w:slash("list")
+    local list = w:drain()
+    check(list:find("Gouge Armor|r puts a debuff that lasts 12 seconds on your target. It has an icon because 6 of your "
+        .. "6 casts left an effect behind.", 1, true), "/se list says what it earned its icon by: " .. list)
     Clean(w)
 end)
 
@@ -2474,7 +2517,8 @@ test("reports, area: a client that reports on your target but not on nameplates"
     eq(ns.Trusted("target"), true, "the target is still judged by what it reports")
     eq(ns.db.learned["Thunder Clap"], nil,
         "and the target's silence is not held against the spell: it may have reached the others unreported")
-    check(w:drain():find("the game has said nothing about the enemies around your target changing", 1, true),
+    check(w:drain():find("The game has not reported any change to the effects on the enemies around your target after",
+        1, true),
         "it says so in chat")
     w:cast(CLAP, { hits = { mobs[2], mobs[3] } })
     w:advance(0.3)
@@ -2689,7 +2733,8 @@ test("reports, area: a client nothing is known about is given three casts, then 
         eq(w:icon("ActionButton1"), "check", "nothing heard, nobody assumed hit: cast " .. i)
     end
     local said = w:drain()
-    check(said:find("about the enemies around your target or your target changing", 1, true), "one line for both: " .. said)
+    check(said:find("to the effects on your target or the enemies around your target after", 1, true),
+        "one line for both: " .. said)
     w:cast(CLAP, { hits = mobs })
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross", "all three are in the fight and nothing says otherwise")
@@ -2717,11 +2762,15 @@ test("reports: a spell that keeps leaving nothing on the enemy loses its icon", 
     eq(ns.db.learned.Bloodthirst.hits, 0)
     eq(w:icon("ActionButton1"), nil, "dropped: its first three casts all left nothing")
     local said = w:drain()
-    check(said:find("Bloodthirst left no status effect behind after 3 of 3 casts", 1, true),
+    check(said:find("Bloodthirst lost its icon because 3 of your 3 casts left no effect behind.", 1, true),
         "and it says so, so that the icon does not just go missing: " .. said)
     check(said:find("/se track Bloodthirst", 1, true), "with the way to get it back")
     w:advance(5)
     eq(w:drain(), "", "said once")
+    w:slash("list")
+    local list = w:drain()
+    check(list:find("  |cff999999Bloodthirst|r lost its icon because 3 of your 3 casts left no effect behind.", 1, true),
+        "and /se list gives the same reason: " .. list)
     Clean(w)
 end)
 
@@ -3045,7 +3094,7 @@ test("a skill whose casts were already seen to leave nothing has no icon after a
     w:advance(0.3)
     eq(ns.Spells:Get(VICTORY, ns.Now()).tooltipDuration, 20, "this wording reads like an effect")
     eq(w:icon("ActionButton1"), nil, "but four casts that left nothing say otherwise, from the first moment")
-    check(w:drain():find("Victory Rush left no status effect behind after 4 of 4 casts", 1, true),
+    check(w:drain():find("Victory Rush lost its icon because 4 of your 4 casts left no effect behind.", 1, true),
         "and that is said once, since the icon was there before")
     Clean(w)
 end)
@@ -3518,7 +3567,8 @@ test("buffs: a helpful spell whose tooltip misleads loses its icon", function()
     eq(ns.db.learned["Mending Touch"].buffCasts, 3)
     eq(ns.db.learned["Mending Touch"].buffHits, 0)
     eq(w:icon("ActionButton1"), nil, "dropped after three that left nothing")
-    check(w:drain():find("Mending Touch left no status effect behind after 3 of 3 casts", 1, true), "and it says so")
+    check(w:drain():find("Mending Touch lost its icon because 3 of your 3 casts left no effect behind.", 1, true),
+        "and it says so")
     Clean(w)
 end)
 
@@ -3601,7 +3651,9 @@ test("/se buff and /se debuff say where a spell's effect lands", function()
     eq(w:icon("ActionButton1"), nil)
     w:drain()
     w:slash("track commanding")
-    check(w:drain():find("as a debuff on every enemy in the fight", 1, true), "/se track says how it will be judged")
+    check(w:drain():find("Commanding Shout is now on Always, so it has an icon. The icon checks every enemy in the "
+        .. "fight for its debuff. If Commanding Shout gives you a buff instead, type /se buff Commanding Shout.", 1, true),
+        "/se track says how it will be judged")
     w:advance(0.5)
     eq(w:icon("ActionButton1"), nil, "a debuff with no enemy around")
 
@@ -3614,7 +3666,8 @@ test("/se buff and /se debuff say where a spell's effect lands", function()
     eq(w:icon("ActionButton1"), "cross")
     w:slash("list")
     local list = w:drain()
-    check(list:find("Commanding Shout|r: a buff on you, lasting 2 min. Tracked because you turned it on", 1, true),
+    check(list:find("Commanding Shout|r gives you a buff that lasts 2 minutes. You chose Always, so it has an icon.",
+        1, true),
         "the list says so: " .. list)
 
     w:slash("debuff commanding shout")
@@ -3626,7 +3679,7 @@ test("/se buff and /se debuff say where a spell's effect lands", function()
     w:slash("buff commanding")
     w:drain()
     w:slash("single commanding")
-    check(w:drain():find("is tracked as a buff on you, so that changes nothing", 1, true),
+    check(w:drain():find("The effect of Commanding Shout is treated as a buff, so this changes nothing for now.", 1, true),
         "/se single on a buff says it changes nothing")
 
     w:slash("auto commanding")
@@ -3925,7 +3978,8 @@ test("/se track, ignore and auto", function()
     eq(ns.db.spells["Heroic Strike"].duration, 4)
 
     w:slash("track nonsense spell")
-    check(w:drain():find("No spell called", 1, true), "an unknown spell is refused politely")
+    check(w:drain():find("No skill called \"nonsense spell\" is on your action bars.", 1, true),
+        "an unknown spell is refused politely")
     eq(#w.errors, 0)
     eq(ns.lastError, nil)
 end)
@@ -3964,9 +4018,10 @@ test("/se size and corner move the icon", function()
 
     w:drain()
     w:slash("size 4")
-    check(w:drain():find("Usage: /se size <8 to 48 | auto>", 1, true), "too small is refused with the usage line")
+    check(w:drain():find("Type a size from 8 to 48 pixels, as in /se size 24, or type /se size auto to let the icons "
+        .. "follow the size of the button.", 1, true), "too small is refused with how to say it")
     w:slash("size 49")
-    check(w:drain():find("Usage: /se size <8 to 48 | auto>", 1, true), "and so is too large")
+    check(w:drain():find("Type a size from 8 to 48 pixels, as in /se size 24", 1, true), "and so is too large")
     w:slash("size huge")
     eq(w.ns.db.size, 0, "and changes nothing")
     w:slash("size 48")
@@ -4019,10 +4074,13 @@ test("/se help, list and debug print something sensible", function()
     w:slash("list")
     local list = w:drain()
     check(list:find("Rend", 1, true), "list shows Rend")
-    check(list:find("a debuff on your target, lasting 21s", 1, true), "list says where Rend is looked for: " .. list)
-    check(list:find("Battle Shout|r: a buff on you", 1, true), "list shows Battle Shout as a buff: " .. list)
-    check(list:find("lasting 2 min", 1, true), "list gives long durations in minutes: " .. list)
-    check(list:find("1 other spell does", 1, true), "list counts the rest: " .. list)
+    check(list:find("Rend|r puts a debuff that lasts 21 seconds on your target.", 1, true),
+        "list says where Rend is looked for: " .. list)
+    check(list:find("Battle Shout|r gives you, or the friend you have targeted, a buff", 1, true),
+        "list shows Battle Shout as a buff: " .. list)
+    check(list:find("a buff that lasts 2 minutes.", 1, true), "list gives long durations in minutes: " .. list)
+    check(list:find("1 other skill has no icon because it does not seem to leave a buff or a debuff behind. To give it "
+        .. "an icon anyway, type /se track <skill>", 1, true), "list counts the rest: " .. list)
     w:cast(REND)
     w:advance(1)
     w:slash("debug")
@@ -4035,6 +4093,261 @@ test("/se help, list and debug print something sensible", function()
     check(debug:find("Options window: yes", 1, true), "debug says the settings panel was added: " .. debug)
     eq(#w.errors, 0)
     eq(w.ns.lastError, nil)
+end)
+
+--------------------------------------------------------------------------------
+-- What the commands answer
+--
+-- Every line the addon says in chat is a whole sentence in plain words. It
+-- names the skill, the icon and who decided, and it does not lean on the
+-- addon's name in front of it to be its subject, as "Status Efficiency: on."
+-- did.
+--------------------------------------------------------------------------------
+
+local SAID = "|cff66ccffStatus Efficiency|r: "
+
+--- Types a command and returns what the addon answered, having checked that
+--- it did answer, and that every line it began is a sentence: a capital letter
+--- or a quoted name to begin with, and a full stop, or the colon before a
+--- list, to end with.
+local function Answer(w, command)
+    w:slash(command)
+    local text = w:drain()
+    check(text:sub(1, #SAID) == SAID, "/se " .. command .. " answers in chat: " .. text)
+    for line in text:gmatch("[^\n]+") do
+        if line:sub(1, #SAID) == SAID then
+            local words = line:sub(#SAID + 1)
+            check(words:find("^[%u\"]"), "/se " .. command .. " begins like a sentence: " .. line)
+            check(words:find("[%.:]$"), "/se " .. command .. " ends like one: " .. line)
+        end
+    end
+    return text
+end
+
+--- Types a command that answers with one line, which has to be this.
+local function Replies(w, command, sentence)
+    eq(Answer(w, command), SAID .. sentence, "/se " .. command)
+end
+
+--- A world with a skill of every sort on the bars, and a boar targeted: a
+--- debuff on one enemy, a skill that leaves nothing, a buff for the party, a
+--- buff for you alone, a debuff on every enemy, and a debuff that stacks.
+--- Mortal Strike is known to the game and on no button.
+local function Talkative(options)
+    local w = World(options)
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, HEROIC)
+    w:addButton("ActionButton3", 3, SHOUT)
+    w:addButton("ActionButton4", 4, BLOCK)
+    w:addButton("ActionButton5", 5, CLAP)
+    w:addButton("ActionButton6", 6, SUNDER)
+    local ns = w:load(options and options.saved)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    w:drain()
+    return w, ns, boar
+end
+
+test("every command answers in whole sentences", function()
+    local w = Talkative()
+    local commands = {
+        "", "help", "off", "on", "when", "when sometimes", "when combat", "when always",
+        "usable", "usable maybe", "usable off", "usable on",
+        "track", "track nonsense", "track s", "track rend", "track battle", "track shield", "track thunder",
+        "track mortal strike", "buff shield", "buff battle", "buff mortal strike", "debuff heroic", "debuff thunder",
+        "debuff mortal strike", "ignore heroic", "auto heroic", "auto mortal strike", "aoe rend", "single rend",
+        "single shield", "duration", "duration rend lots", "duration rend 1", "duration rend 18", "duration rend auto",
+        "stacks", "stacks sunder lots", "stacks sunder 3", "stacks sunder 1", "stacks sunder auto",
+        "anyone rend", "mine rend",
+        "immune", "immune rend", "immune", "immune forget rend", "immune forget rend", "immune sunder",
+        "immune forget", "immune forget",
+        "size", "size 24", "size auto", "corner", "corner tr", "corner center",
+        "icons", "icon", "icon green plus", "icon green none", "icon green default", "icon red 136243",
+        "icon red nonsense", "icon red default",
+        "log", "log", "plain", "plain", "list", "debug", "reset",
+    }
+    for i = 1, #commands do
+        Answer(w, commands[i])
+    end
+    -- With no enemy targeted, and with a player.
+    w:target(nil)
+    Answer(w, "immune rend")
+    Clean(w)
+end)
+
+test("/se track, buff and debuff say what the icon will check", function()
+    local w, ns = Talkative()
+    -- The three choices go by the names the settings give them: Always, Never and Auto.
+    Replies(w, "track rend", "Rend is now on Always, so it has an icon. The icon checks the enemy you have targeted for "
+        .. "its debuff. If Rend hits every enemy in the fight, type /se aoe Rend. If it gives you a buff instead, type "
+        .. "/se buff Rend.")
+    Replies(w, "track thunder", "Thunder Clap is now on Always, so it has an icon. The icon checks every enemy in the "
+        .. "fight for its debuff. If Thunder Clap gives you a buff instead, type /se buff Thunder Clap.")
+    Replies(w, "track shield", "Shield Block is now on Always, so it has an icon. The icon checks you for its buff. If "
+        .. "Shield Block puts a debuff on enemies instead, type /se debuff Shield Block.")
+    Replies(w, "track battle", "Battle Shout is now on Always, so it has an icon. The icon checks you, or the friend "
+        .. "you have targeted, for its buff. If Battle Shout puts a debuff on enemies instead, type /se debuff Battle "
+        .. "Shout.")
+    -- A skill the game knows that is on no button: nothing to show yet.
+    Replies(w, "track mortal strike", "Mortal Strike is now on Always, but it is not on your action bars right now. It "
+        .. "will have an icon as soon as it is. If the addon then gets its effect wrong, type /se buff Mortal Strike "
+        .. "for a buff on you, or /se debuff Mortal Strike for a debuff on enemies.")
+    eq(ns.db.spells["Mortal Strike"].track, true, "the choice is kept for when it is")
+
+    Replies(w, "buff shield", "Shield Block is now on Always, so it has an icon, and its effect is treated as a buff. "
+        .. "The icon checks you for it.")
+    Replies(w, "buff battle", "Battle Shout is now on Always, so it has an icon, and its effect is treated as a buff. "
+        .. "The icon checks you, or the friend you have targeted, for it.")
+    Replies(w, "buff mortal strike", "Mortal Strike is now on Always, and its effect is treated as a buff, but it is "
+        .. "not on your action bars right now. It will have an icon as soon as it is.")
+    Replies(w, "debuff heroic", "Heroic Strike is now on Always, so it has an icon, and its effect is treated as a "
+        .. "debuff. The icon checks the enemy you have targeted for it. If Heroic Strike hits every enemy in the fight, "
+        .. "type /se aoe Heroic Strike.")
+    Replies(w, "debuff thunder", "Thunder Clap is now on Always, so it has an icon, and its effect is treated as a "
+        .. "debuff. The icon checks every enemy in the fight for it. If Thunder Clap only hits your target, type /se "
+        .. "single Thunder Clap.")
+    Replies(w, "debuff mortal strike", "Mortal Strike is now on Always, and its effect is treated as a debuff on "
+        .. "enemies, but it is not on your action bars right now. It will have an icon as soon as it is.")
+    eq(ns.db.spells["Mortal Strike"].kind, "debuff")
+
+    Replies(w, "track", "Which skill? Type its name after the command, as in /se track Thunder Clap.")
+    Replies(w, "track s", "More than one skill on your action bars starts with \"s\". Type more of the name.")
+    Clean(w)
+end)
+
+test("/se ignore, auto, aoe, single and duration say what they did", function()
+    local w, ns = Talkative()
+    Replies(w, "ignore heroic", "Heroic Strike is now on Never, so it has no icon. Type /se track Heroic Strike to "
+        .. "give it one again.")
+    eq(ns.db.spells["Heroic Strike"].track, false)
+    Replies(w, "auto heroic", "Heroic Strike is back on Auto, so the addon decides everything about it by itself "
+        .. "again. Your own choices for it are cleared, and so is what the addon had learned about it.")
+    eq(ns.db.spells["Heroic Strike"], nil)
+    Replies(w, "aoe rend", "The icon for Rend now checks every enemy in the fight.")
+    Replies(w, "single rend", "The icon for Rend now checks only the enemy you have targeted.")
+    Replies(w, "aoe shield", "The effect of Shield Block is treated as a buff, so this changes nothing for now. It would "
+        .. "only matter if you made it a debuff with /se debuff Shield Block.")
+
+    Replies(w, "duration", "Type the skill's name and then how long its effect lasts in seconds. For example: /se "
+        .. "duration Thunder Clap 30, or /se duration Thunder Clap auto to let the addon work it out.")
+    Replies(w, "duration rend lots", "Type how long the effect lasts in seconds, from 1 to 3600, or type auto to let the "
+        .. "addon work it out.")
+    Replies(w, "duration rend 0", "Type how long the effect lasts in seconds, from 1 to 3600, or type auto to let the "
+        .. "addon work it out.")
+    eq(ns.db.spells.Rend.duration, nil, "neither of which set anything")
+    Replies(w, "duration rend 1", "The effect of Rend is now set to last 1 second.")
+    Replies(w, "duration rend 18", "The effect of Rend is now set to last 18 seconds.")
+    eq(ns.db.spells.Rend.duration, 18)
+    Replies(w, "duration rend auto", "The addon works out by itself again how long the effect of Rend lasts.")
+    eq(ns.db.spells.Rend.duration, nil)
+
+    -- Clearing a list of immune enemies that holds nothing says so, and does not speak of none as "0 kinds".
+    Replies(w, "immune forget rend", "No enemy was on the list as immune to Rend.")
+    Replies(w, "immune forget", "The list of immune enemies was already empty.")
+    Clean(w)
+end)
+
+test("/se off, size, corner, icons, log, plain and reset say what they did", function()
+    local w, ns = Talkative()
+    Replies(w, "off", "The icons are off. Type /se on to turn them back on.")
+    Replies(w, "on", "The icons are on. They appear always, and only on skills you can use right now.")
+    Replies(w, "size 24", "The icon size is now 24 pixels.")
+    Replies(w, "size auto", "The icon size follows the size of the button again.")
+    Replies(w, "corner tr", "The icons have moved to the top right of each button.")
+    Replies(w, "corner center", "The icons have moved to the middle of each button.")
+    Replies(w, "corner nowhere", "Type where the icon goes on the button: tl, top, tr, left, center, right, bl, bottom or "
+        .. "br. For example: /se corner tr puts it at the top right.")
+    eq(ns.db.corner, "CENTER", "which moved nothing")
+
+    local icons = Answer(w, "icons")
+    check(icons:find(SAID .. "These are the icons you can pick with /se icon <green | yellow | red> <name>:\n", 1, true),
+        icons)
+    check(icons:find("\n  In place of a name you can type the file ID of a picture such as 136243, its path such as\n"
+        .. "  Interface\\Icons\\INV_Misc_QuestionMark, none for no icon at all, or default for the usual one.\n", 1, true),
+        icons)
+    check(icons:find("\n  What the three results show now:\n    Worth casting: check\n    Partly worth casting: partial\n"
+        .. "    No need to cast: cross", 1, true), "and what is picked now: " .. icons)
+    Replies(w, "icon", "Type which result, green, yellow or red, and then the icon for it. For example: /se icon green "
+        .. "plus, or /se icon green default for the usual one. /se icons lists the names.")
+    Replies(w, "icon green plus", "\"Worth casting\" now shows the green plus.")
+    eq(ns.db.icons.none, "plus", "the example in that line is one that works")
+    Replies(w, "icon green default", "\"Worth casting\" is back to its usual icon.")
+    -- A picture of your own goes by the name the Icons tab gives it.
+    Replies(w, "icon red 136243", "\"No need to cast\" now shows your own picture, 136243.")
+    Replies(w, "icon red nonsense", "\"nonsense\" is not an icon name, and not the file ID or the path of a picture the "
+        .. "game knows. /se icons lists the names.")
+    eq(ns.db.icons.all, "custom", "which changed nothing")
+    Replies(w, "icon red default", "\"No need to cast\" is back to its usual icon.")
+    -- The way back is given in the words the command takes: not by the name the code has for a result.
+    Replies(w, "icon yellow none", "\"Partly worth casting\" now shows no icon. Type /se icon yellow default to bring "
+        .. "its icon back.")
+    Replies(w, "icon green none", "\"Worth casting\" now shows no icon. Type /se icon green default to bring its icon "
+        .. "back.")
+    Replies(w, "icon green default", "\"Worth casting\" is back to its usual icon.")
+    Replies(w, "icon yellow default", "\"Partly worth casting\" is back to its usual icon.")
+
+    Replies(w, "log", "The log is on: the addon now says in chat what it notices. Type /se log again to turn it off.")
+    Replies(w, "log", "The log is off.")
+    Replies(w, "plain", "The settings window will draw its own buttons and sliders. Type /reload to see it. Type /se "
+        .. "plain again to go back to the game's own.")
+    Replies(w, "plain", "The settings window will use the game's own buttons and sliders again, wherever they work. Type "
+        .. "/reload to see it.")
+    Replies(w, "reset", "Every setting is back to how it started, and everything the addon had learned is cleared.")
+    Clean(w)
+end)
+
+test("/se list says of every skill what its icon is for, or why it has none", function()
+    local w = Talkative()
+    w:slash("ignore heroic")
+    w:drain()
+    local list = Answer(w, "list")
+    check(list:find(SAID .. "The skills on your action bars:\n", 1, true), list)
+    check(list:find("\n  |cff40d040Thunder Clap|r puts a debuff that lasts 30 seconds on every enemy in the fight. It has "
+        .. "an icon because it is a well-known debuff that hits every enemy around you.", 1, true), list)
+    check(list:find("\n  |cff40d040Shield Block|r gives you a buff that lasts 10 seconds. It has an icon because its "
+        .. "tooltip describes a buff that lasts for a while.", 1, true), list)
+    check(list:find("\n  |cff999999Heroic Strike|r is on Never, so it has no icon.", 1, true), list)
+    check(not list:find("other skill", 1, true), "every skill on these bars has been spoken for: " .. list)
+    -- A length of time is written out: seconds below two minutes, minutes from there, and no figure from an hour on.
+    for _, length in ipairs({ { 1, "1 second" }, { 119, "119 seconds" }, { 120, "2 minutes" }, { 3599, "60 minutes" },
+        { 3600, "an hour or more" } }) do
+        w:slash("duration rend " .. length[1])
+        w:drain()
+        local again = Answer(w, "list")
+        check(again:find("Rend|r puts a debuff that lasts " .. length[2] .. " on your target.", 1, true),
+            length[1] .. " seconds: " .. again)
+    end
+    -- Every line of it is a sentence.
+    for line in list:gmatch("[^\n]+") do
+        check(line:sub(1, #SAID) == SAID or line:find("^  |cff%x%x%x%x%x%x%u.*%.$"), line)
+    end
+    Clean(w)
+
+    -- Skills that leave nothing behind are counted, not listed.
+    local quiet = Bar(nil, HEROIC, PROWL)
+    eq(Answer(quiet, "list"), SAID .. "The skills on your action bars:\n  2 other skills have no icon because they do "
+        .. "not seem to leave a buff or a debuff behind. To give one of them an icon anyway, type /se track <skill>, or "
+        .. "/se buff <skill> if its effect is a buff on you. The Skills tab of /se options does the same with clicks.")
+    Clean(quiet)
+
+    local bare = Bar(nil)
+    Replies(bare, "list", "No skills were found on your action bars yet.")
+    Clean(bare)
+end)
+
+test("a command that fails says so in a sentence, and nothing reaches the game", function()
+    local w, ns = Simple()
+    ns.Options.RefreshAll = function()
+        error("simulated bug")
+    end
+    w:drain()
+    w:slash("on")
+    local said = w:drain()
+    check(said:find(SAID .. "That command ran into a problem: ", 1, true), said)
+    check(said:find("simulated bug", 1, true), "with what went wrong: " .. said)
+    eq(#w.errors, 0, "nothing reaches the client's error handler")
 end)
 
 test("/se reset forgets settings and what was learned", function()
@@ -4108,7 +4421,7 @@ test("nothing is said in chat when the addon loads", function()
     -- The version is there for the asking.
     w2:slash("")
     local help = w2:drain()
-    check(help:find("v" .. ns2.VERSION .. ",", 1, true), "/se gives the version: " .. help)
+    check(help:find("Version " .. ns2.VERSION .. ".", 1, true), "/se gives the version: " .. help)
     Clean(w)
     Clean(w2)
     Clean(w3)
@@ -4221,7 +4534,7 @@ test("/se when always shows a buff at any time, and a debuff whenever there is a
     local ns = w:install()
     w:drain()
     w:slash("when always")
-    check(w:drain():find("icons now appear always", 1, true), "it says so")
+    check(w:drain():find("The icons now appear always.", 1, true), "it says so")
     eq(ns.db.appear, "always")
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil, "nobody to judge Rend on")
@@ -4237,7 +4550,7 @@ test("/se when combat shows the icons only while you are in combat yourself", fu
     local w, ns = Simple({ combatAuras = "ids" })
     w:drain()
     w:slash("when combat")
-    check(w:drain():find("icons now appear when you are in combat", 1, true), "it says so")
+    check(w:drain():find("The icons now appear when you are in combat.", 1, true), "it says so")
     eq(ns.db.appear, "combat")
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil, "an enemy is targeted, but there is no fight yet")
@@ -4952,9 +5265,11 @@ test("stacks: the game itself is asked how often an effect stacks, for a tooltip
     w:drain()
     w:slash("list")
     local list = w:drain()
-    check(list:find("Corrode|r: a debuff on your target, lasting 30s, stacking up to 5 times (by the game's own data). "
-        .. "Tracked because", 1, true), list)
-    check(not list:match("Rend|r:[^\n]*stacking"), "Rend is not said to stack: " .. list)
+    check(list:find("Corrode|r puts a debuff that lasts 30 seconds on your target. It has an icon because", 1, true),
+        list)
+    check(list:find(" Its effect can have up to 5 stacks. The game gives this number for the skill.", 1, true), list)
+    check(list:match("Corrode|r[^\n]*stacks") and not list:match("Rend|r[^\n]*stacks"),
+        "Rend is not said to stack: " .. list)
     local spells = ns.db.report.spells
     eq(spells["Corrode"].gameStacks, 5, "what the game said is kept for troubleshooting")
     eq(spells["Corrode"].stacks, nil, "next to what the tooltip said, which was nothing")
@@ -5025,16 +5340,17 @@ test("stacks: the larger of what the game says and what the tooltip says is how 
     w:drain()
     w:slash("list")
     local list = w:drain()
-    check(list:find("Gnaw|r: a debuff on your target, lasting 30s, stacking up to 6 times (the most seen on a unit so far). ",
-        1, true), list)
-    check(list:find("Corrode|r: a debuff on your target, lasting 30s, stacking up to 5 times (by its tooltip). ",
-        1, true), list)
+    check(list:match("Gnaw|r puts a debuff that lasts 30 seconds on your target%. [^\n]* The addon has seen its effect "
+        .. "reach 6 stacks so far, and takes that as the most it can have%. If it can go higher, type /se stacks Gnaw "
+        .. "<number>%."), list)
+    check(list:match("Corrode|r puts a debuff that lasts 30 seconds on your target%. [^\n]* Its effect can have up to 5 "
+        .. "stacks%. The addon read this from the skill's tooltip%."), list)
     w:slash("stacks Corrode 2")
     w:drain()
     w:slash("list")
     list = w:drain()
-    check(list:find("Corrode|r: a debuff on your target, lasting 30s, stacking up to 2 times (as you set it). ",
-        1, true), list)
+    check(list:match("Corrode|r puts a debuff that lasts 30 seconds on your target%. [^\n]* Its effect can have up to 2 "
+        .. "stacks%. You set this yourself%."), list)
     Clean(w)
 end)
 
@@ -6127,16 +6443,17 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
     w:drain()
     w:slash("list")
     local list = w:drain()
-    check(list:find("Sunder Armor|r: a debuff on your target, lasting 30s, stacking up to 5 times (by its tooltip). "
-        .. "Tracked because", 1, true), list)
-    check(list:find("mentions a duration. Another player's copy counts too.", 1, true), list)
-    check(list:find("Rend|r: a debuff on your target, lasting 21s. Tracked because it can be cast on enemies and "
-        .. "its tooltip mentions a duration.\n", 1, true) or list:match("Rend|r:[^\n]*mentions a duration%.$"),
+    check(list:find("Sunder Armor|r puts a debuff that lasts 30 seconds on your target. It has an icon because its "
+        .. "tooltip describes a debuff that lasts for a while. Its effect can have up to 5 stacks. The addon read this "
+        .. "from the skill's tooltip. The icon treats another player's Sunder Armor like your own.", 1, true), list)
+    local rend = "Rend|r puts a debuff that lasts 21 seconds on your target. It has an icon because its tooltip "
+        .. "describes a debuff that lasts for a while."
+    check(list:find(rend .. "\n", 1, true) or list:sub(-#rend) == rend,
         "Rend is your own, and does not stack: " .. list)
 
     w:slash("stacks Sunder Armor 3")
-    check(w:drain():find("Sunder Armor is now full at 3 stacks: the green check below that, the red X at 3.",
-        1, true))
+    check(w:drain():find("The effect of Sunder Armor can now have up to 3 stacks. The icon shows the green check "
+        .. "until all 3 are there.", 1, true))
     eq(ns.db.spells["Sunder Armor"].stacks, 3)
     for _ = 1, 3 do
         w:applyAura(boar, "Sunder Armor", 30, true, nil, nil, { shared = true, stacks = 5 })
@@ -6144,20 +6461,20 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross", "three is all of it now")
     w:slash("stacks sunder armor auto")
-    check(w:drain():find("Sunder Armor goes by the game and its tooltip again for how often its effect stacks.",
-        1, true))
+    check(w:drain():find("The addon works out by itself again how many stacks the effect of Sunder Armor can have, "
+        .. "from the game and from the skill's tooltip.", 1, true))
     eq(ns.db.spells["Sunder Armor"], nil, "nothing is left of the choice")
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "three of five")
     eq(Stacks(ns, "Sunder Armor"), 3)
     w:slash("stacks Sunder Armor 1")
-    check(w:drain():find("Sunder Armor now counts as an effect that does not stack.", 1, true))
+    check(w:drain():find("The effect of Sunder Armor is now set as one that does not stack.", 1, true))
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "cross", "there, and that is all it can be")
     w:slash("list")
     list = w:drain()
-    check(list:find("Sunder Armor|r: a debuff on your target, lasting 30s. Tracked because", 1, true),
-        "and /se list no longer says it stacks: " .. list)
+    check(list:find("Sunder Armor|r puts a debuff that lasts 30 seconds on your target.", 1, true)
+        and not list:match("Sunder Armor|r[^\n]*stacks"), "and /se list no longer says it stacks: " .. list)
     w:slash("stacks Rend 4")
     w:applyAura(boar, "Rend", 21, true)
     w:advance(0.3)
@@ -6165,13 +6482,14 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
     eq(Stacks(ns, "Rend"), 1, "one of the four it was given")
 
     w:slash("stacks Sunder Armor lots")
-    check(w:drain():find("Give the most stacks as a whole number from 1 to 100", 1, true))
+    check(w:drain():find("Type the most stacks the effect can have as a whole number from 1 to 100", 1, true))
     w:slash("stacks Sunder Armor 2.5")
-    check(w:drain():find("Give the most stacks as a whole number", 1, true))
+    check(w:drain():find("Type the most stacks the effect can have as a whole number", 1, true))
     w:slash("stacks Sunder Armor 0")
-    check(w:drain():find("Give the most stacks as a whole number", 1, true))
+    check(w:drain():find("Type the most stacks the effect can have as a whole number", 1, true))
     w:slash("stacks")
-    check(w:drain():find("Usage: /se stacks <spell> <how many | auto>", 1, true))
+    check(w:drain():find("Type the skill's name and then the most stacks its effect can have. For example: /se stacks "
+        .. "Sunder Armor 5", 1, true))
     eq(ns.db.spells["Sunder Armor"].stacks, 1, "none of which changed anything")
 
     -- Whose effect counts.
@@ -6180,12 +6498,12 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
     w:advance(0.3)
     eq(w:icon("ActionButton2"), "check", "another warrior's Rend does not count by itself")
     w:slash("anyone Rend")
-    check(w:drain():find("Rend: another player's copy of its effect now counts like your own.", 1, true))
+    check(w:drain():find("The icon for Rend now treats another player's Rend like your own.", 1, true))
     w:advance(0.3)
     check(Booked(ns, "Rend") and Booked(ns, "Rend").how == "another player's", "now it does: it is in the books as theirs")
     eq(w:icon("ActionButton2"), "check", "one of the four stacks it was given")
     w:slash("mine Rend")
-    check(w:drain():find("Rend: only an effect you put there yourself counts now.", 1, true))
+    check(w:drain():find("The icon for Rend now only looks for your own Rend. Another player's is ignored.", 1, true))
     w:advance(0.3)
     eq(w:icon("ActionButton2"), "check", "and now it does not again")
     w:slash("mine Sunder Armor")
@@ -6204,8 +6522,9 @@ test("/se stacks, /se anyone and /se mine set by hand what the tooltip is read f
 
     w:slash("help")
     local help = w:drain()
-    check(help:find("/se stacks <spell> <how many | auto>", 1, true), help)
-    check(help:find("/se anyone <spell> | mine <spell>", 1, true), help)
+    check(help:find("/se stacks <skill> <number | auto> - sets the most stacks a skill's effect can have", 1, true), help)
+    check(help:find("/se anyone <skill> | mine <skill> - counts another player's effect like your own, or ignores it",
+        1, true), help)
     Clean(w)
 end)
 
@@ -6346,17 +6665,17 @@ test("/se when says and sets when the icons appear", function()
     w:drain()
     w:slash("when")
     local said = w:drain()
-    check(said:find("icons appear always", 1, true), "with nothing after it, it says how things are: " .. said)
-    check(said:find("/se when <always | combat | group>", 1, true), "and how to change them: " .. said)
-    check(said:find("always, when you are in combat, or when you or your group are in combat", 1, true),
-        "in the words on the buttons of the settings: " .. said)
+    check(said:find("The icons appear always.", 1, true), "with nothing after it, it says how things are: " .. said)
+    check(said:find("To change that, type /se when always, /se when combat", 1, true), "and how to change them: " .. said)
+    check(said:find("/se when combat (when you are in combat) or /se when group (when you or your group are in combat).",
+        1, true), "in the words on the buttons of the settings: " .. said)
 
     w:slash("when group")
     eq(ns.db.appear, "group")
-    check(w:drain():find("icons now appear when you or your group are in combat.", 1, true))
+    check(w:drain():find("The icons now appear when you or your group are in combat.", 1, true))
     w:slash("when combat")
     eq(ns.db.appear, "combat")
-    check(w:drain():find("icons now appear when you are in combat.", 1, true))
+    check(w:drain():find("The icons now appear when you are in combat.", 1, true))
     w:slash("when party")
     eq(ns.db.appear, "group", "party is another word for the group")
     w:slash("when combat")
@@ -6366,15 +6685,16 @@ test("/se when says and sets when the icons appear", function()
 
     w:slash("when sometimes")
     eq(ns.db.appear, "group", "a word it does not know changes nothing")
-    check(w:drain():find("/se when <always | combat | group>", 1, true))
+    check(w:drain():find("type /se when always, /se when combat (when you are in combat) or /se when group", 1, true))
     w:slash("when target")
     eq(ns.db.appear, "group", "nor does the choice that earlier versions had")
-    check(w:drain():find("/se when <always | combat | group>", 1, true), "it is told the three there are")
+    check(w:drain():find("type /se when always, /se when combat (when you are in combat) or /se when group", 1, true),
+        "it is told the three there are")
     eq(ns.SetAppear("target"), false, "and nothing else in the addon can set that choice either")
     eq(ns.db.appear, "group")
     w:slash("")
     local help = w:drain()
-    check(help:find("/se when <always | combat | group> - when the icons appear", 1, true),
+    check(help:find("/se when <always | combat | group> - sets when the icons appear", 1, true),
         "the list of commands names the same three: " .. help)
     w:slash("when ALWAYS")
     eq(ns.db.appear, "always", "capitals do not matter")
@@ -6382,7 +6702,7 @@ test("/se when says and sets when the icons appear", function()
     w:slash("off")
     w:drain()
     w:slash("on")
-    check(w:drain():find("on. Icons appear always, only on skills you can use right now.", 1, true),
+    check(w:drain():find("The icons are on. They appear always, and only on skills you can use right now.", 1, true),
         "/se on says when to expect them")
     Clean(w)
 end)
@@ -6660,7 +6980,7 @@ test("immune: an enemy seen to carry the effect after all is not immune, and its
     end
     eq(#ns.Tracker:Immunities(ns.Now()), 0)
     w:slash("immune")
-    check(w:drain():find("no creature has been found immune to a skill of yours yet", 1, true),
+    check(w:drain():find("No enemy has been found immune to one of your skills yet.", 1, true),
         "/se immune does not list a kind whose immunity comes and goes")
     Clean(w)
 
@@ -6720,8 +7040,7 @@ test("immune: an enemy with the effect on it, whoever put it there, is not immun
 
     -- A kind like that is not one of the immune ones /se immune forget counts.
     w:slash("immune forget")
-    check(w:drain():find("forgot every creature that was found immune to a skill (0 kept until now).", 1, true),
-        "none was kept as immune")
+    check(w:drain():find("The list of immune enemies was already empty.", 1, true), "none was kept as immune")
     eq(next(ns.db.immune), nil, "though what was kept of it is gone with the rest")
     Clean(w)
 end)
@@ -7291,7 +7610,8 @@ test("immune: where the game hides what kind of creature an enemy is, only that 
     check(debug:find("Rend: an enemy the game does not name is taken to be immune, for as long as it is about", 1, true),
         debug)
     w:slash("immune rend")
-    check(w:drain():find("the game will not say what kind of creature that is right now", 1, true),
+    check(w:drain():find("The game does not say what kind of enemy your target is right now, so nothing was added.",
+        1, true),
         "nor can its kind be marked by hand in the middle of the fight")
 
     -- It bleeds after all, and Rend is used through the red X: seen to land,
@@ -7367,7 +7687,8 @@ test("immune: a player is never a kind of creature", function()
     eq(report.combat.kinds.calm.none + report.combat.kinds.hidden.none, 0, "a player is not counted as a creature "
         .. "the game would not name")
     w:slash("immune rend")
-    check(w:drain():find("that is a player, and no kind of creature", 1, true), "nor can a player be marked by hand")
+    check(w:drain():find("Your target is a player. Only creatures can be added as immune to a skill.", 1, true),
+        "nor can a player be marked by hand")
 
     paladin.immune = nil -- the shield is gone
     w:advance(12.5)
@@ -7409,17 +7730,19 @@ test("/se immune lists what was learned, marks a kind by hand and forgets", func
     local w, ns, elemental = Elemental()
     w:slash("help")
     local help = w:drain()
-    check(help:find("/se immune - the creatures found immune to a skill", 1, true), help)
-    check(help:find("/se immune forget [spell]", 1, true), help)
+    check(help:find("/se immune - lists the enemies that are immune to a skill", 1, true), help)
+    check(help:find("/se immune forget [skill] - clears the list", 1, true), help)
     w:slash("immune")
-    check(w:drain():find("no creature has been found immune to a skill of yours yet", 1, true), "nothing to list yet")
+    check(w:drain():find("No enemy has been found immune to one of your skills yet. When the game says \"Immune\" as "
+        .. "you use a skill on an enemy, the addon remembers it", 1, true), "nothing to list yet")
 
     w:cast(REND)
     w:advance(0.3)
     w:slash("immune")
     local list = w:drain()
-    check(list:find("no kind of creature is counted on as immune yet.", 1, true), list)
-    check(list:find("Heard once, and counted on when the game says so again:", 1, true), list)
+    check(list:find("No kind of enemy counts as immune to one of your skills yet.", 1, true), list)
+    check(list:find("Seen immune once so far. These count as immune when the game says so a second time:", 1, true),
+        list)
     check(list:find("  Rend: Fire Elemental", 1, true), list)
     w:slash("debug")
     local debug = w:drain()
@@ -7434,23 +7757,24 @@ test("/se immune lists what was learned, marks a kind by hand and forgets", func
     w:advance(0.3)
     w:slash("immune")
     list = w:drain()
-    check(list:find("creatures taken to be immune, by skill. They are left out when the skill is judged:", 1, true),
-        list)
+    check(list:find("These enemies are immune to these skills. An icon never tells you to use a skill on an enemy "
+        .. "that is immune to it:", 1, true), list)
     check(list:find("  Rend: Fire Elemental", 1, true), list)
-    check(not list:find("Heard once", 1, true), list)
-    check(list:find("/se immune forget [spell] forgets them.", 1, true), list)
+    check(not list:find("Seen immune once", 1, true), list)
+    check(list:find("Type /se immune forget to clear the list, or /se immune forget <skill> to clear it for one skill.",
+        1, true), list)
 
     -- By hand: the kind you have targeted, for a skill the game has said nothing about.
     eq(w:icon("ActionButton2"), "check")
     w:slash("immune sunder armor")
-    check(w:drain():find("Fire Elemental now counts as immune to Sunder Armor, on your say-so, until you take it back "
-        .. "with /se immune forget Sunder Armor.", 1, true), "it says what it did")
+    check(w:drain():find("You added Fire Elemental to the enemies that are immune to Sunder Armor. It stays on that "
+        .. "list until you clear it with /se immune forget Sunder Armor.", 1, true), "it says what it did")
     w:advance(0.3)
     eq(w:icon("ActionButton2"), "cross", "at once")
     eq(Kept(ns, "Sunder Armor", elemental).told, true)
     w:slash("immune")
     list = w:drain()
-    check(list:find("  Sunder Armor: Fire Elemental (you said so)", 1, true), list)
+    check(list:find("  Sunder Armor: Fire Elemental (added by you)", 1, true), list)
 
     -- What you said stands, even when the skill is seen to land on one.
     local learned = #ns.db.report.combat.learned
@@ -7469,7 +7793,7 @@ test("/se immune lists what was learned, marks a kind by hand and forgets", func
     eq(Kept(ns, "Sunder Armor", elemental).passes, nil)
 
     w:slash("immune forget sunder armor")
-    check(w:drain():find("forgot the creatures that were found immune to Sunder Armor (1 kept until now).", 1, true),
+    check(w:drain():find("The list of enemies immune to Sunder Armor is cleared. It held 1 kind of enemy.", 1, true),
         "it says what it forgot")
     w:advance(0.3)
     eq(w:icon("ActionButton2"), "check")
@@ -7482,7 +7806,7 @@ test("/se immune lists what was learned, marks a kind by hand and forgets", func
     eq(w:icon("ActionButton2"), "cross")
     eq(Kept(ns, "Sunder Armor", elemental).seen, 1)
     w:slash("immune forget")
-    check(w:drain():find("forgot every creature that was found immune to a skill (2 kept until now).", 1, true),
+    check(w:drain():find("The list of immune enemies is cleared for every skill. It held 2 kinds of enemy.", 1, true),
         "and all of them")
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check")
@@ -7492,11 +7816,12 @@ test("/se immune lists what was learned, marks a kind by hand and forgets", func
     -- Nothing to mark without an enemy targeted, or for a skill that is not on the bars.
     w:target(nil)
     w:slash("immune rend")
-    check(w:drain():find("target the creature first", 1, true), "no target")
+    check(w:drain():find("Target an enemy first.", 1, true), "no target")
     w:target(elemental)
     w:slash("immune no such skill")
     local answer = w:drain()
-    check(not answer:find("now counts as immune", 1, true), answer)
+    check(answer:find("No skill called \"no such skill\" is on your action bars.", 1, true)
+        and not answer:find("You added", 1, true), answer)
     eq(next(ns.db.immune), nil)
     Clean(w)
 end)
@@ -7513,7 +7838,7 @@ test("/se immune forget with a spell leaves what is known of the other skills", 
     eq(#ns.Tracker:Immunities(ns.Now()), 2, "said once of each skill: that one enemy, for now")
 
     w:slash("immune forget sunder armor")
-    check(w:drain():find("forgot the creatures that were found immune to Sunder Armor (1 kept until now).", 1, true),
+    check(w:drain():find("The list of enemies immune to Sunder Armor is cleared. It held 1 kind of enemy.", 1, true),
         "it says what it forgot")
     w:advance(0.3)
     eq(w:icon("ActionButton2"), "check")
@@ -7876,7 +8201,7 @@ test("/se usable off shows the icon on every skill", function()
 
     w:drain()
     w:slash("usable off")
-    check(w:drain():find("icons now appear on every skill", 1, true), "it says so")
+    check(w:drain():find("The icons now appear on every skill.", 1, true), "it says so")
     eq(ns.db.usableOnly, false)
     w:advance(0.3)
     eq(w:icon("ActionButton1"), "check", "out of reach, and shown all the same")
@@ -7887,7 +8212,7 @@ test("/se usable off shows the icon on every skill", function()
     eq(w.usableAsked, 0, "and the game is no longer asked")
 
     w:slash("usable on")
-    check(w:drain():find("icons now appear only on skills you can use right now", 1, true))
+    check(w:drain():find("The icons now appear only on skills you can use right now.", 1, true))
     w:advance(0.3)
     eq(w:icon("ActionButton1"), nil)
     Clean(w)
@@ -7898,20 +8223,22 @@ test("/se usable says and sets on which skills the icons appear", function()
     w:drain()
     w:slash("usable")
     local said = w:drain()
-    check(said:find("icons appear only on skills you can use right now", 1, true),
+    check(said:find("The icons appear only on skills you can use right now.", 1, true),
         "with nothing after it, it says how things are: " .. said)
-    check(said:find("/se usable <on | off>", 1, true), "and how to change them: " .. said)
+    check(said:find("To change that, type /se usable on (only on skills you can use right now) or /se usable off (on "
+        .. "every skill).", 1, true), "and how to change them: " .. said)
 
     w:slash("usable maybe")
     eq(ns.db.usableOnly, true, "a word it does not know changes nothing")
-    check(w:drain():find("/se usable <on | off>", 1, true))
+    check(w:drain():find("type /se usable on (only on skills you can use right now) or /se usable off", 1, true))
     w:slash("usable OFF")
     eq(ns.db.usableOnly, false, "capitals do not matter")
 
     w:slash("off")
     w:drain()
     w:slash("on")
-    check(w:drain():find("on. Icons appear always, on every skill.", 1, true), "/se on says what to expect")
+    check(w:drain():find("The icons are on. They appear always, and on every skill.", 1, true),
+        "/se on says what to expect")
     w:slash("help")
     check(w:drain():find("/se usable <on | off>", 1, true), "and /se lists the command")
     Clean(w)
@@ -7928,7 +8255,8 @@ test("when the game will not say whether a skill can be used, the icon shows", f
         eq(w:icon("ActionButton3"), "check", api .. ": Battle Shout")
         w:drain()
         w:slash("usable")
-        check(w:drain():find("not telling the addon whether a skill can be used", 1, true),
+        check(w:drain():find("The game is not telling the addon whether a skill can be used, so for now the icons "
+            .. "are shown on every skill.", 1, true),
             api .. ": and /se usable owns up to it")
         Clean(w)
     end
@@ -9859,6 +10187,55 @@ local function Says(w, widget)
     return title, lines and lines[1] or ""
 end
 
+test("/se list gives the same reason for a skill's icon as the Skills tab, in the same words", function()
+    local w = World()
+    w:addSpell(902, {
+        -- Castable on enemies, but its tooltip mentions no duration.
+        name = "Gouge Armor", harmful = true,
+        description = "Tears at the target's armor until it gives way.",
+        effect = { duration = 12 },
+    })
+    w:addButton("ActionButton1", 1, REND)
+    w:addButton("ActionButton2", 2, HEROIC)
+    w:addButton("ActionButton3", 3, SHOUT)
+    w:addButton("ActionButton4", 4, CLAP)
+    w:addButton("ActionButton5", 5, 902)
+    w:addButton("ActionButton6", 6, COMMAND)
+    w:addButton("ActionButton7", 7, BLOODTHIRST)
+    local ns = w:load()
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    -- Two skills earn their icon by what is seen of them out of a fight, and one is given it.
+    w:cast(902, { quiet = true })
+    w:advance(0.5)
+    w:cast(COMMAND)
+    w:advance(0.5)
+    w:slash("track heroic")
+    w:drain()
+
+    w:slash("list")
+    local list = w:drain()
+    local view = w:openSettings().view
+    local reasons = {
+        ["Rend"] = "It has an icon because its tooltip describes a debuff that lasts for a while.",
+        ["Battle Shout"] = "It has an icon because its tooltip describes a buff that lasts for a while.",
+        ["Thunder Clap"] = "It has an icon because it is a well-known debuff that hits every enemy around you.",
+        ["Gouge Armor"] = "It has an icon because the addon has seen its debuff on an enemy.",
+        ["Commanding Shout"] = "It has an icon because the addon has seen its buff on you.",
+        ["Heroic Strike"] = "You chose Always, so it has an icon.",
+    }
+    for name, reason in pairs(reasons) do
+        eq(Pane(w, view, name).why:GetText(), reason, name .. " on the Skills tab")
+        local line = list:match("\n  |cff40d040" .. name .. "|r ([^\n]*)")
+        check(line and line:find(reason, 1, true), name .. " in /se list gives the reason the Skills tab gives, \""
+            .. reason .. "\": " .. tostring(line))
+    end
+    w:closeSettings()
+    Clean(w)
+end)
+
 panel("the Skills tab lists every spell on the bars, and shows the one that is picked beside the list", function(options)
     local w, ns = Simple(options)
     local view = w:openSettings().view
@@ -11764,7 +12141,8 @@ test("/se icon, /se icons and /se corner do the same from the chat box", functio
 
     w:drain()
     w:slash("icon purple skull")
-    check(w:drain():find("Usage: /se icon", 1, true), "an unknown result gets the usage line")
+    check(w:drain():find("Type which result, green, yellow or red, and then the icon for it.", 1, true),
+        "an unknown result is told how to say it")
     w:slash("icon red nonsense")
     check(w:drain():find("is not an icon name", 1, true), "an unknown icon is explained")
     eq(ns.db.icons.all, "skull", "and changes nothing")
@@ -11952,8 +12330,18 @@ test("an internal failure is caught, reported a few times, then the addon stops 
     local text = w:drain()
     local _, reports = text:gsub("hit a problem", "")
     eq(reports, 1, "one report for one distinct problem")
-    check(text:find("stopped after repeated problems", 1, true), "it says it stopped")
+    -- Both lines are whole sentences that say what to type next, with the game's own words for the problem
+    -- in brackets after the first.
+    check(text:find(SAID .. "The addon hit a problem and skipped an update. Type /se debug to see the details. (", 1,
+        true), "the report says what happened and where to look: " .. text)
+    check(text:find("simulated bug)\n", 1, true), "and gives the problem in the game's words: " .. text)
+    check(text:find(SAID .. "The addon has stopped after repeated problems. Type /se on to start it again, or /se "
+        .. "debug to see the last problem.", 1, true), "it says it stopped, and how to start it again: " .. text)
     eq(w.ns.halted, true)
+    -- And /se on does start it again.
+    w.ns.Tracker.Update = function() end
+    Answer(w, "on")
+    eq(w.ns.halted, false, "/se on starts it again")
 end)
 
 test("idle costs next to nothing", function()

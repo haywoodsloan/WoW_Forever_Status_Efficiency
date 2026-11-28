@@ -19,7 +19,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.5.1 is an early draft. It loads and draws its icons in the real
+Version 0.5.2 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -47,7 +47,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: v0.5.1".
+first line of the reply gives the version, "Status Efficiency: Version 0.5.2."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -119,7 +119,7 @@ needs to be switched on for this. If none of the three says anything, the icons
 show on every skill, and `/se usable` says so.
 
 A buff spell the game does not label as one gets its icon the first time the
-addon sees its buff on you out of combat. `/se buff <spell>` does the same by
+addon sees its buff on you out of combat. `/se buff <skill>` does the same by
 hand.
 
 ### Settings
@@ -209,9 +209,9 @@ skill's tooltip, the game, what the addon saw in your fights, or you.
   has found (see [Immune enemies](#immune-enemies)): first the kinds the icon
   leaves out, then the ones seen immune only once. Hover the list for all of
   them and for which ones you added yourself. **Add target** marks the kind of
-  enemy you have targeted as immune to the skill, like `/se immune <spell>`,
+  enemy you have targeted as immune to the skill, like `/se immune <skill>`,
   and says so when there is nothing it can add. **Clear list** empties the list
-  for this skill, like `/se immune forget <spell>`, and asks first.
+  for this skill, like `/se immune forget <skill>`, and asks first.
 - **Reset this skill** undoes your own changes to the skill, so that the addon
   works it out by itself again. What it learned about the skill in your fights
   stays, and so do the enemies found immune to it. **Defaults** on this tab
@@ -262,8 +262,10 @@ To have the plainer controls anyway, type `/se plain` and then `/reload`.
 
 ### Commands
 
-`/se` and `/statusefficiency` are the same command. A spell can be typed in any
-case, shortened to the start of its name, or shift-clicked from the spellbook.
+`/se` and `/statusefficiency` are the same command. A skill's name can be typed
+in any case, shortened to the start of it, or shift-clicked from the spellbook.
+Every command answers in chat with a sentence that says what it did, and what
+to type if that was not what you meant.
 
 | Command | What it does |
 | --- | --- |
@@ -272,28 +274,28 @@ case, shortened to the start of its name, or shift-clicked from the spellbook.
 | `/se on`, `/se off` | Turns the icons on or off. |
 | `/se when <always\|combat\|group>` | When the icons appear: always, only while you are in combat, or while you or someone in your group close by is in combat (the default). `party` and `raid` work for `group`. |
 | `/se usable <on\|off>` | `on` (the default) shows an icon only on a skill you can use right now. `off` shows it on every skill. |
-| `/se list` | Shows the spells on your bars and how each one is treated, and why. |
-| `/se track <spell>` | Always give this spell an icon. The reply says whether it is treated as a debuff or a buff. |
-| `/se buff <spell>` | Always give this spell an icon, as a buff on you. |
-| `/se debuff <spell>` | Always give this spell an icon, as a debuff on enemies. |
-| `/se ignore <spell>` | Never give this spell an icon. |
-| `/se auto <spell>` | Let the addon decide again, and forget what it learned about the spell. |
-| `/se aoe <spell>` | Judge a debuff against every enemy in the fight. |
-| `/se single <spell>` | Judge a debuff against your target only. |
-| `/se duration <spell> <seconds>` | Say how long the effect lasts. `auto` goes back to the addon's own figure. |
-| `/se stacks <spell> <how many>` | Say how many times over the effect can be on one unit: the red X shows at that many. `1` is an effect that does not stack, and `auto` goes back to what the game and the tooltip say. |
-| `/se anyone <spell>` | Another player's copy of the effect counts like your own. |
-| `/se mine <spell>` | Only an effect you put there yourself counts. |
-| `/se immune` | Lists the creatures found to be immune to a skill. `/se immune <spell>` marks the kind of creature you have targeted as immune to that skill yourself. |
-| `/se immune forget [spell]` | Forgets them, for one skill or for all. |
+| `/se list` | Lists the skills on your action bars and says of each what its icon checks and why it has one, or why it has none. |
+| `/se track <skill>` | Puts the skill on Always, so it has an icon. The answer says what the icon will check. |
+| `/se buff <skill>` | Puts the skill on Always, and treats its effect as a buff on you. |
+| `/se debuff <skill>` | Puts the skill on Always, and treats its effect as a debuff on enemies. |
+| `/se ignore <skill>` | Puts the skill on Never, so it has no icon. |
+| `/se auto <skill>` | Puts the skill back on Auto: the addon decides everything about it by itself again. Your own choices for it are cleared, and so is what the addon had learned about it. |
+| `/se aoe <skill>` | Makes the icon check every enemy in the fight. |
+| `/se single <skill>` | Makes the icon check only the enemy you have targeted. |
+| `/se duration <skill> <seconds>` | Sets how long the skill's effect lasts. `auto` lets the addon work it out again. |
+| `/se stacks <skill> <number>` | Sets the most stacks the skill's effect can have: the green check stays until all of them are there. `1` is an effect that does not stack, and `auto` goes back to what the game and the tooltip say. |
+| `/se anyone <skill>` | The icon treats another player's effect of this skill like your own. |
+| `/se mine <skill>` | The icon only looks for your own effect. Another player's is ignored. |
+| `/se immune` | Lists the enemies that are immune to a skill. `/se immune <skill>` adds the kind of enemy you have targeted to that list yourself. |
+| `/se immune forget [skill]` | Clears the list, for one skill or for all of them. |
 | `/se corner <where>` | Moves the icon: `tl`, `top`, `tr`, `left`, `center`, `right`, `bl`, `bottom`, `br`. |
 | `/se size <pixels>` | Icon size from 8 to 48. `auto` sizes it from the button again. |
 | `/se icons` | Lists the icon names and what each result uses now. |
-| `/se icon <green\|yellow\|red> <icon>` | Sets the icon for one result: an icon name, a file ID, a texture path, `none` for no icon, or `default`. |
+| `/se icon <green\|yellow\|red> <icon>` | Sets the icon for one result: an icon name, the file ID or the path of a picture in the game's files, `none` for no icon, or `default`. |
 | `/se debug` | Shows what the game lets the addon see right now. Paste this into a bug report. |
-| `/se log` | Shows or hides a running commentary of what the tracker is doing. |
+| `/se log` | Shows or hides a running log of what the addon notices. |
 | `/se plain` | Has the settings panel draw its own plainer controls instead of the game's, or the game's again. Takes effect after `/reload`. The panel changes over by itself wherever the game's controls are missing or do not work. |
-| `/se reset` | Forgets every setting and everything learned. |
+| `/se reset` | Clears every setting and everything the addon has learned. |
 
 ## How it decides
 
@@ -451,11 +453,11 @@ during a fight, an enemy met before the fight is still known, one that joins
 later goes by its name if the client tells that, and otherwise only that one
 enemy is learned about and not its kind. A player is never a kind of creature.
 
-`/se immune` lists the kinds found immune to each skill, and the ones heard of
-only once. `/se immune <spell>` marks the kind of creature you have targeted
-as immune to that skill on your say-so, which stands until you take it back:
-`/se immune forget <spell>` forgets what is kept for one skill, and
-`/se immune forget` for all of them.
+`/se immune` lists the kinds of enemy that are immune to each skill, and the
+ones seen immune only once so far. `/se immune <skill>` adds the kind of enemy
+you have targeted to that list yourself. It is then shown as "(added by you)",
+and it stays until you clear the list: `/se immune forget <skill>` clears it
+for one skill, and `/se immune forget` for all of them.
 
 ### Who is looked at
 
@@ -694,14 +696,14 @@ window gave the page, and which skills the game had no picture for.
   - an "Immune" that came together with a miss or with a change on the enemy
     (see [Immune enemies](#immune-enemies)).
 
-  `/se immune <spell>` marks such a creature by hand.
+  `/se immune <skill>` adds such a creature by hand.
 - **An immunity that lasts longer than twelve seconds can be taken for a
   lasting one.** Cast a skill twice at an enemy behind a long shield, twelve
   seconds or more apart, before the skill has ever been seen to land on that
   kind of creature, and the kind is kept as immune. The red X then stays on
   after the shield is gone. Casting the skill once all the same puts it right
   for good: the effect is seen to land, and that kind is never counted on as
-  immune again. So does `/se immune forget <spell>`.
+  immune again. So does `/se immune forget <skill>`.
 - **A skill is held to the moment of its cast only after three landings.**
   Until then its casts are waited for a little longer, and in that time
   another effect arriving on the enemy after a miss can pass for the landing.
@@ -719,24 +721,24 @@ window gave the page, and which skills the game had no picture for.
   says so in chat, so that an icon never just goes missing. It can watch that
   out of combat, and in combat for a spell cast on enemies (the enemy's
   effects do not change). For a buff it needs a client that lets it count
-  effects in combat. Otherwise use `/se ignore <spell>`. A real status spell
+  effects in combat. Otherwise use `/se ignore <skill>`. A real status spell
   can lose its icon this way when its first three casts all miss, or after a
   long run of misses, or of casts at immune enemies that the game did not
   call immune (one it did call immune is not held against the skill). It
   keeps being watched, and gets its icon back by itself, with a line in chat,
-  once at least two in five of its casts have left something. `/se track <spell>` gives it back at once. The
+  once at least two in five of its casts have left something. `/se track <skill>` gives it back at once. The
   other way round, a real status spell whose tooltip words its length
   unusually is still given its icon, because only the wordings listed in
   point 3 are ruled out.
 - **Spells with no target** cannot be recognised from the tooltip. An area
   debuff gets an icon when it is on the small built-in list, when you add it
-  with `/se track <spell>`, or once its casts have been seen to work (point 4
+  with `/se track <skill>`, or once its casts have been seen to work (point 4
   under [Which spells get an icon](#which-spells-get-an-icon)). A buff (a shout
   for the whole party, an aura, a stance) is recognised once its buff has been
-  seen on you out of combat, or straight away with `/se buff <spell>`.
+  seen on you out of combat, or straight away with `/se buff <skill>`.
 - **Durations come from the tooltip.** When a tooltip gives no duration the
   addon assumes 12 seconds until it has seen the real effect. Fix one with
-  `/se duration <spell> <seconds>`.
+  `/se duration <skill> <seconds>`.
 - **An effect named differently from its spell** cannot be looked up by name, so
   that spell falls back to counting, change reports or timers.
 - **Buffs that switch each other off** (stances, forms and aspects, or a spell
@@ -749,7 +751,7 @@ window gave the page, and which skills the game had no picture for.
   being on some of you and not on others.
 - **A buff that always shows a green check** because it is meant to be used
   only now and then (a defensive cooldown) can be hidden with
-  `/se ignore <spell>`.
+  `/se ignore <skill>`.
 - **Area spells have no range check.** Every enemy in the fight with a nameplate
   showing is assumed to be in reach. Enemy nameplates need to be turned on for
   area spells to see more than your target.
