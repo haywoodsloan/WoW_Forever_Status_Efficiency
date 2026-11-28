@@ -1846,7 +1846,7 @@ do
         local which
         if kind == "buff" then
             which = unit == "player" and "player" or nil
-        elseif unit == "target" or ns.SameUnit(unit, "target") == true then
+        elseif unit == "target" then
             which = "target"
         end
         if not which then

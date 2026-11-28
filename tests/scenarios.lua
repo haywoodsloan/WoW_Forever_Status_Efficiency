@@ -8147,6 +8147,7 @@ test("miss words: a change in the very moment of the miss leaves the cast in dou
         w:advance(0.3)
         eq(w:icon("ActionButton1"), "unsure", "not known, " .. first .. " first")
         check(Booked(ns, "Rend"), "Rend is in the books, in doubt")
+        eq(Booked(ns, "Rend").how, "in doubt: the game said two things about the cast", "and /se debug says so")
         local report = ns.db.report
         check(Last(report.casts):find("Rend (debuff, hidden, waited for a report): unsure, 0.00s after the cast; the "
             .. "game said DODGE", 1, true), Last(report.casts))
@@ -15014,6 +15015,7 @@ test("/se tracker says what the game's own Cooldown Manager can tell the addon, 
     eq(lines[6], "  Thunder Clap is in its Essential Cooldowns, but that item also lights up for Rend, so the addon "
         .. "does not ask it about Thunder Clap.")
     eq(#lines, 6, "Heroic Strike has no icon, and is not spoken of")
+    eq(Answer(w, "cooldowns"), Answer(w, "tracker"), "/se cooldowns is another name for it")
     for i = 2, #lines do
         check(lines[i]:find("^  %u") and lines[i]:find("%.$"), "a whole sentence: " .. lines[i])
     end
@@ -15408,15 +15410,22 @@ test("game tracker: a skill that has to fly to its target is not judged by the t
         return { doubt = { player = BUILD, target = BUILD, softenemy = BUILD, plate = BUILD } }
     end
     local w, ns, boar = Tracked({ buffs = { FROSTBOLT } }, { auraEvents = false, saved = Silent() }, FROSTBOLT)
+    -- Only your own Frostbolt counts: in a group another player's could
+    -- otherwise be there in place of yours, and none of yours would say
+    -- nothing either way.
+    w:slash("mine Frostbolt")
+    w:drain()
     w:cast(FROSTBOLT, { travel = 0.2 })
     w:advance(9)
     check(ns.TrackerProven("Frostbolt"))
     eq(w:icon("ActionButton1"), "check")
+    local dropped = Noted(ns, "Frostbolt").dropped
     w:cast(FROSTBOLT, { travel = 1 })
     for _ = 1, 19 do
         w:advance(0.05)
         eq(w:icon("ActionButton1"), "cross", "in flight, and taken to land: the tracker's none says nothing yet")
     end
+    eq(Noted(ns, "Frostbolt").dropped, dropped, "nothing was taken off the books while it flew")
     w:advance(1)
     eq(w:icon("ActionButton1"), "cross", "landed, and shown")
     Clean(w)
@@ -15608,6 +15617,7 @@ test("game tracker: when it shows none of a cast that was just seen to land, nei
     w:advance(0.5)
     eq(w:icon("ActionButton1"), "unsure", "seen to land, and the game's tracker shows none")
     eq(noted.clashed, 1)
+    eq(Booked(ns, "Rend").how, "in doubt: seen to land, and the game's own tracker shows none", "and /se debug says so")
     eq(noted.dropped or 0, dropped, "it is not taken off the books for that")
     w:advance(21)
     eq(w:icon("ActionButton1"), "check", "its time is over")
@@ -16217,6 +16227,82 @@ test("game tracker: an effect it still shows when the books' time for it is over
     eq(w:icon("ActionButton1"), "cross", "still there, with the five stacks it had")
     eq(Stacks(ns, "Sunder Armor"), 5)
     eq(Noted(ns, "Sunder Armor").added, nil, "the same effect all along")
+    Clean(w)
+end)
+
+test("not sure, area: an enemy in doubt that is out of reach is in doubt all the same where icons show on every skill", function()
+    local w, ns = Warband()
+    local mage = Foe(w, "Bandit Mage", 6)
+    w:target(mage)
+    w:enterCombat()
+    w:advance(0.5)
+    w:said(mage, "DODGE")
+    w:cast(CLAP)
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "within reach, and in doubt")
+    mage.distance = 20
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), nil, "out of reach: Thunder Clap can do nothing right now")
+    w:slash("usable off")
+    w:drain()
+    w:advance(0.5)
+    eq(w:icon("ActionButton1"), "unsure", "shown on every skill: judged as if it were within reach, which is not known")
+    Clean(w)
+end)
+
+test("not sure: a skill that is taken to land on your say-so is not put in doubt by a word", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    w:slash("track heroic strike")
+    w:drain()
+    w:cast(REND) -- the boar is heard from
+    w:advance(0.5)
+    for _ = 1, 2 do
+        w:cast(HEROIC)
+        w:advance(3.8)
+    end
+    -- From here on Heroic Strike is taken to land. Something changes on the
+    -- boar as it is cast, and the game calls an attack on the boar dodged.
+    w:said(boar, "DODGE")
+    w:cast(HEROIC)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(4)
+    eq(w:icon("ActionButton2"), "cross", "as you asked: it is there whatever is seen")
+    check(Last(ns.db.report.casts):find("taken to land on your say-so): changed", 1, true), Last(ns.db.report.casts))
+    eq(ns.db.report.verdicts.unsure, nil)
+    Clean(w)
+end)
+
+test("immune: a change in the moment of the word is no proof that the enemy takes a skill that lands on your say-so", function()
+    local w, ns, boar = Simple({ saved = Proven() })
+    w:slash("track heroic strike")
+    w:drain()
+    w:cast(REND) -- the boar is heard from
+    w:advance(0.5)
+    for _ = 1, 2 do
+        w:cast(HEROIC)
+        w:advance(3.8)
+    end
+    -- From here on Heroic Strike is taken to land. The game calls the boar
+    -- immune as it is cast, and something else changes on the boar in that
+    -- moment. The cast stands, as you asked, but the change is not counted
+    -- as the boar having been seen to carry the effect.
+    w:said(boar, "IMMUNE")
+    w:cast(HEROIC)
+    w:applyAura(boar, "Mortal Wounds", 10, false)
+    w:advance(4)
+    check(Last(ns.db.report.casts):find("taken to land on your say-so): changed", 1, true), Last(ns.db.report.casts))
+    eq(Kept(ns, "Heroic Strike", boar), nil)
+    -- So the next time the game calls it immune, that counts against its
+    -- kind like any first time.
+    w:advance(30)
+    w:said(boar, "IMMUNE")
+    w:cast(HEROIC)
+    w:advance(4)
+    local kept = Kept(ns, "Heroic Strike", boar)
+    check(kept, "kept of its kind")
+    eq(kept.seen, 1)
+    eq(kept.passes, nil, "not as an immunity that comes and goes")
+    eq(w:icon("ActionButton2"), "cross", "immune: casting it again does nothing")
     Clean(w)
 end)
 
