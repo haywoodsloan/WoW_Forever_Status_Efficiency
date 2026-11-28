@@ -9809,6 +9809,8 @@ panel("your own texture: the tile opens a box that explains itself", function(op
     eq(editor:IsShown(), true)
     eq(box:HasFocus(), true, "ready to type into")
     eq(editor.note:GetText(), "Type a file ID or a path, then press Enter.")
+    check(box.point[4] + box:GetWidth() + 8 <= editor.note.point[4], "the sentence stands beside the box, clear of it")
+    check(editor.note.point[4] + editor.note.fitRoom <= editor.width + 0.01, "and ends where the row of icons does")
 
     w:drain()
     w:type(box, "nonsense")
@@ -10463,6 +10465,15 @@ panel("Skills tab: who a spell is judged on, and how long its effect lasts", fun
     eq(title, "How long the effect lasts")
     eq(says, "The addon read this from the skill's tooltip. Type a number of seconds to change it, or empty the box "
         .. "to let the addon work it out.", "the box says where the duration comes from, and how to change it")
+    title, says = Says(w, rend.lastsLabel)
+    eq(title, "Lasts")
+    eq(says, "This is how long the skill's effect lasts. The game hides the time left on an effect during a fight, so "
+        .. "the addon counts down from this number. Type a number of seconds to change it, or empty the box to let "
+        .. "the addon work it out.", "the row's name says what the number is for, and how to change it in the box")
+    title, says = Says(w, rend.stacksLabel)
+    eq(title, "Stacks up to")
+    eq(says, "This is the most stacks the skill's effect can have. The icon shows the skill as worth casting until "
+        .. "all of them are there.")
 
     -- A complaint does not follow you to another spell.
     w:type(rend.lasts, "soon")
@@ -12027,6 +12038,134 @@ test("settings: with no spells on the bars the Skills tab says so", function()
     w:click(view.confirm.yes)
     eq(next(ns.db.spells), nil, "Defaults has nothing to forget, and does no harm")
     Clean(w)
+end)
+
+-- A client that makes no typing box. None is known to be like that, but the
+-- panel is built to do without one: each figure then stands there as plain
+-- words, and the sentence with it names the chat command that changes it, in
+-- the words that command takes.
+panel("without typing boxes the panel shows each figure in words and names the chat command", function(options)
+    options.noEditBox = true
+    options.missingTextures = { [424242] = true }
+    options.saved = Proven()
+    local w, ns = Bar(options, SUNDER, REND, HEROIC)
+    local boar = w:addMob("Boar")
+    w:showPlate(boar)
+    w:target(boar)
+    w:advance(0.3)
+    local view = w:openSettings().view
+
+    -- The Icons tab: a picture of your own, by the word /se icon calls each result.
+    w:click(view.tabs.icons)
+    local editor = view.editor
+    eq(view.input, nil, "there is no box to type a picture into")
+    eq(editor.note.point[4], 0, "so the line under the icons starts at the left")
+    eq(editor.note.fitRoom, editor.width, "and has the whole width")
+    for index, word in ipairs({ "green", "yellow", "red" }) do
+        local state = ns.Icons.STATES[index]
+        eq(state.word, word, "result " .. index .. " goes by the colour of its usual icon")
+        eq(ns.Icons.StateFor(state.word), state.key, "which is a word /se icon takes for it")
+        w:click(view.results[state.key])
+        w:click(view.tiles.custom)
+        eq(editor:IsShown(), true, "the tile still opens the line that explains it")
+        eq(editor.note:GetText(), "To use a picture of your own, type /se icon " .. word .. " <file ID or path> in chat.",
+            "which names the result as the command does")
+    end
+    check(Answer(w, "icon"):find("green, yellow or red", 1, true), "the command names the three the same way")
+
+    -- Typed as the sentence says, it works, and the sentence then says how to undo it.
+    w:click(view.results.none)
+    Replies(w, "icon green 136243", "\"Worth casting\" now shows your own picture, 136243.")
+    eq(ns.db.custom.none, 136243)
+    eq(editor:IsShown(), true, "the line stays while the result uses a picture of your own")
+    eq(editor.note:GetText(), "This picture is in use. To go back to the usual icon, type /se icon green default in chat.")
+    Answer(w, "icon green 424242")
+    eq(editor.note:GetText(), "The game has no picture with that ID or path, so no icon is shown. To go back to the usual "
+        .. "icon, type /se icon green default in chat.", "a picture the game does not have is pointed out")
+    Answer(w, "icon green default")
+    eq(ns.db.icons.none, nil, "and the command it names puts the usual icon back")
+
+    -- The Skills tab: how long an effect lasts and how high it stacks.
+    local pane = Pane(w, view, "Sunder Armor")
+    eq(pane.lasts, nil, "no box for how long the effect lasts")
+    eq(pane.stacks, nil, "and none for its stacks")
+    eq(pane.lastsPlain:GetText(), "30 s", "the figure is there to read all the same")
+    eq(pane.lastsNote:GetText(), "To change it, type /se duration Sunder Armor <seconds>.")
+    eq(pane.stacksPlain:GetText(), "5")
+    eq(pane.stacksNote:GetText(), "To change it, type /se stacks Sunder Armor <number>.")
+    -- Each figure stands where its box would: beside the row's name, above the sentence, inside the pane.
+    local names = pane.showArea.label.fitRoom
+    for _, row in ipairs({ { pane.lastsPlain, pane.lastsNote }, { pane.stacksPlain, pane.stacksNote } }) do
+        local figure, sentence = row[1], row[2]
+        check(figure.point[4] >= names + 8, "the figure starts clear of the row's name")
+        check(figure.point[4] + figure.fitRoom <= pane.width + 0.01, "and its room ends inside the pane")
+        check(sentence.point[5] <= figure.point[5] - 13, "its sentence stands under it")
+    end
+    check(pane.stacksPlain.point[5] <= pane.lastsNote.point[5] - 13, "and the second row under the first row's sentence")
+    Answer(w, "duration Sunder Armor 45")
+    eq(pane.lastsPlain:GetText(), "45 s", "typed as the sentence says, the figure follows")
+    Answer(w, "stacks Sunder Armor 3")
+    eq(pane.stacksPlain:GetText(), "3")
+
+    -- There is no box to empty, so each row's tooltip says what else its command takes. It does.
+    local title, says = Says(w, pane.lastsLabel)
+    eq(title, "Lasts")
+    eq(says, "This is how long the skill's effect lasts. The game hides the time left on an effect during a fight, so "
+        .. "the addon counts down from this number. The chat command below changes it. Type auto in place of the "
+        .. "seconds to let the addon work it out again.", "the tooltip does not speak of a box that is not there")
+    title, says = Says(w, pane.stacksLabel)
+    eq(title, "Stacks up to")
+    eq(says, "This is the most stacks the skill's effect can have. The icon shows the skill as worth casting until all "
+        .. "of them are there. The chat command below changes it. Type 1 for the number if the effect does not stack, "
+        .. "or auto to let the addon work it out again.")
+    Answer(w, "duration Sunder Armor auto")
+    eq(pane.lastsPlain:GetText(), "30 s", "auto hands the length back to the addon")
+    Answer(w, "stacks Sunder Armor 1")
+    eq(pane.stacksPlain:GetText(), "1", "1 says that the effect does not stack")
+    Answer(w, "stacks Sunder Armor auto")
+    eq(pane.stacksPlain:GetText(), "5", "and auto hands the stacks back as well")
+
+    Pane(w, view, "Rend")
+    eq(pane.lastsPlain:GetText(), "21 s")
+    eq(pane.stacksPlain:GetText(), "1", "an effect that does not stack goes on once")
+    eq(pane.stacksNote:GetText(), "To change it, type /se stacks Rend <number>.")
+
+    Pane(w, view, "Heroic Strike")
+    eq(pane.lastsPlain:GetText(), "", "a skill without an icon has no figures to show")
+    eq(pane.stacksPlain:GetText(), "")
+    eq(pane.lastsNote:GetText(), "")
+    eq(pane.stacksNote:GetText(), "")
+    w:closeSettings()
+    Clean(w)
+end)
+
+test("settings: without typing boxes every sentence keeps to its room, and none is cut short in wider letters", function()
+    -- The sentences that stand in for a box hold a chat command with the
+    -- skill's name in it, so they are the longest of their rows. In the
+    -- standard font nothing has to give for them. In wider letters such a
+    -- sentence may be drawn smaller, as any label may, and is never cut.
+    for _, wider in ipairs({ 1, 1.35 }) do
+        local what = "letters " .. wider .. " times as wide"
+        local w = Bar({ noEditBox = true, fontWidth = wider, missingTextures = { [424242] = true } }, SUNDER, REND, DEMO)
+        local view = w:openSettings().view
+        w:click(view.tabs.icons)
+        w:click(view.results.some)
+        w:slash("icon yellow 424242") -- the longest of the three sentences under the icons
+        w:drain()
+        check(view.editor.note:GetText():find("type /se icon yellow default in chat", 1, true), view.editor.note:GetText())
+        for _, name in ipairs({ "Sunder Armor", "Rend", "Demoralizing Shout" }) do
+            local pane = Pane(w, view, name)
+            check(pane.lastsNote:GetText():find("/se duration " .. name, 1, true), pane.lastsNote:GetText())
+            local smaller, which = Fits(w, what .. ", " .. name)
+            if wider == 1 then
+                eq(smaller, 0, "labels that had to shrink in the standard font: " .. which)
+            end
+            for _, label in ipairs(Labels(w)) do
+                check(not label.fitCut, "\"" .. tostring(label.text) .. "\" is whole, with " .. what)
+            end
+        end
+        Clean(w)
+    end
 end)
 
 panel("with the icons turned off the panel still reads the bars", function(options)

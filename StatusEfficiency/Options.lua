@@ -1522,9 +1522,13 @@ local function BuildEditor(view, page, left, top)
     editor:SetPoint("TOPLEFT", page, "TOPLEFT", left, top)
     editor:Hide()
 
-    local room = L.right - left - EDITOR_BOX - 14
-    local note = Note(editor, room, 3)
-    note:SetPoint("TOPLEFT", editor, "TOPLEFT", EDITOR_BOX + 14, 0)
+    -- The line stands beside the box. Where no box could be made it starts
+    -- where the box would, and has the whole width.
+    local built, box = pcall(Input, editor, EDITOR_BOX)
+    box = built and box or nil
+    local indent = box and EDITOR_BOX + 14 or 0
+    local note = Note(editor, L.right - left - indent, 3)
+    note:SetPoint("TOPLEFT", editor, "TOPLEFT", indent, 0)
 
     local function Apply(box)
         local key = view.picked
@@ -1555,8 +1559,7 @@ local function BuildEditor(view, page, left, top)
         end)
     end
 
-    local built, box = pcall(Input, editor, EDITOR_BOX)
-    if built and box then
+    if box then
         box:SetPoint("TOPLEFT", editor, "TOPLEFT", 1, -1)
         box:SetScript("OnEnterPressed", function(self)
             ns.Guard(Apply, self)
@@ -1590,7 +1593,17 @@ local function BuildEditor(view, page, left, top)
         if editor.problem then
             return -- the complaint stays up while the box is being corrected
         elseif not editor.box then
-            note.Tell("To use a picture of your own, type /se icon " .. key .. " <file ID or path> in chat.")
+            -- Nowhere to type, so the note names the chat command that does the
+            -- same. The command calls a result by the colour of its usual icon.
+            local typed = "type /se icon " .. Icons.State(key).word
+            if editor.missing then
+                note.Tell("The game has no picture with that ID or path, so no icon is shown. To go back to the "
+                    .. "usual icon, " .. typed .. " default in chat.", WARN)
+            elseif current == "custom" then
+                note.Tell("This picture is in use. To go back to the usual icon, " .. typed .. " default in chat.")
+            else
+                note.Tell("To use a picture of your own, " .. typed .. " <file ID or path> in chat.")
+            end
         elseif editor.missing then
             note.Tell("The game has no picture with that ID or path, so no icon is shown.", WARN)
         elseif current == "custom" then
@@ -2549,7 +2562,7 @@ local function BuildPane(view, page)
         SpellChanged()
     end
 
-    RowLabel(pane, "Lasts", 0, PANE_ROWS.lasts, labelRoom,
+    local lastsLabel = RowLabel(pane, "Lasts", 0, PANE_ROWS.lasts, labelRoom,
         "This is how long the skill's effect lasts. The game hides the time left on an effect during a fight, so "
             .. "the addon counts down from this number. Type a number of seconds to change it, or empty the box to "
             .. "let the addon work it out.")
@@ -2583,6 +2596,16 @@ local function BuildPane(view, page)
     else
         lasts = nil
     end
+    -- Where no box can be made, the figure stands there as plain words, and the
+    -- sentence under it names the chat command that changes it. The row's tooltip
+    -- then says what the command takes, as there is no box to empty.
+    local lastsPlain = not lasts and Text(pane, "GameFontHighlightSmall") or nil
+    if lastsPlain then
+        lastsPlain:SetPoint("TOPLEFT", pane, "TOPLEFT", control + 1, PANE_ROWS.lasts - 4)
+        lastsLabel.tipBody = "This is how long the skill's effect lasts. The game hides the time left on an effect "
+            .. "during a fight, so the addon counts down from this number. The chat command below changes it. Type "
+            .. "auto in place of the seconds to let the addon work it out again."
+    end
     local lastsNote = Note(pane, width)
     lastsNote:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.lasts - NOTE_DROP)
 
@@ -2614,7 +2637,7 @@ local function BuildPane(view, page)
         SpellChanged()
     end
 
-    RowLabel(pane, "Stacks up to", 0, PANE_ROWS.stacks, labelRoom,
+    local stacksLabel = RowLabel(pane, "Stacks up to", 0, PANE_ROWS.stacks, labelRoom,
         "This is the most stacks the skill's effect can have. The icon shows the skill as worth casting until all "
             .. "of them are there.")
     local stacks
@@ -2650,6 +2673,13 @@ local function BuildPane(view, page)
         Tip(stacks, "How many times the effect stacks")
     else
         stacks = nil
+    end
+    local stacksPlain = not stacks and Text(pane, "GameFontHighlightSmall") or nil
+    if stacksPlain then
+        stacksPlain:SetPoint("TOPLEFT", pane, "TOPLEFT", control + 1, PANE_ROWS.stacks - 4)
+        stacksLabel.tipBody = "This is the most stacks the skill's effect can have. The icon shows the skill as worth "
+            .. "casting until all of them are there. The chat command below changes it. Type 1 for the number if the "
+            .. "effect does not stack, or auto to let the addon work it out again."
     end
     local stacksNote = Note(pane, width)
     stacksNote:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.stacks - NOTE_DROP)
@@ -2800,7 +2830,8 @@ local function BuildPane(view, page)
                 lastsNote.Tell(tracked and from or "")
             end
         else
-            lastsNote.Tell(tracked and ("To change it, type /se duration " .. info.name .. " <seconds> in chat.") or "")
+            Say(lastsPlain, tracked and Short(duration) or "", width - control - 1)
+            lastsNote.Tell(tracked and ("To change it, type /se duration " .. info.name .. " <seconds>.") or "")
         end
 
         if stacks then
@@ -2830,7 +2861,9 @@ local function BuildPane(view, page)
                     or "You set this yourself: the effect does not stack.")
             end
         else
-            stacksNote.Tell(tracked and ("To change it, type /se stacks " .. info.name .. " <number> in chat.") or "")
+            -- 1 for an effect that does not stack, which is also what the command takes for it.
+            Say(stacksPlain, tracked and tostring(Spells:Stacking(info) or 1) or "", width - control - 1)
+            stacksNote.Tell(tracked and ("To change it, type /se stacks " .. info.name .. " <number>.") or "")
         end
 
         -- Nobody else can put on you what a skill only ever puts on its caster.
@@ -2872,6 +2905,8 @@ local function BuildPane(view, page)
     pane.show, pane.showArea, pane.why, pane.whyArea = show, showArea, why, whyArea
     pane.on, pane.onNote = on, onNote
     pane.lasts, pane.lastsNote, pane.stacks, pane.stacksNote = lasts, lastsNote, stacks, stacksNote
+    pane.lastsPlain, pane.stacksPlain = lastsPlain, stacksPlain
+    pane.lastsLabel, pane.stacksLabel = lastsLabel, stacksLabel
     pane.shared, pane.sharedNote, pane.reset, pane.resetNote = shared, sharedNote, reset, resetNote
     pane.immuneLabel, pane.immuneNote, pane.immuneArea = immuneLabel, immuneNote, immuneArea
     pane.mark, pane.forget = mark, forget

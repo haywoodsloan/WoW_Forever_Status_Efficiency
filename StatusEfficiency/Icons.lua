@@ -18,22 +18,26 @@ local RAID = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_"
 --- every enemy the spell would hit. "In full" is for an effect that stacks: it
 --- only counts once it is on as many times over as it goes. An enemy that is
 --- immune is left out: with nobody else to judge the skill on, the last of
---- the three is shown.
+--- the three is shown. `word` is what the chat command calls the result, by
+--- the colour of its usual icon: /se icon green ...
 Icons.STATES = {
     {
         key = "none",
+        word = "green",
         title = "Worth casting",
         detail = "Its effect is missing, or not at full stacks, so the skill is worth using.",
         default = "check",
     },
     {
         key = "some",
+        word = "yellow",
         title = "Partly worth casting",
         detail = "Some enemies already have its effect in full and others do not.",
         default = "partial",
     },
     {
         key = "all",
+        word = "red",
         title = "No need to cast",
         detail = "Its effect is already there in full, or the enemy is immune to it.",
         default = "cross",

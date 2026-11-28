@@ -104,6 +104,8 @@
 --                  "spell" it gives the macro's spell id with subType "spell".
 --   noTemplates    true: CreateFrame knows none of the game's own templates.
 --                  A set of template names: it does not know those.
+--   noEditBox      true: CreateFrame makes no edit box, so there is nowhere to
+--                  type in a panel.
 --   brokenTemplates template name -> what is wrong with it. True: its methods
 --                  fail (the slider's Init). Or, by template:
 --                    slider      "stuck" does not move when sent somewhere,
@@ -1921,6 +1923,9 @@ function Mock.new(options)
         local class = CLASSES[frameType]
         if not class then
             error("CreateFrame: unknown frame type " .. tostring(frameType), 2)
+        end
+        if frameType == "EditBox" and options.noEditBox then
+            error("CreateFrame: this client makes no edit boxes", 2)
         end
         local inherits
         if template ~= nil then

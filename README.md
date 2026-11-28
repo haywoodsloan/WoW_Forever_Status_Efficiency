@@ -19,7 +19,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.5.2 is an early draft. It loads and draws its icons in the real
+Version 0.5.3 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -47,7 +47,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: Version 0.5.2."
+first line of the reply gives the version, "Status Efficiency: Version 0.5.3."
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -241,7 +241,7 @@ always asks first. How long an effect lasts, how high it stacks and which
 enemies are immune stay with each skill: click the skill for those.
 
 A skill is shown with its own picture, the one on its action button. Where the
-game gives none for the spell, the panel takes the picture of the action slot
+game gives none for the skill, the panel takes the picture of the action slot
 the skill sits in, and shows a question mark only while the game has neither.
 
 The panel uses the game's own buttons, tick boxes and slider where they work.
@@ -257,6 +257,8 @@ It looks after the rest by itself:
   short only if that is not enough.
 - If the Options window gives the page less room than the panel needs, the
   whole page is drawn smaller.
+- If this client cannot make a box to type in, the panel shows the number as
+  plain words and says which chat command changes it.
 
 To have the plainer controls anyway, type `/se plain` and then `/reload`.
 
