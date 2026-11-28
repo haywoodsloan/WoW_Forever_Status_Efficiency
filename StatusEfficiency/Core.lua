@@ -2135,8 +2135,8 @@ do
     Reach.events = {} -- event -> whether this client lets it be listened for
 
     -- What the icons go by while there are no nameplates, for a line of chat.
-    ns.BLIND_WORDS = "a skill that hits every enemy around you is judged only on your target, your focus, the enemy "
-        .. "under your mouse, the one the game picks for you and your party's targets"
+    ns.BLIND_WORDS = "a skill that hits every enemy around you is only checked on your target, your focus, the enemy "
+        .. "under your mouse, the enemy the game picks for you and your party's targets"
 
     --- True where the addon is to turn enemy nameplates back on.
     local function Keeps()

@@ -1025,7 +1025,7 @@ python3 tools/checks/replay_saved_fights.py <saved file>   # play a few fights f
 python3 tools/checks/show_saved.py <saved file> keys       # look into a saved settings file
 ```
 
-`break_one_at_a_time.py` holds some 1,040 ways of breaking the addon, one line
+`break_one_at_a_time.py` holds some 1,080 ways of breaking the addon, one line
 changed at a time. A mistake that no scenario catches means a rule nothing
 holds the addon to. The whole run plays the scenarios once per mistake, so it
 is the long one: about ten seconds each, shared over as many copies as

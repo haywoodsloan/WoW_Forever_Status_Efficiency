@@ -13656,8 +13656,8 @@ end)
 --------------------------------------------------------------------------------
 
 -- What the icons go by while there are no nameplates, as the addon says it.
-local BLIND = "a skill that hits every enemy around you is judged only on your target, your focus, the enemy under "
-    .. "your mouse, the one the game picks for you and your party's targets"
+local BLIND = "a skill that hits every enemy around you is only checked on your target, your focus, the enemy "
+    .. "under your mouse, the enemy the game picks for you and your party's targets"
 local TURNED_ON = "Enemy nameplates were off, so the addon turned them on: it reads the enemies around you from them. "
     .. "Type /se nameplates to change what it does when they are off."
 local TURNED_AGAIN = "The addon turned enemy nameplates back on. Type /se nameplates to change what it does when they "
@@ -13837,6 +13837,10 @@ test("nameplates: told only to say so, the addon leaves them off and says so whe
     eq(ns.KeepsNameplates(), "off")
     Replies(w, "nameplates", "When enemy nameplates are off, the addon only says so in chat. They are on right now."
         .. TO_CHANGE)
+    -- A word it does not know changes nothing, and is told the three there are.
+    Replies(w, "nameplates quietly", "When enemy nameplates are off, the addon only says so in chat. They are on right "
+        .. "now." .. TO_CHANGE)
+    eq(ns.db.nameplates, "tell")
 
     w:setPlates(false)
     eq(w:platesShown(), false, "left off")

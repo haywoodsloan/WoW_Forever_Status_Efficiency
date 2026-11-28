@@ -280,13 +280,18 @@ function commands.usable(rest)
     UsableNote()
 end
 
--- What the addon does when enemy nameplates are off, by choice: each follows
--- "the addon".
-local PLATE_WORDS = {
-    on = "turns them back on and says so in chat",
-    tell = "only says so in chat",
-    off = "does nothing",
-}
+--- What the addon does when enemy nameplates are off, in the words the
+--- settings window uses: they follow "the addon".
+local function PlatesWords(choice)
+    local choices = ns.Options.PLATES_CHOICES
+    for i = 1, #choices do
+        local entry = choices[i]
+        if entry.key == choice then
+            return entry.words
+        end
+    end
+    return tostring(choice)
+end
 
 --- How things stand with enemy nameplates right now, as a sentence to follow
 --- another. `kept` is what ns.KeepsNameplates says. Nothing where the game
@@ -310,8 +315,8 @@ end
 --- /se nameplates: what the addon does when enemy nameplates are off.
 function commands.nameplates(rest)
     local choice = Trim(rest):lower()
-    if not PLATE_WORDS[choice] then
-        Print("When enemy nameplates are off, the addon " .. PLATE_WORDS[ns.db.nameplates] .. "."
+    if not ns.NAMEPLATE_CHOICES[choice] then
+        Print("When enemy nameplates are off, the addon " .. PlatesWords(ns.db.nameplates) .. "."
             .. PlatesNow(ns.KeepsNameplates()) .. " It reads the enemies around you from them. To change what it "
             .. "does, type /se nameplates on (it turns them back on and says so), /se nameplates tell (it only says "
             .. "so) or /se nameplates off (it does nothing).")
@@ -321,7 +326,7 @@ function commands.nameplates(rest)
     ns.Options.Change(function()
         result, turned = ns.SetNameplates(choice)
     end)
-    Print("When enemy nameplates are off, the addon now " .. PLATE_WORDS[choice] .. "."
+    Print("When enemy nameplates are off, the addon now " .. PlatesWords(choice) .. "."
         .. (turned and " They were off, so it turned them on." or PlatesNow(result)))
 end
 

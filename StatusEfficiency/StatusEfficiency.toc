@@ -2,7 +2,7 @@
 ## Title: Status Efficiency
 ## Notes: Marks each action button to show whether casting it again would do anything: whether the enemies already have its debuff, or you already have its buff.
 ## Author: haywoodsloan
-## Version: 0.5.6
+## Version: 0.5.7
 ## SavedVariables: StatusEfficiencyDB
 ## IconTexture: Interface\AddOns\StatusEfficiency\Media\Check.tga
 ## Category: Combat
