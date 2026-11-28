@@ -911,6 +911,28 @@ command is `python` or `py -3`). The runner makes the Lua inside Python sort
 letters and punctuation the way the game does whatever the computer's language
 settings are, and stops with a message if it cannot.
 
+`tools/checks/` holds the checks that are run before a release, besides the
+scenarios. They need `lupa` as well, and each says more at its top.
+
+```
+python3 tools/checks/list_globals.py                    # every global the addon reads or writes (catches typos no scenario reaches)
+python3 tools/checks/break_one_at_a_time.py --check     # does the list of deliberate mistakes still fit the code?
+python3 tools/checks/break_one_at_a_time.py --jobs 16 --scratch /some/empty/folder
+                                                        # make each mistake in a copy and see that a scenario notices
+python3 tools/checks/compare_tooltip_readers.py         # which tooltips the changed reader reads differently
+python3 tools/checks/replay_saved_fights.py <saved file>   # play a few fights from a saved settings file
+python3 tools/checks/show_saved.py <saved file> keys       # look into a saved settings file
+```
+
+`break_one_at_a_time.py` holds some 940 ways of breaking the addon, one line
+changed at a time. A mistake that no scenario catches means a rule nothing
+holds the addon to. The whole run plays the scenarios once per mistake, so it
+is the long one: about ten seconds each, shared over as many copies as
+`--jobs` says. It never changes the checkout, only the copies it makes.
+
+A saved settings file is the player's own data: the last two tools only read
+the copy they are given, and no such copy belongs in the repository.
+
 To redraw the icons (needs Pillow):
 
 ```

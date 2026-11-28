@@ -1,0 +1,4 @@
+# The check tools compare the addon's files byte for byte, and the copy in the
+# game's folder is made from these: keep the line ends as committed everywhere.
+* text=auto eol=lf
+*.tga binary
