@@ -19,7 +19,7 @@ box the icons also stay away until a fight starts, yours or one that someone in
 your group is in close by, and from a skill you cannot use right now (too
 close, too far, the wrong stance). Both can be changed in the settings.
 
-Version 0.5.0 is an early draft. It loads and draws its icons in the real
+Version 0.5.1 is an early draft. It loads and draws its icons in the real
 client, but most of its testing has been against a simulated one (see
 [Development](#development)), and what the client reports in combat is still
 being confirmed: the addon keeps a short record of it (see
@@ -47,7 +47,7 @@ few rough edges.
    for client 1.60.1).
 
 It loads without a word in chat. To see that it is there, type `/se`: the
-first line of the reply gives the version, "Status Efficiency: v0.5.0".
+first line of the reply gives the version, "Status Efficiency: v0.5.1".
 
 To update, replace the files in the `StatusEfficiency` folder and type `/reload`.
 A full restart is only needed when a new version adds files.
@@ -103,8 +103,8 @@ rage comes and goes all through a fight, and an icon that left each time a
 skill had just been paid for would be gone at the very moment it has something
 new to say. A cooldown is the other: the short pause after every cast would
 make all the icons blink, and the game can keep cooldowns from addons during a
-fight. To see the icon on every skill regardless, pick **On every skill** in
-the settings or type `/se usable off`.
+fight. To see the icon on every skill regardless, pick **Every skill** in the
+settings or type `/se usable off`.
 
 Reach is judged to whoever the skill would go to. A buff that goes on you is
 never held back by how far away your target is.
@@ -129,9 +129,9 @@ panel in a window of its own. The window can be dragged by its title bar and
 opens where you left it. Changes apply straight away and are saved per account.
 
 The panel has three tabs. Every setting is a row of its own: what it is called
-on the left, its control on the right, and under the control a line that says
-what the setting is doing now. Hover a row's name or its control for more.
-**Defaults**, at the top right, puts the tab that is open back to how it
+on the left, its control on the right, and under them a sentence in plain words
+that says what the setting is doing now. Hover a row's name or its control for
+more. **Defaults**, at the top right, puts the tab that is open back to how it
 started, and asks first.
 
 The **Display** tab is about whether the icons show, and where:
@@ -177,46 +177,68 @@ The **Icons** tab is about which icon stands for which result:
   the second. The tile with a stroke through it means no icon at all for that
   result. A result says so when it ends up with the same icon as an earlier
   one. Buffs and debuffs share the icons.
-- **Your own texture.** The tile marked `...` opens a box under the icons. Type
+- **Your own picture.** The tile marked `...` opens a box under the icons. Type
   a file ID such as `136243`, or a path such as
   `Interface\Icons\Spell_Nature_Slow`, and press Enter. Empty the box and press
   Enter to go back.
 
 The **Skills** tab lists every skill on your action bars, those with an icon
 first, each with its own picture and a few words on how it is treated. Click
-one, and the pane beside the list shows everything about it:
+one, and the pane beside the list shows everything about it. Every row has a
+sentence under it that says what the setting is doing now and who decided: the
+skill's tooltip, the game, what the addon saw in your fights, or you.
 
-- **Show an icon**: Auto (the addon decides), Always, or Never. The line under
-  it says what the addon's choice rests on. For a skill without an icon the
-  rest of the pane is greyed out.
-- **Lands on**: your target, all enemies in the fight, or you (a buff).
+- **Show an icon**: Auto (the addon decides), Always, or Never. The sentence
+  under it says why the skill has an icon or has none. For a skill without an
+  icon the rest of the pane is greyed out.
+- **Affects**: your target, all enemies in the fight, or you (a buff).
 - **Lasts**: how long the effect lasts. Type a number of seconds to change it,
   or empty the box to let the addon work it out again.
-- **Stacks up to**: how many times over the effect can be on one unit, with a
-  dash for an effect that goes on once. Until it is on that many times the icon
-  stays the green check. Type a number to change it, `1` for an effect that
-  does not stack, or empty the box to let the addon work it out again. The
-  same as `/se stacks`.
-- **Other players**: **Their copy counts too** is ticked when a unit carries
-  the effect only once, whoever casts it, so that another player's copy counts
-  like your own. Untick it for an effect that every caster has one of, like a
-  bleed. The same as `/se anyone` and `/se mine`. It is greyed out for a buff
-  that only ever goes on its caster.
-- **Immune**: the kinds of creature the skill does nothing to, as far as the
-  addon has found (see [Immune enemies](#immune-enemies)): first the kinds it
-  counts on, then the ones heard of only once. Hover the list for all of them
-  and for which ones you added yourself. **Add target** marks the kind of
-  creature you have targeted as immune to the skill, like `/se immune <spell>`,
-  and says so when there is nothing it can add. **Forget all** drops what is
-  kept for this skill, like `/se immune forget <spell>`, and asks first.
-- **Reset this skill** forgets your own choices for the skill, so that the
-  addon works it out by itself again. What it learned about the skill in play
-  stays, and so do the creatures found immune to it. **Defaults** on this tab
+- **Stacks up to**: the most stacks the effect can have, with a dash for an
+  effect that does not stack. Until all of them are there the icon stays the
+  green check. Type a number to change it, `1` for an effect that does not
+  stack, or empty the box to let the addon work it out again. The same as
+  `/se stacks`.
+- **Other players**: **Count theirs** treats another player's effect like your
+  own, which is right for an effect a target can only have once, whoever put it
+  there. **Ignore theirs** only looks for your own, which is right for an
+  effect that every player applies separately, like a bleed. The same as
+  `/se anyone` and `/se mine`. Both are greyed out for a buff that only ever
+  goes on its caster.
+- **Immune**: the kinds of enemy the skill does nothing to, as far as the addon
+  has found (see [Immune enemies](#immune-enemies)): first the kinds the icon
+  leaves out, then the ones seen immune only once. Hover the list for all of
+  them and for which ones you added yourself. **Add target** marks the kind of
+  enemy you have targeted as immune to the skill, like `/se immune <spell>`,
+  and says so when there is nothing it can add. **Clear list** empties the list
+  for this skill, like `/se immune forget <spell>`, and asks first.
+- **Reset this skill** undoes your own changes to the skill, so that the addon
+  works it out by itself again. What it learned about the skill in your fights
+  stays, and so do the enemies found immune to it. **Defaults** on this tab
   does the same for every skill at once.
 
-Beside each box, and under the tick, is where what it shows comes from: the
-skill's tooltip, the game, what was seen in play, or you. Pressing Enter in a
-box you did not change leaves the addon's figure the addon's own.
+Pressing Enter in a box you did not change leaves the addon's figure the
+addon's own.
+
+Two lines at the head of the list change a setting for many skills at once:
+**All offensive skills**, which are the ones you use on enemies, and **All
+defensive skills**, which are the ones you use on yourself or on friends. A
+group takes in every skill on your bars that falls into it, with or without an
+icon, and needs at least two of them. Click a group, and the pane shows its
+skills by their pictures, with three rows under them:
+
+- **Show an icon**: Auto, Always or Never, for every skill of the group.
+- **Affects**, for the offensive skills only: your target or all enemies.
+- **Other players**: Count theirs or Ignore theirs. Skills that only ever go on
+  their caster are left out of this one, and the row says how many.
+
+Where all skills of the group have the same setting, a click changes them at
+once, and a click on the choice they had puts them back. Where they differ, the
+row says how ("9 are on Auto, 4 on Always and 1 on Never."), and a click asks
+first in the strip at the bottom, since it wipes those differences out.
+**Reset these skills** undoes your own changes to the skills of the group, and
+always asks first. How long an effect lasts, how high it stacks and which
+enemies are immune stay with each skill: click the skill for those.
 
 A skill is shown with its own picture, the one on its action button. Where the
 game gives none for the spell, the panel takes the picture of the action slot

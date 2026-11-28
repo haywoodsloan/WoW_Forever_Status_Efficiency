@@ -23,19 +23,19 @@ Icons.STATES = {
     {
         key = "none",
         title = "Worth casting",
-        detail = "Nothing it would land on has the full effect yet.",
+        detail = "Its effect is missing, or not at full stacks, so the skill is worth using.",
         default = "check",
     },
     {
         key = "some",
         title = "Partly worth casting",
-        detail = "Some of what it would land on already has the full effect.",
+        detail = "Some enemies already have its effect in full and others do not.",
         default = "partial",
     },
     {
         key = "all",
         title = "No need to cast",
-        detail = "Everything it would land on already has the full effect, or is immune.",
+        detail = "Its effect is already there in full, or the enemy is immune to it.",
         default = "cross",
     },
 }

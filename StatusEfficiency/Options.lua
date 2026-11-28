@@ -3,15 +3,20 @@
 -- Three tabs. "Display" has the on/off switch, when the icons appear and on
 -- which skills, where the icon sits on a button and how big it is, with a
 -- life-size preview of all three results. "Icons" has which icon each result
--- uses. "Spells" lists the skills on the action bars, and beside the list
--- shows everything about the one that is picked.
+-- uses. "Skills" lists the skills on the action bars, and beside the list
+-- shows everything about the one that is picked, or what can be changed for
+-- all the offensive or all the defensive skills at once.
 --
 -- Every setting is a row of its own, laid out the way the game lays out its
 -- own Options pages: what the setting is called on the left, the control for
 -- it on the right, and rows that belong together under a heading. A screen
 -- shows what is needed to decide on one thing at a time: the icons on offer
--- are those of the one result that is picked, and the choices for a spell
--- are those of the one spell that is picked.
+-- are those of the one result that is picked, and the choices for a skill
+-- are those of the one skill, or the one group of skills, that is picked.
+--
+-- Everything the panel says is a whole sentence in plain words: it names the
+-- skill, the icon or the enemy it is about, and says who decided, the addon
+-- or the player. No sentence leans on a word that only the code uses.
 --
 -- Buttons, tick boxes and the size slider are the game's own where this client
 -- has them and they pass a quick test. Where one is missing, fails its test, or
@@ -67,7 +72,8 @@ local L = {
     previewMin = 36, -- a pretend button is drawn life-size, within these
     previewMax = 60,
 
-    rows = 12, -- spells shown at once
+    rows = 12, -- lines in the list of skills: the two groups, and the skills shown at once under them
+    groups = 2,
     rowHeight = 36,
     listTop = -44,
     listLeft = 12,
@@ -84,10 +90,16 @@ local RESULT_HEIGHT, RESULT_ICON = 44, 28 -- one of the three results, and the i
 local EDITOR_BOX = 240 -- the box for a texture of your own
 local LIST_ICON, PANE_ICON = 26, 36 -- a skill's picture in the list, and at the head of the pane
 local LASTS_BOX, STACKS_BOX = 60, 40
-local RESET_WIDTH, DEFAULTS_WIDTH = 150, 96
+local RESET_WIDTH, DEFAULTS_WIDTH = 170, 96
 local MARK_WIDTH, FORGET_WIDTH = 104, 104
--- Where each row of the pane starts, from the pane's top.
-local PANE_ROWS = { show = -56, on = -112, lasts = -168, stacks = -198, shared = -228, immune = -288 }
+-- Where each row of the pane starts, from the pane's top, and how far under a
+-- row's top its sentence starts. A sentence has the pane's whole width, and two
+-- lines, or one under a box, or three where it names a skill or lists enemies.
+local PANE_ROWS = { show = -52, on = -110, lasts = -168, stacks = -212, shared = -256, immune = -326 }
+local NOTE_DROP = 24
+-- The pane for a group: a skill's picture in the group's line of the list, the
+-- pictures of its skills at the head of the pane, and from one row to the next.
+local GROUP_FACE, STRIP_FACE, STRIP_GAP, STRIP_LINES, GROUP_STEP = 12, 24, 4, 2, 58
 
 local GOLD = { 1, 0.82, 0 }
 local WARN = { 1, 0.6, 0.2 }
@@ -111,28 +123,28 @@ Options.POSITION_NAMES = POSITION_NAMES
 -- When the icons appear at all. `words` is how chat messages put it.
 local APPEAR_CHOICES = {
     { key = "always", label = "Always", words = "always", tip = "Always",
-        body = "Whenever there is something to judge: a buff at any time, a debuff whenever there is an enemy to check "
-            .. "and all through a fight." },
+        body = "The icons show whether or not you are fighting. A buff's icon is always there. A debuff's icon "
+            .. "appears when you have an enemy to use the skill on." },
     { key = "combat", label = "When you are in combat", words = "when you are in combat",
         tip = "When you are in combat",
-        body = "Only while you are in combat yourself. The rest of the time your buttons stay bare, even while "
-            .. "others in your group are fighting." },
+        body = "The icons show only while you yourself are in combat. The rest of the time no icons are shown, "
+            .. "even if others in your group are fighting." },
     { key = "group", label = "When you or your group are in combat",
         words = "when you or your group are in combat", tip = "When you or your group are in combat",
-        body = "While you are in combat, and while someone in your party or raid is in combat close by. The rest "
-            .. "of the time your buttons stay bare." },
+        body = "The icons show while you are in combat, and also while someone in your party or raid is "
+            .. "fighting near you. The rest of the time no icons are shown." },
 }
 Options.APPEAR_CHOICES = APPEAR_CHOICES
 
 -- And on which skills: every one, or only those that can be used right now.
 local USABLE_CHOICES = {
     { key = "always", label = "Every skill", words = "on every skill", tip = "Every skill",
-        body = "Whether or not you can use the skill right now." },
+        body = "Every skill keeps its icon, even while you cannot use it." },
     { key = "usable", label = "Only skills you can use right now",
         words = "only on skills you can use right now", tip = "Only skills you can use right now",
-        body = "Not while the game says the skill cannot be used: you are too close or too far, in the wrong "
-            .. "stance and the like. Being short of rage, mana or energy does not hide the icon, and neither "
-            .. "does a cooldown." },
+        body = "A skill's icon is hidden while the game says you cannot use the skill, for example because you "
+            .. "are out of range or in the wrong stance. Being low on rage, mana or energy does not hide the "
+            .. "icon, and neither does a cooldown." },
 }
 Options.USABLE_CHOICES = USABLE_CHOICES
 
@@ -663,9 +675,9 @@ end
 
 --- A tick box with its words beside it: control.Set(ticked), and
 --- control.onChange(ticked) is called when a click changes it. control.Fit(room)
---- says how much room the words have, and control.Enable(false) greys it out.
+--- says how much room the words have.
 local function TickBox(parent, text, font)
-    local control = { ticked = false, enabled = true }
+    local control = { ticked = false }
 
     local mark
     local box = Native("tick", MakeGameTick, parent)
@@ -703,20 +715,7 @@ local function TickBox(parent, text, font)
         end
     end
 
-    --- Greys the box out and stops it taking clicks, or brings it back.
-    function control.Enable(enabled)
-        enabled = enabled and true or false
-        control.enabled = enabled
-        Try(box, "SetEnabled", enabled)
-        Try(box, "SetAlpha", enabled and 1 or DIM)
-        Try(label, "SetAlpha", enabled and 1 or DIM)
-    end
-
     box:SetScript("OnClick", function()
-        if not control.enabled then
-            control.Set(control.ticked) -- a box of the game's that took the click all the same is put back
-            return
-        end
         local ticked = not control.ticked
         control.Set(ticked) -- the game's own box has flipped itself already; this keeps both kinds in step
         Sound(ticked and "IG_MAINMENU_OPTION_CHECKBOX_ON" or "IG_MAINMENU_OPTION_CHECKBOX_OFF")
@@ -1351,7 +1350,7 @@ local function BuildDisplay(view, page)
     Heading(page, "Visibility", -12)
 
     RowLabel(page, "Show status icons", L.label, -40, labelRoom,
-        "The icons this addon puts on your action buttons. Unticked, your buttons stay bare.")
+        "Turns the addon's icons on your action buttons on or off. With this unticked, no icons are shown at all.")
     local enable = TickBox(page, "")
     enable.frame:SetPoint("LEFT", page, "TOPLEFT", L.control, -50)
     enable.onChange = function(ticked)
@@ -1365,7 +1364,7 @@ local function BuildDisplay(view, page)
     view.off = off
 
     RowLabel(page, "When to show them", L.label, -70, labelRoom,
-        "The icons can stay away until there is a fight, so that your buttons are bare the rest of the time.")
+        "Choose whether the icons are always on your action buttons, or only during a fight.")
     local appear = RadioList(page, APPEAR_CHOICES, wide)
     appear.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -69)
     appear.onPick = function(key)
@@ -1376,7 +1375,7 @@ local function BuildDisplay(view, page)
     view.appear = appear
 
     RowLabel(page, "On which skills", L.label, -144, labelRoom,
-        "A skill the game will not let you use right now can go without its icon.")
+        "Choose whether a skill keeps its icon while the game will not let you use the skill.")
     local usable = RadioList(page, USABLE_CHOICES, wide)
     usable.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -143)
     usable.onPick = function(key)
@@ -1396,15 +1395,15 @@ local function BuildDisplay(view, page)
     grid.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -252)
     local gridHeight = 3 * GRID_CELL + 2 * GRID_GAP
     RowLabel(page, "Position", L.label, -252 - (gridHeight - 20) / 2, labelRoom,
-        "Where on each action button the icon sits. Click one of the nine squares.")
+        "This is where the icon sits on each action button. Click one of the nine squares to move it.")
     local where = Text(page, "GameFontHighlight")
     where:SetJustifyV("MIDDLE")
     where:SetPoint("LEFT", grid.frame, "RIGHT", 12, 0)
     view.grid, view.zones, view.where = grid, grid.zones, where
 
     -- How large: a slider, or follow the button.
-    RowLabel(page, "Size", L.label, -328, labelRoom, "How large the icon is drawn, from " .. ns.SIZE_MIN .. " to "
-        .. ns.SIZE_MAX .. ". Auto sizes it from the button it sits on.")
+    RowLabel(page, "Size", L.label, -328, labelRoom, "This is how big the icon is, from " .. ns.SIZE_MIN .. " to "
+        .. ns.SIZE_MAX .. ". Tick Auto to let the addon pick a size that suits each action button.")
     local slider = NumberSlider(page, 200, ns.SIZE_MIN, ns.SIZE_MAX)
     slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -328)
     slider.onChange = function(value)
@@ -1427,7 +1426,7 @@ local function BuildDisplay(view, page)
             ns.db.size = ticked and 0 or max(ns.SIZE_MIN, min(ns.SIZE_MAX, ns.AutoIconSize()))
         end)
     end
-    Tip(auto.frame, "Auto", "Size the icon from the button it sits on.")
+    Tip(auto.frame, "Auto", "The addon picks a size that suits each action button.")
     view.size = { slider = slider, readout = readout, auto = auto }
 
     local sizeNote = Note(page, wide)
@@ -1462,14 +1461,14 @@ local function BuildDisplay(view, page)
     function view.RefreshDisplay()
         local on = ns.db.enabled and true or false
         enable.Set(on)
-        off.Tell(on and "" or "Off: your action buttons stay bare.")
+        off.Tell(on and "" or "The icons are turned off.")
         appear.Set(ns.db.appear)
         usable.Set(ns.db.usableOnly and "usable" or "always")
         -- Neither changes anything while the icons are off.
         appear.Enable(on)
         usable.Enable(on)
         usableNote.Tell(ns.db.usableOnly
-            and "Being short of rage, mana or energy does not hide an icon, and neither does a cooldown." or "")
+            and "A skill that is only waiting for rage, mana, energy or its cooldown keeps its icon." or "")
         Dim(usableNote, not on)
 
         local corner = ns.db.corner
@@ -1482,7 +1481,8 @@ local function BuildDisplay(view, page)
         slider.Set(max(ns.SIZE_MIN, min(ns.SIZE_MAX, size)))
         Say(readout, tostring(size), 36)
         auto.Set(chosen == 0)
-        sizeNote.Tell(chosen == 0 and "Sized from the button it sits on." or "The same size on every button.")
+        sizeNote.Tell(chosen == 0 and "The addon picks a size that suits each action button."
+            or "The icon is this size on every action button.")
 
         -- The pretend buttons are as large as a real one looks from here, so the
         -- icon on them is the size it is on the bars.
@@ -1523,7 +1523,7 @@ local function BuildEditor(view, page, left, top)
     editor:Hide()
 
     local room = L.right - left - EDITOR_BOX - 14
-    local note = Note(editor, room, 2)
+    local note = Note(editor, room, 3)
     note:SetPoint("TOPLEFT", editor, "TOPLEFT", EDITOR_BOX + 14, 0)
 
     local function Apply(box)
@@ -1545,7 +1545,8 @@ local function BuildEditor(view, page, left, top)
         local texture = Icons.ParseCustom(text)
         if not texture then
             editor.problem = true
-            note.Tell("Not a texture. Type a file ID such as 136243, or a path that starts with Interface.", BAD)
+            note.Tell("That is not a picture the game knows. Type a file ID such as 136243, or a path that starts "
+                .. "with Interface.", BAD)
             return
         end
         box:ClearFocus()
@@ -1589,13 +1590,13 @@ local function BuildEditor(view, page, left, top)
         if editor.problem then
             return -- the complaint stays up while the box is being corrected
         elseif not editor.box then
-            note.Tell("/se icon " .. key .. " <file ID or path>")
+            note.Tell("To use a picture of your own, type /se icon " .. key .. " <file ID or path> in chat.")
         elseif editor.missing then
-            note.Tell("The game has no texture there, so no icon shows.", WARN)
+            note.Tell("The game has no picture with that ID or path, so no icon is shown.", WARN)
         elseif current == "custom" then
-            note.Tell("In use. Empty the box and press Enter to undo.")
+            note.Tell("This picture is in use. To go back to the usual icon, empty the box and press Enter.")
         else
-            note.Tell("A file ID or a path, then Enter.")
+            note.Tell("Type a file ID or a path, then press Enter.")
         end
     end
 
@@ -1655,7 +1656,7 @@ local function BuildResult(view, page, index, state, top)
     OnClick(row, function()
         view.Pick(key)
     end)
-    Tip(row, state.title, "Click to choose its icon below.")
+    Tip(row, state.title, "Click this result to choose its icon from the ones below.")
 
     row.chosen, row.bar, row.icon, row.none = chosen, bar, icon, none
     view.results[key], view.current[key] = row, icon
@@ -1703,7 +1704,7 @@ local function BuildIcons(view, page)
                 Icons.ApplySet(set)
             end)
         end)
-        Tip(button, set.name, "Uses these three icons for the three results.")
+        Tip(button, set.name, "Click to use these three icons for the three results.")
         view.sets[set.key] = button
     end
     -- Which set is in use, in words, beside the four.
@@ -1717,7 +1718,7 @@ local function BuildIcons(view, page)
     Heading(page, "One icon for each result", -88)
     local hint = Note(page, L.right - L.label)
     hint:SetPoint("TOPLEFT", page, "TOPLEFT", L.label, -110)
-    hint.Tell("Pick a result, then the icon it should use.")
+    hint.Tell("Click a result, then click the icon you want for it.")
     view.hint = hint
     for index = 1, #Icons.STATES do
         BuildResult(view, page, index, Icons.STATES[index], -130)
@@ -1764,7 +1765,7 @@ local function BuildIcons(view, page)
             Icons.SetHidden(view.picked)
         end)
     end)
-    Tip(hidden, Icons.HIDDEN_NAME, "Buttons stay bare for this result.")
+    Tip(hidden, Icons.HIDDEN_NAME, "Nothing is drawn on the action button for this result.")
     tiles[Icons.HIDDEN] = hidden
 
     -- A texture of your own: the tile opens a box to type it into.
@@ -1782,7 +1783,7 @@ local function BuildIcons(view, page)
             editor.box:SetFocus()
         end
     end)
-    Tip(custom, "Your own texture", "Any picture in the game, by file ID or by path.")
+    Tip(custom, "Your own picture", "Use any picture from the game's files. You type its file ID or its path.")
     tiles.custom = custom
     view.editor, view.input = editor, editor.box
 
@@ -1814,7 +1815,7 @@ local function BuildIcons(view, page)
             end
             button.picked = picked
         end
-        setName.Tell(set and set.name or "A mix of your own.")
+        setName.Tell(set and set.name or "Your own mix of icons")
 
         for index = 1, #Icons.STATES do
             local state = Icons.STATES[index]
@@ -1867,26 +1868,36 @@ end
 
 --------------------------------------------------------------------------------
 -- The Skills tab: the skills on your bars in a list, and beside it everything
--- about the one that is picked
+-- about the one that is picked. Two lines at the head of the list stand for
+-- all the offensive and all the defensive skills: picking one of them shows
+-- what can be changed for every skill of that group at once.
 --------------------------------------------------------------------------------
 
 local SHOW_CHOICES = {
     { key = "auto", label = "Auto", width = 50, tip = "Let the addon decide",
-        body = "It gets an icon when it looks like it leaves a status effect, and loses it if casts keep leaving nothing behind." },
-    { key = "always", label = "Always", width = 64, tip = "Always show an icon" },
-    { key = "never", label = "Never", width = 58, tip = "Never show an icon" },
+        body = "The skill gets an icon if it leaves a buff or a debuff behind. It loses the icon again if your casts "
+            .. "keep leaving nothing." },
+    { key = "always", label = "Always", width = 64, tip = "Always show an icon",
+        body = "The skill has an icon even if the addon finds no effect of it to watch." },
+    { key = "never", label = "Never", width = 58, tip = "Never show an icon",
+        body = "The skill has no icon, whatever it does." },
 }
 
+-- `note` is what the pane says under the choice that is picked, `short` goes
+-- on the skill's line in the list, and `words` is the same inside a sentence.
 local ON_CHOICES = {
     { key = "target", label = "Your target", width = 88, tip = "A debuff on your target",
-        body = "Judged on the enemy you have targeted.", note = "The enemy you have targeted.",
-        short = "Your target" },
+        body = "The icon checks the enemy you have targeted.",
+        note = "The icon tells you whether the enemy you have targeted has the effect.",
+        short = "Debuff on your target", words = "debuff on your target" },
     { key = "all", label = "All enemies", width = 88, tip = "A debuff on every enemy in the fight",
-        body = "Judged on all of them, so the icon can also say that only some have it.",
-        note = "Every enemy in the fight: some may have it, some not.", short = "All enemies" },
+        body = "The icon checks every enemy in the fight, so it can also show that only some of them have the effect.",
+        note = "The icon tells you whether all enemies in the fight have the effect, some, or none.",
+        short = "Debuff on all enemies", words = "debuff on all enemies" },
     { key = "self", label = "You", width = 46, tip = "A buff on you",
-        body = "Or on the friend you have targeted, if the skill can be cast on others.",
-        note = "You, or a friend you have targeted.", short = "On you" },
+        body = "The icon checks you, or the friend you have targeted if the skill can be cast on others.",
+        note = "The icon tells you whether you have the effect, or the friend you have targeted.",
+        short = "Buff on you", words = "buff on you" },
 }
 
 local ON_BY_KEY = {}
@@ -1894,99 +1905,245 @@ for i = 1, #ON_CHOICES do
     ON_BY_KEY[ON_CHOICES[i].key] = ON_CHOICES[i]
 end
 
--- Why a spell is treated the way it is: a sentence for the pane, and a longer
--- one for the tooltip where there is more to say.
+-- Whether the same effect counts when another player put it there: the two
+-- things /se anyone and /se mine say.
+local SHARED_CHOICES = {
+    { key = "anyone", label = "Count theirs", width = 106, tip = "Count another player's effect",
+        body = "Choose this for an effect that a target can only have once, whoever put it there. When another "
+            .. "player has already put it there, you do not need to cast it." },
+    { key = "mine", label = "Ignore theirs", width = 106, tip = "Only count your own effect",
+        body = "Choose this for an effect that every player puts on a target separately, such as a bleed. Another "
+            .. "player's effect does not replace yours, so you still need to cast it." },
+}
+
+-- The two groups a skill can fall into, by who its effect goes on.
+local GROUPS = {
+    { key = "offensive", title = "All offensive skills", name = "offensive skills", one = "Offensive skill",
+        word = "Offensive",
+        about = "Offensive skills are the ones you use on enemies.", used = "on enemies" },
+    { key = "defensive", title = "All defensive skills", name = "defensive skills", one = "Defensive skill",
+        word = "Defensive",
+        about = "Defensive skills are the ones you use on yourself or on friends.",
+        used = "on yourself or on friends" },
+}
+local GROUP_BY_KEY = {}
+for i = 1, #GROUPS do
+    GROUP_BY_KEY[GROUPS[i].key] = GROUPS[i]
+end
+
+-- Why a skill has an icon or has none: a sentence for the pane. The mouse on
+-- it adds what can be done about it.
 local WHY = {
-    you = { "You chose Always." },
-    ignored = { "You chose Never." },
+    you = "You chose Always, so it has an icon.",
+    ignored = "You chose Never, so it has no icon.",
     seen = {
-        debuff = { "Its debuff has been seen on an enemy.", "Its debuff has been read off an enemy." },
-        buff = { "Its buff has been seen on you.", "Its buff has been read off you." },
+        debuff = "It has an icon because the addon has seen its debuff on an enemy.",
+        buff = "It has an icon because the addon has seen its buff on you.",
     },
-    ["built-in"] = { "A well known area debuff." },
+    ["built-in"] = "It has an icon because it is a well-known debuff that hits every enemy around you.",
     tooltip = {
-        debuff = { "Cast on enemies, and its tooltip gives a duration.",
-            "It can be cast on enemies and its tooltip mentions a duration." },
-        buff = { "Cast on you or friends, and its tooltip gives a duration.",
-            "It is cast on yourself or on friends and its tooltip mentions a duration." },
+        debuff = "It has an icon because its tooltip describes a debuff that lasts for a while.",
+        buff = "It has an icon because its tooltip describes a buff that lasts for a while.",
+    },
+    advice = {
+        chosen = " Choose Auto to let the addon decide again.",
+        shown = " Choose Never if you do not want an icon on it.",
+        hidden = " Choose Always if you want it to have one anyway.",
     },
 }
 
--- Where a figure comes from: a few words beside its box, and a sentence for the tooltip.
+-- Where a figure comes from: a sentence under its box, which the tooltip of the box repeats.
 local DURATION_WHY = {
-    you = { "You set this.", "You set this." },
-    seen = { "Seen in play.", "Read off the effect itself in play." },
-    tooltip = { "From the tooltip.", "Taken from the skill's tooltip." },
-    guess = { "A guess so far.", "A guess: nothing better is known yet." },
+    you = "You set this yourself.",
+    seen = "The addon saw the effect last this long.",
+    tooltip = "The addon read this from the skill's tooltip.",
+    guess = "The addon is guessing until it sees the effect.",
 }
 
--- What was seen on a unit is the weakest of them: the effect may go higher
+-- What was seen on a target is the weakest of them: the effect may go higher
 -- than it has been seen to.
 local STACKS_WHY = {
-    you = { "You set this.", "You set this." },
-    tooltip = { "From the tooltip.", "Taken from the skill's tooltip." },
-    game = { "The game's own figure.", "The game's own figure for the skill." },
-    seen = { "The most seen so far.", "The most seen on a unit so far, so the effect may go higher." },
+    you = "You set this yourself.",
+    tooltip = "The addon read this from the skill's tooltip.",
+    game = "The game gives this number for the skill.",
+    seen = "The addon has seen this many. It may go higher.",
 }
+
+local NO_KINDS = {}
+
+-- Why Add target could not add anything: what /se immune says then, in a sentence.
+local MARK_WHY = {
+    target = "Target an enemy first, then click Add target.",
+    player = "Your target is a player. Only creatures can be added.",
+    hidden = "The game is hiding what your target is during this fight. Try again after the fight.",
+}
+local MARK_UNSAID = "Your target could not be added." -- for a reason this panel has no words for
+
+local IMMUNE_ROOM = 120 -- letters of names in the pane: three lines of it, also in a font a third wider
+local IMMUNE_NAMED = 6 -- at most this many names of either sort are tried
+local IMMUNE_LISTED = 30 -- enemies named in the tooltip
+
+-- What the Skills tab works out about a skill, and what it changes for one:
+-- the pane for one skill and the pane for a group both go through these.
+local Skill = {}
+
+--- The choice a skill is on for "Show an icon".
+function Skill.Show(info)
+    local user = ns.db.spells[info.name]
+    if user and user.track == true then
+        return "always"
+    elseif user and user.track == false then
+        return "never"
+    end
+    return "auto"
+end
+
+--- Who a skill's effect goes on: "target", "all" or "self".
+function Skill.On(info)
+    local _, area, _, _, kind = Spells:Tracking(info)
+    return kind == "buff" and "self" or (area and "all" or "target")
+end
+
+--- Whether another player's effect counts for a skill: "anyone" or "mine".
+function Skill.Shared(info)
+    return Spells:Shared(info) and "anyone" or "mine"
+end
+
+--- The group a skill falls into: "defensive" when its effect goes on you or a
+--- friend, "offensive" when it goes on enemies.
+function Skill.Group(info)
+    local _, _, _, _, kind = Spells:Tracking(info)
+    return kind == "buff" and "defensive" or "offensive"
+end
+
+--- True for a skill whose effect nobody else can put on you: one that only
+--- ever goes on its caster.
+function Skill.Alone(info)
+    local _, _, _, _, kind = Spells:Tracking(info)
+    return kind == "buff" and info.selfOnly == true
+end
+
+--- Gives a skill an icon always or never, or leaves that to the addon again.
+function Skill.SetShow(info, key)
+    local choice = Spells:Choice(info.name)
+    if key == "always" then
+        choice.track = true
+    elseif key == "never" then
+        choice.track = false
+        Tracker:Forget(info.name)
+    else
+        choice.track = nil
+    end
+    Spells:Tidy(info.name)
+end
+
+--- Says who a skill's effect goes on.
+function Skill.SetOn(info, key)
+    local _, _, _, _, kind = Spells:Tracking(info)
+    local wanted = key == "self" and "buff" or "debuff"
+    local choice = Spells:Choice(info.name)
+    if wanted ~= kind then
+        -- The same as /se buff and /se debuff: saying which kind it is also turns it on.
+        choice.kind, choice.track = wanted, true
+        Tracker:Forget(info.name)
+    end
+    if wanted == "debuff" then
+        choice.aoe = key == "all"
+    end
+end
+
+--- Says whether another player's effect counts for a skill: the same as
+--- /se anyone and /se mine. A choice of yours is only kept while it differs
+--- from what the addon makes of the skill by itself, so picking that again
+--- is going back.
+function Skill.SetShared(info, key)
+    local anyone = key == "anyone"
+    local choice = Spells:Choice(info.name)
+    choice.shared = nil
+    if Spells:Shared(info) ~= anyone then
+        choice.shared = anyone
+    end
+    Spells:Tidy(info.name)
+    if not anyone then
+        Tracker:ForgetTheirs(info.name)
+    end
+end
+
+--- "both" for two of something, "all 14" for more.
+function Skill.AllOf(count)
+    return count == 2 and "both" or ("all " .. count)
+end
+
+--- The skills of a list as the object of a sentence: the name of a single
+--- one, or else "both" or "all 14", with `name` after it where one is given.
+function Skill.Whom(list, name)
+    if #list == 1 then
+        return list[1].name
+    end
+    return Skill.AllOf(#list) .. (name and (" " .. name) or "")
+end
+
+--- How the skills of a list are spread over a setting's choices; `value` says
+--- which choice a skill is on. Returns the choice they all share, or nil where
+--- they differ, and the spread as a sentence: "9 are on Auto, 4 on Always and
+--- 1 on Never."
+function Skill.Spread(list, choices, value)
+    local counts, same = {}, nil
+    for i = 1, #list do
+        local key = value(list[i])
+        counts[key] = (counts[key] or 0) + 1
+        if i == 1 then
+            same = key
+        elseif same ~= key then
+            same = false
+        end
+    end
+    local parts = {}
+    for i = 1, #choices do
+        local count = counts[choices[i].key]
+        if count then
+            local on = #parts > 0 and " on " or (count == 1 and " is on " or " are on ")
+            parts[#parts + 1] = count .. on .. choices[i].label
+        end
+    end
+    local n = #parts
+    return same or nil, (n > 1 and (concat(parts, ", ", 1, n - 1) .. " and ") or "") .. parts[n] .. "."
+end
 
 --- What the box for an effect's stacks says when the mouse is on it.
 local function StacksTip(info)
     local user = ns.db.spells[info.name]
     local auto = " or empty the box to let the addon work it out."
     if Spells:Stacking(info) then
-        local why = STACKS_WHY[Spells:StackingSource(info)]
-        return (why and why[2] or "By what is known of the skill.")
-            .. " A unit only counts as having the effect once it has that many stacks: until then the skill stays "
-            .. "worth casting. Type another number to change it, 1 if the effect does not stack," .. auto
+        return (STACKS_WHY[Spells:StackingSource(info)] or "The addon worked this out from what it knows of the skill.")
+            .. " The icon shows the skill as worth casting until all of these stacks are there. To change the number, "
+            .. "type another one, type 1 if the effect does not stack," .. auto
     elseif user and type(user.stacks) == "number" then
-        return "You set this: the effect does not stack. Type the most stacks it can have to change it," .. auto
+        return "You set this yourself: the effect does not stack. To change it, type the most stacks it can have," .. auto
     end
-    return "Nothing says that the effect stacks. If it does, type the most stacks it can have."
+    return "The addon found nothing that says this effect stacks. If it does, type the most stacks it can have."
 end
 
---- Where the answer to "does another player's copy count" comes from.
-local function SharedSource(info)
+--- What the pane says under the two buttons for other players: what the
+--- choice does for this skill, and who made it, you or the addon.
+local function SharedText(info, key, kind)
     local user = ns.db.spells[info.name]
-    if user and user.shared ~= nil then
-        return "You set this."
-    elseif info.described ~= true then
-        return "The tooltip could not be read."
+    local chosen = user and user.shared ~= nil
+    if not chosen and info.described ~= true then
+        return "The addon could not read this skill's tooltip, so to be safe the icon only looks for your own "
+            .. info.name .. "."
     end
-    return "From the tooltip."
+    local text
+    if key == "anyone" then
+        text = "The icon treats another player's " .. info.name .. " on " .. (kind == "buff" and "you" or "the enemy")
+            .. " like your own."
+    else
+        text = "The icon ignores another player's " .. info.name .. " and only looks for yours."
+    end
+    return text .. (chosen and " You chose this." or " The addon read this from its tooltip.")
 end
 
---- And what the tick for it says when the mouse is on it.
-local function SharedTip(info, shared)
-    local user = ns.db.spells[info.name]
-    local source = " This is what the addon made of the skill's tooltip."
-    if user and user.shared ~= nil then
-        source = " You set this."
-    elseif info.described ~= true then
-        source = " The skill's tooltip could not be read, so its effect is taken to be yours alone."
-    end
-    if shared then
-        return "A unit carries the effect only once, whoever casts it, so another player's copy counts like your own. "
-            .. "Untick this if every caster has their own, as with a bleed." .. source
-    end
-    return "Only an effect you put there yourself counts. Tick this if a unit carries the effect only once, whoever "
-        .. "casts it, so that another player's copy counts like your own." .. source
-end
-
-local NO_KINDS = {}
-
--- Why Add target could not add anything: what /se immune says then, in short.
-local MARK_WHY = {
-    target = "Target the creature first.",
-    player = "That is a player. Only creatures can be added.",
-    hidden = "The game will not say what kind of creature that is right now. Try again after the fight.",
-}
-local MARK_UNSAID = "That could not be added." -- for a reason this panel has no words for
-
-local IMMUNE_ROOM = 80 -- letters of kinds in the pane: three lines of it, also in a font a third wider
-local IMMUNE_NAMED = 6 -- at most this many names of either sort are tried
-local IMMUNE_LISTED = 30 -- kinds named in the tooltip
-
---- The first `shown` names of a list of kinds, and how many it leaves out:
+--- The first `shown` names of a list of enemies, and how many it leaves out:
 --- "Fire Elemental, Rock Elemental and 3 more".
 local function Named(list, shown)
     local names = {}
@@ -1997,13 +2154,12 @@ local function Named(list, shown)
     return concat(names, ", ") .. (more > 0 and (" and " .. more .. " more") or "")
 end
 
---- The kinds of creature a skill does nothing to, as a line for the pane: the
---- ones the addon counts on first, then the ones the game called immune only
---- once. As many names as there is room for, the ones it counts on before
---- the others.
+--- The enemies a skill does nothing to, as a line for the pane: the ones the
+--- addon leaves out first, then the ones the game called immune only once. As
+--- many names as there is room for, the ones it leaves out before the others.
 local function ImmuneLine(kinds)
     if #kinds == 0 then
-        return "None known yet."
+        return "The addon has not found an enemy that is immune to this skill."
     end
     local sure, once = {}, {}
     for i = 1, #kinds do
@@ -2012,9 +2168,9 @@ local function ImmuneLine(kinds)
     end
     local a, b = min(#sure, IMMUNE_NAMED), min(#once, IMMUNE_NAMED)
     while true do
-        local line = a > 0 and (Named(sure, a) .. ".") or ""
+        local line = a > 0 and ("Immune: " .. Named(sure, a) .. ".") or ""
         if b > 0 then
-            line = line .. (a > 0 and " " or "") .. "Heard once: " .. Named(once, b) .. "."
+            line = line .. (a > 0 and " " or "") .. "Seen immune once so far: " .. Named(once, b) .. "."
         end
         if #line <= IMMUNE_ROOM or (a <= 1 and b <= 1) then
             return line
@@ -2027,12 +2183,12 @@ local function ImmuneLine(kinds)
     end
 end
 
---- The same as lines for a tooltip: every kind, and how the addon came by it.
+--- The same as lines for a tooltip: every enemy, and how the addon came by it.
 local function ImmuneLines(kinds)
     local lines = {}
     for i = 1, min(#kinds, IMMUNE_LISTED) do
         local kind = kinds[i]
-        lines[i] = kind.name .. (kind.told and " (you said so)" or (kind.sure and "" or " (heard once)"))
+        lines[i] = kind.name .. (kind.told and " (added by you)" or (kind.sure and "" or " (seen once so far)"))
     end
     if #kinds > IMMUNE_LISTED then
         lines[#lines + 1] = "and " .. (#kinds - IMMUNE_LISTED) .. " more"
@@ -2076,43 +2232,53 @@ local function ParseSpan(text)
     return floor(value * each + 0.5)
 end
 
---- Why a spell has an icon or has none: a sentence, and a longer one.
+--- Why a skill has an icon or has none: a sentence, and the same with what
+--- can be done about it.
 local function WhyText(info, tracked, source, kind)
     local why = WHY[source]
-    if why and not why[1] then
+    if type(why) == "table" then
         why = why[kind]
     end
-    if why then
-        return why[1], why[2] or why[1]
+    if not why then
+        local casts, hits = Spells:Record(info.name, kind)
+        casts, hits = floor(casts + 0.5), floor(hits + 0.5)
+        if source == "learned" then
+            why = "It has an icon because " .. hits .. " of your " .. casts .. " casts left an effect behind."
+        elseif source == "demoted" then
+            why = "It lost its icon because " .. (casts - hits) .. " of your " .. casts
+                .. " casts left no effect behind."
+        else
+            why = "It has no icon because it does not seem to leave a buff or a debuff behind."
+        end
     end
-    local casts, hits = Spells:Record(info.name, kind)
-    casts, hits = floor(casts + 0.5), floor(hits + 0.5)
-    if source == "learned" then
-        return hits .. " of " .. casts .. " casts left an effect behind.",
-            "A new effect of yours followed " .. hits .. " of " .. casts .. " casts."
-    elseif source == "demoted" then
-        return "Nothing followed " .. (casts - hits) .. " of " .. casts .. " casts, so it lost its icon.",
-            "No new effect of yours followed " .. (casts - hits) .. " of " .. casts
-                .. " casts, so it lost its icon. Pick Always to give it back."
-    end
-    return "It does not look like it leaves a status effect.",
-        "It does not look like it leaves a status effect. Pick Always if it does."
+    local advice = (source == "you" or source == "ignored") and WHY.advice.chosen
+        or (tracked and WHY.advice.shown or WHY.advice.hidden)
+    return why, why .. advice
 end
 
---- A spell in a few words, for its line in the list: who its effect is judged
---- on and how long that lasts, or that it has no icon.
+--- A skill in a few words, for its line in the list: what its effect is, who
+--- it goes on and how long it lasts, or that the skill has no icon.
 local function Summary(info)
-    local tracked, area, duration, _, kind = Spells:Tracking(info)
+    local tracked, _, duration = Spells:Tracking(info)
     if not tracked then
         return "No icon", false
     end
-    local on = ON_BY_KEY[kind == "buff" and "self" or (area and "all" or "target")]
-    return on.short .. ", " .. Short(duration), true
+    return ON_BY_KEY[Skill.On(info)].short .. ", " .. Short(duration), true
+end
+
+--- The same for the head of the pane, with the group the skill falls into.
+local function Headline(info)
+    local tracked, _, duration = Spells:Tracking(info)
+    local group = GROUP_BY_KEY[Skill.Group(info)]
+    if not tracked then
+        return group.one .. " with no icon"
+    end
+    return group.word .. ": " .. ON_BY_KEY[Skill.On(info)].words .. ", " .. Short(duration)
 end
 
 --- Takes your own choices for a skill away again. What the addon is following
 --- of its effect stays, like what it learned in play, except another player's
---- copy that only counted because of those choices. `info` is nil for a skill
+--- effect that only counted because of those choices. `info` is nil for a skill
 --- that is off the bars, where nothing says what its choices decided.
 local function Unchoose(name, info)
     local counted = info == nil or Spells:Shared(info)
@@ -2122,18 +2288,9 @@ local function Unchoose(name, info)
     end
 end
 
---- One line of the list: the skill's picture, its name, and how it is treated.
-local function BuildListRow(view, page, index)
-    local row = CreateFrame("Button", nil, page)
-    row:SetSize(L.listWidth, L.rowHeight)
-    row:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft, L.listTop - (index - 1) * L.rowHeight)
-    row:Hide()
-
-    if index % 2 == 0 then
-        local stripe = row:CreateTexture(nil, "BACKGROUND")
-        stripe:SetAllPoints(row)
-        stripe:SetColorTexture(1, 1, 1, 0.04)
-    end
+--- The furniture every line of the list has: a tint and a gold bar for the
+--- line that is picked, and a glow under the mouse.
+local function LineDress(row)
     local chosen = row:CreateTexture(nil, "BORDER")
     chosen:SetAllPoints(row)
     chosen:SetColorTexture(0.24, 0.2, 0.08, 0.9)
@@ -2145,6 +2302,22 @@ local function BuildListRow(view, page, index)
     local glow = row:CreateTexture(nil, "HIGHLIGHT")
     glow:SetAllPoints(row)
     glow:SetColorTexture(1, 1, 1, 0.08)
+    return chosen, bar
+end
+
+--- One line of the list: the skill's picture, its name, and how it is treated.
+local function BuildListRow(view, page, index)
+    local row = CreateFrame("Button", nil, page)
+    row:SetSize(L.listWidth, L.rowHeight)
+    row:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft, L.listTop - (L.groups + index - 1) * L.rowHeight)
+    row:Hide()
+
+    if index % 2 == 0 then
+        local stripe = row:CreateTexture(nil, "BACKGROUND")
+        stripe:SetAllPoints(row)
+        stripe:SetColorTexture(1, 1, 1, 0.04)
+    end
+    local chosen, bar = LineDress(row)
 
     local icon = row:CreateTexture(nil, "ARTWORK")
     icon:SetSize(LIST_ICON, LIST_ICON)
@@ -2164,8 +2337,9 @@ local function BuildListRow(view, page, index)
         end
     end)
 
-    --- Shows a spell in this line, or nothing.
-    function row.Bind(info, selected)
+    --- Shows a skill in this line, or nothing. `selected` marks the one the
+    --- pane is about, and `member` one of the group that is picked instead.
+    function row.Bind(info, selected, member)
         row.info = info
         Shown(row, info ~= nil)
         if not info then
@@ -2187,22 +2361,90 @@ local function BuildListRow(view, page, index)
         else
             status:SetTextColor(0.5, 0.5, 0.5)
         end
+        row.selected, row.member = selected, member
+        Shown(chosen, selected)
+        Shown(bar, selected or member)
+        bar:SetAlpha(selected and 1 or 0.55)
+    end
+
+    row.icon, row.name, row.status, row.chosen, row.bar = icon, name, status, chosen, bar
+    return row
+end
+
+--- One of the two lines at the head of the list that stand for a whole group:
+--- four of its skills' own pictures as one square, what the group is called,
+--- and how many skills a click changes at once.
+local function BuildGroupRow(view, page, index, group)
+    local row = CreateFrame("Button", nil, page)
+    row:SetSize(L.listWidth, L.rowHeight)
+    row:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft, L.listTop - (index - 1) * L.rowHeight)
+
+    local back = row:CreateTexture(nil, "BACKGROUND")
+    back:SetAllPoints(row)
+    back:SetColorTexture(1, 1, 1, 0.09)
+    local chosen, bar = LineDress(row)
+
+    local faces = {}
+    for i = 1, 4 do
+        local face = row:CreateTexture(nil, "ARTWORK")
+        face:SetSize(GROUP_FACE, GROUP_FACE)
+        face:SetPoint("TOPLEFT", row, "TOPLEFT", 8 + ((i - 1) % 2) * (GROUP_FACE + 2),
+            -(L.rowHeight - LIST_ICON) / 2 - floor((i - 1) / 2) * (GROUP_FACE + 2))
+        Try(face, "SetTexCoord", 0.07, 0.93, 0.07, 0.93)
+        faces[i] = face
+    end
+
+    local textLeft = 8 + LIST_ICON + 8
+    local room = L.listWidth - textLeft - 6
+    local title = Text(row, "GameFontNormal", group.title)
+    title:SetPoint("TOPLEFT", row, "TOPLEFT", textLeft, -4)
+    Fit(title, room)
+    local status = Text(row, "GameFontHighlightSmall")
+    status:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", textLeft, 4)
+
+    OnClick(row, function()
+        if row.enabled then
+            view.SelectGroup(group.key)
+        end
+    end)
+    Tip(row, group.title, group.about .. " Click here to change a setting for all of them at once.")
+
+    --- Shows the group's skills in this line. A group of fewer than two has
+    --- nothing to change at once, and is greyed out.
+    function row.Bind(members, selected)
+        local count = #members
+        row.count, row.enabled = count, count >= 2
+        for i = 1, #faces do
+            Shown(faces[i], members[i] ~= nil)
+            if members[i] then
+                Wear(faces[i], members[i])
+            end
+        end
+        if count >= 2 then
+            Say(status, "Change " .. Skill.AllOf(count) .. " at once", room)
+        elseif count == 1 then
+            Say(status, "Only 1 is on your action bars", room)
+        else
+            Say(status, "None are on your action bars", room)
+        end
+        Dim(row, not row.enabled)
         row.selected = selected
         Shown(chosen, selected)
         Shown(bar, selected)
     end
 
-    row.icon, row.name, row.status, row.chosen = icon, name, status, chosen
+    row.title, row.status, row.faces, row.chosen = title, status, faces, chosen
     return row
 end
 
---- Everything about one spell: whether it gets an icon and why, who its effect
---- is judged on, how long that lasts, how often it stacks, whether another
---- player's copy counts, and which kinds of creature it does nothing to.
+--- Everything about one skill: whether it gets an icon and why, who its effect
+--- goes on, how long that lasts, how often it stacks, whether another player's
+--- effect counts, and which enemies it does nothing to. Every setting is a row:
+--- its name and its control on one line, and under them, across the pane, a
+--- sentence that says what the setting is doing now and who decided.
 local function BuildPane(view, page)
     local width = L.right - L.paneLeft
     local control = L.paneControl - L.paneLeft -- where the controls start, from the pane's left edge
-    local wide = width - control
     local labelRoom = control - 8
 
     local pane = CreateFrame("Frame", nil, page)
@@ -2210,7 +2452,7 @@ local function BuildPane(view, page)
     pane:SetPoint("TOPLEFT", page, "TOPLEFT", L.paneLeft, L.listTop)
     pane:Hide()
 
-    -- Which spell it is.
+    -- Which skill it is.
     local icon = pane:CreateTexture(nil, "ARTWORK")
     icon:SetSize(PANE_ICON, PANE_ICON)
     icon:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, 0)
@@ -2225,7 +2467,7 @@ local function BuildPane(view, page)
     rule:SetSize(width, 1)
     rule:SetColorTexture(0.4, 0.4, 0.45, 1)
 
-    --- Says what is wrong with what was typed, beside the box it was typed
+    --- Says what is wrong with what was typed, under the box it was typed
     --- into, until it is put right.
     local function Complain(at, problem)
         pane.problem, pane.problemAt = problem, at
@@ -2238,8 +2480,9 @@ local function BuildPane(view, page)
 
     -- Whether it gets an icon.
     local showArea = RowLabel(pane, "Show an icon", 0, PANE_ROWS.show, labelRoom,
-        "Auto lets the addon decide: a skill gets an icon when it looks like it leaves a status effect, and "
-            .. "loses it if casts keep leaving nothing behind.")
+        "Choose whether this skill gets a status icon on its action button. With Auto the addon decides: the skill "
+            .. "gets an icon if it leaves a buff or a debuff behind, and loses it again if your casts keep leaving "
+            .. "nothing.")
     local show = Segmented(pane, SHOW_CHOICES)
     show.frame:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.show)
     show.onPick = function(key)
@@ -2247,31 +2490,22 @@ local function BuildPane(view, page)
         if not info then
             return
         end
-        local choice = Spells:Choice(info.name)
-        if key == "always" then
-            choice.track = true
-        elseif key == "never" then
-            choice.track = false
-            Tracker:Forget(info.name)
-        else
-            choice.track = nil
-        end
-        Spells:Tidy(info.name)
+        Skill.SetShow(info, key)
         SpellChanged()
     end
-    local why = Note(pane, wide, 2)
-    why:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.show - 24)
-    -- The mouse on the reason spells it out.
+    local why = Note(pane, width, 2)
+    why:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.show - NOTE_DROP)
+    -- The mouse on the reason adds what can be done about it.
     local whyArea = CreateFrame("Frame", nil, pane)
-    whyArea:SetSize(wide, 26)
-    whyArea:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.show - 23)
+    whyArea:SetSize(width, 26)
+    whyArea:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.show - NOTE_DROP + 1)
     whyArea:EnableMouse(true)
     Tip(whyArea, nil)
 
-    -- Who its effect is judged on.
-    RowLabel(pane, "Lands on", 0, PANE_ROWS.on, labelRoom,
-        "Who the effect is looked for on. That decides what the icon can say: only a debuff judged on every "
-            .. "enemy can be on some of them and not on others.")
+    -- Who its effect goes on.
+    RowLabel(pane, "Affects", 0, PANE_ROWS.on, labelRoom,
+        "Choose who this skill's effect goes on, because that is who the icon checks: the enemy you have targeted, "
+            .. "every enemy in the fight, or you.")
     local on = Segmented(pane, ON_CHOICES)
     on.frame:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.on)
     on.onPick = function(key)
@@ -2279,21 +2513,11 @@ local function BuildPane(view, page)
         if not info then
             return
         end
-        local _, _, _, _, kind = Spells:Tracking(info)
-        local wanted = key == "self" and "buff" or "debuff"
-        local choice = Spells:Choice(info.name)
-        if wanted ~= kind then
-            -- The same as /se buff and /se debuff: saying which kind it is also turns it on.
-            choice.kind, choice.track = wanted, true
-            Tracker:Forget(info.name)
-        end
-        if wanted == "debuff" then
-            choice.aoe = key == "all"
-        end
+        Skill.SetOn(info, key)
         SpellChanged()
     end
-    local onNote = Note(pane, wide, 2)
-    onNote:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.on - 24)
+    local onNote = Note(pane, width, 2)
+    onNote:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.on - NOTE_DROP)
 
     -- How long the effect lasts.
     local function ApplyDuration(box)
@@ -2314,7 +2538,8 @@ local function BuildPane(view, page)
         else
             local seconds = ParseSpan(text)
             if not seconds or seconds < Spells.MIN_DURATION or seconds > Spells.MAX_DURATION then
-                Complain("lasts", "Type seconds, from " .. Spells.MIN_DURATION .. " to " .. Spells.MAX_DURATION .. ".")
+                Complain("lasts", "Type a number of seconds from " .. Spells.MIN_DURATION .. " to "
+                    .. Spells.MAX_DURATION .. ".")
                 return
             end
             Spells:Choice(info.name).duration = seconds
@@ -2325,8 +2550,9 @@ local function BuildPane(view, page)
     end
 
     RowLabel(pane, "Lasts", 0, PANE_ROWS.lasts, labelRoom,
-        "How long the effect is taken to last when it cannot be watched. Type a number of seconds to change it, "
-            .. "or empty the box to let the addon work it out.")
+        "This is how long the skill's effect lasts. The game hides the time left on an effect during a fight, so "
+            .. "the addon counts down from this number. Type a number of seconds to change it, or empty the box to "
+            .. "let the addon work it out.")
     local built, lasts = pcall(Input, pane, LASTS_BOX)
     if built and lasts then
         lasts:SetPoint("TOPLEFT", pane, "TOPLEFT", control + 1, PANE_ROWS.lasts)
@@ -2357,11 +2583,10 @@ local function BuildPane(view, page)
     else
         lasts = nil
     end
-    local lastsNote = Note(pane, wide - LASTS_BOX - 12, 2)
-    lastsNote:SetJustifyV("MIDDLE")
-    lastsNote:SetPoint("LEFT", pane, "TOPLEFT", control + LASTS_BOX + 12, PANE_ROWS.lasts - 10)
+    local lastsNote = Note(pane, width)
+    lastsNote:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.lasts - NOTE_DROP)
 
-    -- How many times over the effect goes on one unit: the same as /se stacks.
+    -- How many times over the effect goes on one target: the same as /se stacks.
     local function ApplyStacks(box)
         local info = pane.info
         if not info then
@@ -2390,8 +2615,8 @@ local function BuildPane(view, page)
     end
 
     RowLabel(pane, "Stacks up to", 0, PANE_ROWS.stacks, labelRoom,
-        "How many times over the effect goes on one unit. A unit only counts as having the effect once it "
-            .. "has that many stacks: until then the skill stays worth casting.")
+        "This is the most stacks the skill's effect can have. The icon shows the skill as worth casting until all "
+            .. "of them are there.")
     local stacks
     built, stacks = pcall(Input, pane, STACKS_BOX)
     if built and stacks then
@@ -2426,54 +2651,42 @@ local function BuildPane(view, page)
     else
         stacks = nil
     end
-    local stacksNote = Note(pane, wide - STACKS_BOX - 12, 2)
-    stacksNote:SetJustifyV("MIDDLE")
-    stacksNote:SetPoint("LEFT", pane, "TOPLEFT", control + STACKS_BOX + 12, PANE_ROWS.stacks - 10)
+    local stacksNote = Note(pane, width)
+    stacksNote:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.stacks - NOTE_DROP)
 
-    -- Whether another player's copy of the effect counts: the same as /se anyone
-    -- and /se mine. A choice of yours is only kept while it differs from what
-    -- the addon makes of the spell by itself, so ticking it back is going back.
+    -- Whether another player's effect counts: the same as /se anyone and /se mine.
     RowLabel(pane, "Other players", 0, PANE_ROWS.shared, labelRoom,
-        "Whether the same effect counts when someone else put it there. It does for an effect a unit carries "
-            .. "only once, whoever casts it, and not for one every caster has their own of, such as a bleed.")
-    local shared = TickBox(pane, "Their copy counts too")
-    shared.frame:SetPoint("LEFT", pane, "TOPLEFT", control, PANE_ROWS.shared - 10)
-    shared.Fit(wide - Wide(shared.frame, 30) - 6)
-    shared.onChange = function(ticked)
+        "Choose whether the icon takes notice when another player has put this skill's effect on your target. "
+            .. "Count theirs for an effect a target can only have once, such as a shout or an armor reduction. "
+            .. "Ignore theirs for an effect that every player applies separately, such as a bleed.")
+    local shared = Segmented(pane, SHARED_CHOICES)
+    shared.frame:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.shared)
+    shared.onPick = function(key)
         local info = pane.info
         if not info then
             return
         end
-        local choice = Spells:Choice(info.name)
-        choice.shared = nil
-        if Spells:Shared(info) ~= ticked then
-            choice.shared = ticked
-        end
-        Spells:Tidy(info.name)
-        if not ticked then
-            Tracker:ForgetTheirs(info.name)
-        end
+        Skill.SetShared(info, key)
         SpellChanged()
     end
-    Tip(shared.frame, "Another player's copy counts")
-    local sharedNote = Note(pane, wide, 2)
-    sharedNote:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.shared - 24)
+    local sharedNote = Note(pane, width, 3)
+    sharedNote:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.shared - NOTE_DROP)
 
-    -- Which kinds of creature the skill does nothing to: what the addon has
-    -- found of that in play, and the two things /se immune does.
+    -- Which enemies the skill does nothing to: what the addon has found of
+    -- that in play, and the two things /se immune does.
     local immuneLabel = RowLabel(pane, "Immune", 0, PANE_ROWS.immune, labelRoom,
-        "Kinds of creature this skill does nothing to. The addon notes a kind when the game says \"Immune\" in a "
-            .. "fight, and counts on it from the second time: a creature of that kind is then left out when the "
-            .. "skill is judged.")
+        "These are the enemies this skill does not work on. When the game says \"Immune\" after one of your "
+            .. "casts, the addon remembers what kind of enemy that was. From the second time on, the icon stops "
+            .. "asking you to cast the skill on enemies of that kind.")
     local mark = PushButton(pane, MARK_WIDTH, 22, "Add target")
     mark:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.immune + 1)
-    -- The kinds, under the two buttons like the note of any other row. The
-    -- mouse on them lists every one.
-    local immuneNote = Note(pane, wide, 3)
-    immuneNote:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.immune - 25)
+    -- The enemies, under the two buttons like the sentence of any other row.
+    -- The mouse on them lists every one.
+    local immuneNote = Note(pane, width, 3)
+    immuneNote:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.immune - NOTE_DROP - 1)
     local immuneArea = CreateFrame("Frame", nil, pane)
-    immuneArea:SetSize(wide, 36)
-    immuneArea:SetPoint("TOPLEFT", pane, "TOPLEFT", control, PANE_ROWS.immune - 24)
+    immuneArea:SetSize(width, 38)
+    immuneArea:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, PANE_ROWS.immune - NOTE_DROP)
     immuneArea:EnableMouse(true)
     Tip(immuneArea, nil)
 
@@ -2482,33 +2695,33 @@ local function BuildPane(view, page)
         if not info then
             return
         end
-        local added, why = ns.MarkImmune(info.name)
+        local added, problem = ns.MarkImmune(info.name)
         if added then
             Settled()
         else
-            pane.problem, pane.problemAt = MARK_WHY[why] or MARK_UNSAID, "immune"
+            pane.problem, pane.problemAt = MARK_WHY[problem] or MARK_UNSAID, "immune"
         end
         Options.RefreshAll()
     end)
-    Tip(mark, "Add target", "Says that the kind of creature you have targeted is immune to this skill. The same as "
-        .. "/se immune with the skill's name.")
+    Tip(mark, "Add target", "Tells the addon that the enemy you have targeted, and every enemy of the same kind, is "
+        .. "immune to this skill. Typing /se immune and the skill's name does the same.")
 
-    local forget = PushButton(pane, FORGET_WIDTH, 22, "Forget all")
+    local forget = PushButton(pane, FORGET_WIDTH, 22, "Clear list")
     forget:SetPoint("TOPLEFT", pane, "TOPLEFT", control + MARK_WIDTH + 6, PANE_ROWS.immune + 1)
     OnClick(forget, function()
         local info = pane.info
         if not info then
             return
         end
-        local name = info.name
-        view.Ask("immune", "Forget the creatures immune to " .. name .. "?", "Forget", function()
+        local skill = info.name
+        view.Ask("immune", "Clear the list of enemies immune to " .. skill .. "?", "Clear", function()
             Settled()
-            ns.ForgetImmune(name)
+            ns.ForgetImmune(skill)
             Options.RefreshAll()
         end)
     end)
-    Tip(forget, "Forget all", "Forgets every kind of creature listed for this skill, also the ones you added "
-        .. "yourself. It asks first.")
+    Tip(forget, "Clear list", "Empties the list of enemies that are immune to this skill, including the ones you "
+        .. "added yourself. You are asked to confirm first.")
 
     -- Back to what the addon works out by itself.
     local reset = PushButton(pane, RESET_WIDTH, 22, "Reset this skill")
@@ -2522,13 +2735,13 @@ local function BuildPane(view, page)
         end
     end)
     Tip(reset, "Reset this skill",
-        "Forgets your own choices for this skill, so that the addon works it out by itself again. What it has "
-            .. "learned about the skill in play stays.")
+        "Undoes every change you made to this skill, so that the addon decides everything about it again. What the "
+            .. "addon has learned about the skill in your fights is kept.")
     local resetNote = Note(pane, width - RESET_WIDTH - 12, 2)
     resetNote:SetJustifyV("MIDDLE")
     resetNote:SetPoint("LEFT", pane, "BOTTOMLEFT", 0, 15)
 
-    --- Shows a spell in the pane, or puts the pane away.
+    --- Shows a skill in the pane, or puts the pane away.
     function pane.Bind(info)
         local name1, name2 = pane.info and pane.info.name, info and info.name
         if name1 ~= name2 then
@@ -2547,34 +2760,28 @@ local function BuildPane(view, page)
             return
         end
 
-        local tracked, area, duration, source, kind = Spells:Tracking(info)
+        local tracked, _, duration, source, kind = Spells:Tracking(info)
         local user = ns.db.spells[info.name]
 
         Wear(icon, info)
         Say(name, info.name, nameRoom)
-        summary.Tell((Summary(info)))
+        summary.Tell(Headline(info))
 
-        local pick = "auto"
-        if user and user.track == true then
-            pick = "always"
-        elseif user and user.track == false then
-            pick = "never"
-        end
-        show.Set(pick)
+        show.Set(Skill.Show(info))
         local short, long = WhyText(info, tracked, source, kind)
         why.Tell(short)
         whyArea.tipTitle, whyArea.tipBody = info.name, long
 
-        -- Who it is judged on, how long it lasts, how often it stacks and whose
-        -- copy counts only matter once it has an icon.
+        -- Who its effect goes on, how long it lasts, how often it stacks and
+        -- whose effect counts only matter once it has an icon.
         on.Enable(tracked)
         if tracked then
-            local key = kind == "buff" and "self" or (area and "all" or "target")
+            local key = Skill.On(info)
             on.Set(key)
             onNote.Tell(ON_BY_KEY[key].note)
         else
             on.Set(nil)
-            onNote.Tell("The rest only matters for a skill that has an icon.")
+            onNote.Tell("This skill has no icon, so the settings below are not used.")
         end
 
         if lasts then
@@ -2585,15 +2792,15 @@ local function BuildPane(view, page)
                 lasts:SetText(tracked and Short(duration) or "")
             end
             local from = DURATION_WHY[Spells:DurationSource(info)]
-            lasts.tipBody = from[2]
+            lasts.tipBody = from
                 .. " Type a number of seconds to change it, or empty the box to let the addon work it out."
             if pane.problemAt == "lasts" then
                 lastsNote.Tell(pane.problem, BAD)
             else
-                lastsNote.Tell(tracked and from[1] or "")
+                lastsNote.Tell(tracked and from or "")
             end
         else
-            lastsNote.Tell(tracked and ("/se duration " .. info.name .. " <seconds>") or "")
+            lastsNote.Tell(tracked and ("To change it, type /se duration " .. info.name .. " <seconds> in chat.") or "")
         end
 
         if stacks then
@@ -2601,7 +2808,7 @@ local function BuildPane(view, page)
             stacks:EnableMouse(tracked)
             Dim(stacks, not tracked)
             local most = Spells:Stacking(info)
-            -- A dash, in grey, for an effect that goes on once: most do.
+            -- A dash, in grey, for an effect that does not stack: most do not.
             local once = not most and not (user and type(user.stacks) == "number")
             if not stacks:HasFocus() then
                 stacks:SetText(tracked and (most and tostring(most) or (once and "-" or "1")) or "")
@@ -2617,31 +2824,29 @@ local function BuildPane(view, page)
             elseif not tracked then
                 stacksNote.Tell("")
             elseif most then
-                local from = STACKS_WHY[Spells:StackingSource(info)]
-                stacksNote.Tell(from and from[1] or "")
+                stacksNote.Tell(STACKS_WHY[Spells:StackingSource(info)] or "")
             else
-                stacksNote.Tell(once and "Goes on once." or "You set this: it goes on once.")
+                stacksNote.Tell(once and "This effect does not stack."
+                    or "You set this yourself: the effect does not stack.")
             end
         else
-            stacksNote.Tell(tracked and ("/se stacks " .. info.name .. " <number>") or "")
+            stacksNote.Tell(tracked and ("To change it, type /se stacks " .. info.name .. " <number> in chat.") or "")
         end
 
         -- Nobody else can put on you what a skill only ever puts on its caster.
-        local alone = kind == "buff" and info.selfOnly == true
-        local sharable = tracked and not alone
+        local sharable = tracked and not Skill.Alone(info)
         shared.Enable(sharable)
         if sharable then
-            local anyone = Spells:Shared(info)
-            shared.Set(anyone)
-            shared.frame.tipBody = SharedTip(info, anyone)
-            sharedNote.Tell((anyone and "Counted whoever cast it. " or "Only your own counts. ") .. SharedSource(info))
+            local key = Skill.Shared(info)
+            shared.Set(key)
+            sharedNote.Tell(SharedText(info, key, kind))
         else
-            shared.Set(false)
-            shared.frame.tipBody = nil
-            sharedNote.Tell(tracked and "Only you can have this effect." or "")
+            shared.Set(nil)
+            sharedNote.Tell(tracked and ("No other player can put " .. info.name
+                .. " on you, so there is nothing to choose here.") or "")
         end
 
-        -- Only an effect that lands on enemies can meet an immune one.
+        -- Only an effect that goes on enemies can meet an immune one.
         local hostile = tracked and kind ~= "buff"
         local kinds = hostile and Spells:ImmuneKinds(info.name) or NO_KINDS
         Able(mark, hostile)
@@ -2651,7 +2856,7 @@ local function BuildPane(view, page)
         elseif not tracked then
             immuneNote.Tell("")
         elseif not hostile then
-            immuneNote.Tell("Only enemies can be immune.")
+            immuneNote.Tell("This skill is not used on enemies, so nothing can be immune to it.")
         else
             immuneNote.Tell(ImmuneLine(kinds))
         end
@@ -2660,7 +2865,7 @@ local function BuildPane(view, page)
 
         local yours = user ~= nil
         Able(reset, yours)
-        resetNote.Tell(yours and "You have changed this skill." or "Nothing changed: the addon decides.")
+        resetNote.Tell(yours and "You have changed this skill." or "You have not changed this skill.")
     end
 
     pane.icon, pane.name, pane.summary = icon, name, summary
@@ -2673,24 +2878,339 @@ local function BuildPane(view, page)
     return pane
 end
 
+--- What can be changed for a whole group of skills at once: whether they get an
+--- icon, who their effect goes on (offensive skills only), and whether another
+--- player's effect counts. A click changes every skill of the group. Where the
+--- skills are set differently, so that the click would wipe that out, it asks
+--- first, in the strip at the bottom.
+local function BuildGroupPane(view, page)
+    local width = L.right - L.paneLeft
+    local control = L.paneControl - L.paneLeft
+    local labelRoom = control - 8
+
+    local pane = CreateFrame("Frame", nil, page)
+    pane:SetSize(width, L.rows * L.rowHeight)
+    pane:SetPoint("TOPLEFT", page, "TOPLEFT", L.paneLeft, L.listTop)
+    pane:Hide()
+    pane.members, pane.sharable = {}, {}
+
+    -- Which group it is, and the skills in it by their own pictures.
+    local title = Text(pane, "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -2)
+    local summary = Note(pane, width)
+    summary:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -22)
+    local rule = pane:CreateTexture(nil, "ARTWORK")
+    rule:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -(PANE_ICON + 8))
+    rule:SetSize(width, 1)
+    rule:SetColorTexture(0.4, 0.4, 0.45, 1)
+
+    local perLine = floor((width + STRIP_GAP) / (STRIP_FACE + STRIP_GAP))
+    local strip = CreateFrame("Frame", nil, pane)
+    strip:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, -(PANE_ICON + 8) - 10)
+    strip:SetSize(width, STRIP_FACE)
+    strip:EnableMouse(true)
+    Tip(strip, nil)
+    local faces = {}
+    for i = 1, perLine * STRIP_LINES do
+        local face = strip:CreateTexture(nil, "ARTWORK")
+        face:SetSize(STRIP_FACE, STRIP_FACE)
+        face:SetPoint("TOPLEFT", strip, "TOPLEFT", ((i - 1) % perLine) * (STRIP_FACE + STRIP_GAP),
+            -floor((i - 1) / perLine) * (STRIP_FACE + STRIP_GAP))
+        Try(face, "SetTexCoord", 0.07, 0.93, 0.07, 0.93)
+        faces[i] = face
+    end
+    -- More skills than there are places: the last place says how many it leaves out.
+    local more = Label(strip, "ARTWORK", "GameFontHighlightSmall")
+    more:SetPoint("CENTER", faces[#faces], "CENTER", 0, 0)
+    more:Hide()
+
+    --- A setting's row: its name, its buttons, and a sentence under them.
+    local function Row(text, choices, body, lines)
+        local row = CreateFrame("Frame", nil, pane)
+        row:SetSize(width, NOTE_DROP + lines * 13)
+        local label = RowLabel(row, text, 0, 0, labelRoom, body)
+        local buttons = Segmented(row, choices)
+        buttons.frame:SetPoint("TOPLEFT", row, "TOPLEFT", control, 0)
+        local note = Note(row, width, lines)
+        note:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -NOTE_DROP)
+        row.label, row.buttons, row.note = label, buttons, note
+        return row
+    end
+
+    local showRow = Row("Show an icon", SHOW_CHOICES,
+        "Choose whether these skills get a status icon on their action buttons. With Auto the addon decides that "
+            .. "for each of them.", 2)
+    local onRow = Row("Affects", { ON_CHOICES[1], ON_CHOICES[2] },
+        "Choose whether the icons of these skills check the enemy you have targeted or every enemy in the fight.",
+        2)
+    local sharedRow = Row("Other players", SHARED_CHOICES,
+        "Choose whether the icons of these skills take notice when another player has put the same effect on "
+            .. "your target.", 3)
+    local rest = Note(pane, width, 4)
+
+    --- Changes one setting for every skill in `list`: at once where they all had
+    --- the same, since a click the other way undoes that, and after asking
+    --- where they are set differently, since a click wipes that out for good.
+    local function Bulk(what, key, same, list, apply)
+        if #list == 0 or same == key then
+            return
+        end
+        local group = GROUP_BY_KEY[pane.group]
+        local function Do()
+            for i = 1, #list do
+                apply(list[i], key)
+            end
+            SpellChanged()
+        end
+        if same ~= nil then
+            view.Unask("bulk")
+            Do()
+            return
+        end
+        local whom = Skill.Whom(list, group.name)
+        local question
+        if what == "show" then
+            question = "Set " .. whom .. " to " .. showRow.buttons.buttons[key].label:GetText() .. "?"
+        elseif what == "on" then
+            question = "Check " .. whom .. " on " .. (key == "all" and "every enemy" or "your target") .. "?"
+        else
+            question = (key == "anyone" and "Count" or "Ignore") .. " other players' effects for "
+                .. Skill.Whom(list, "skills") .. "?"
+        end
+        pane.pending = what
+        view.Ask("bulk", question, "Change", Do)
+        ns.Guard(view.Refresh)
+    end
+
+    showRow.buttons.onPick = function(key)
+        Bulk("show", key, pane.same.show, pane.members, Skill.SetShow)
+    end
+    onRow.buttons.onPick = function(key)
+        Bulk("on", key, pane.same.on, pane.members, Skill.SetOn)
+    end
+    sharedRow.buttons.onPick = function(key)
+        Bulk("shared", key, pane.same.shared, pane.sharable, Skill.SetShared)
+    end
+
+    -- Back to what the addon works out by itself, for all of them. It asks first.
+    local reset = PushButton(pane, RESET_WIDTH, 22, "Reset these skills")
+    reset:SetPoint("BOTTOMRIGHT", pane, "BOTTOMRIGHT", 0, 4)
+    OnClick(reset, function()
+        local list, group = pane.members, GROUP_BY_KEY[pane.group]
+        pane.pending = "reset"
+        view.Ask("bulk", "Undo your changes to " .. Skill.Whom(list, group.name) .. "?", "Reset", function()
+            for i = 1, #list do
+                if ns.db.spells[list[i].name] then
+                    Unchoose(list[i].name, list[i])
+                end
+            end
+            SpellChanged()
+        end)
+        ns.Guard(view.Refresh)
+    end)
+    Tip(reset, "Reset these skills",
+        "Undoes every change you made to the skills of this group, so that the addon decides everything about "
+            .. "them again. What the addon has learned about them in your fights is kept. You are asked to "
+            .. "confirm first.")
+    local resetNote = Note(pane, width - RESET_WIDTH - 12, 2)
+    resetNote:SetJustifyV("MIDDLE")
+    resetNote:SetPoint("LEFT", pane, "BOTTOMLEFT", 0, 15)
+
+    --- True while the question at the bottom is the one this row asked. It is
+    --- put away in many ways (an answer, Cancel, another question, another tab),
+    --- and none of them needs to tell the row.
+    local function Waiting(what)
+        return view.asking == "bulk" and pane.pending == what
+    end
+
+    --- What a row says under its buttons: that a question is waiting, how the
+    --- skills are spread where they differ, or what the choice they share does.
+    --- `out` is a sentence about the skills the row leaves out.
+    local function Tell(row, what, same, spread, count, uniform, out)
+        if Waiting(what) then
+            row.note.Tell("These skills differ. Answer the question at the bottom to change "
+                .. Skill.AllOf(count) .. ".", WARN)
+        elseif same == nil then
+            row.note.Tell(spread .. " Click a choice to set " .. Skill.AllOf(count) .. "." .. (out or ""))
+        else
+            row.note.Tell(uniform .. (out or ""))
+        end
+    end
+
+    --- Shows a group in the pane, or puts the pane away. `members` are the
+    --- skills on the bars that fall into it.
+    function pane.Bind(key, members)
+        local names = {}
+        for i = 1, #(members or NO_KINDS) do
+            names[i] = members[i].name
+        end
+        local signature = (key or "") .. "\n" .. concat(names, "\n")
+        if signature ~= pane.signature then
+            view.Unask("bulk") -- a question about the skills that were picked
+        end
+        pane.group, pane.signature = key, signature
+        Shown(pane, key ~= nil)
+        if not key then
+            pane.members, pane.sharable = {}, {}
+            return
+        end
+        local group = GROUP_BY_KEY[key]
+        local count = #members
+        pane.members = members
+
+        Say(title, group.title, width)
+        summary.Tell("You use these " .. count .. " skills " .. group.used .. ".")
+
+        -- The pictures: as many as there are places for, and how many more.
+        local places = #faces
+        local shown = count > places and places - 1 or count
+        for i = 1, places do
+            Shown(faces[i], i <= shown)
+            if i <= shown then
+                Wear(faces[i], members[i])
+            end
+        end
+        Shown(more, count > shown)
+        if count > shown then
+            Say(more, "+" .. (count - shown), STRIP_FACE)
+        end
+        local lines = floor((min(count, places) - 1) / perLine) + 1
+        strip:SetSize(width, lines * STRIP_FACE + (lines - 1) * STRIP_GAP)
+        strip.tipTitle, strip.tipLines = "The " .. count .. " " .. group.name, names
+
+        local same = {}
+        pane.same = same
+        local all = Skill.AllOf(count)
+        local top = -(PANE_ICON + 8) - 10 - (lines * STRIP_FACE + (lines - 1) * STRIP_GAP) - 12
+
+        -- Whether they get an icon.
+        local spread
+        same.show, spread = Skill.Spread(members, SHOW_CHOICES, Skill.Show)
+        showRow:ClearAllPoints()
+        showRow:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, top)
+        showRow.buttons.Set(same.show)
+        local first = all:sub(1, 1):upper() .. all:sub(2)
+        Tell(showRow, "show", same.show, spread, count,
+            same.show == "always" and (first .. " are on Always, so each of them has an icon.")
+            or same.show == "never" and (first .. " are on Never, so they have no icon.")
+            or (first .. " are on Auto, so the addon decides which of them get an icon."))
+        top = top - GROUP_STEP
+
+        -- Who their effect goes on: only enemies come one at a time or all together.
+        local offensive = key == "offensive"
+        Shown(onRow, offensive)
+        if offensive then
+            same.on, spread = Skill.Spread(members, ON_CHOICES, Skill.On)
+            onRow:ClearAllPoints()
+            onRow:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, top)
+            onRow.buttons.Set(same.on)
+            Tell(onRow, "on", same.on, spread, count, "For " .. all .. ", the icon checks "
+                .. (same.on == "all" and "every enemy in the fight." or "the enemy you have targeted."))
+            top = top - GROUP_STEP
+        end
+
+        -- Whether another player's effect counts, for the skills another player's effect can reach.
+        local sharable = {}
+        for i = 1, count do
+            if not Skill.Alone(members[i]) then
+                sharable[#sharable + 1] = members[i]
+            end
+        end
+        pane.sharable = sharable
+        sharedRow:ClearAllPoints()
+        sharedRow:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, top)
+        sharedRow.buttons.Enable(#sharable > 0)
+        if #sharable == 0 then
+            same.shared = nil
+            sharedRow.buttons.Set(nil)
+            sharedRow.note.Tell("No other player can put these effects on you, so there is nothing to choose here.")
+        else
+            same.shared, spread = Skill.Spread(sharable, SHARED_CHOICES, Skill.Shared)
+            sharedRow.buttons.Set(same.shared)
+            local whom = Skill.Whom(sharable)
+            local left = count - #sharable
+            local out = left > 0 and (" The other " .. (left == 1 and "one" or left)
+                .. " can only be cast on yourself.") or ""
+            Tell(sharedRow, "shared", same.shared, spread, #sharable, "For " .. whom .. ", "
+                .. (same.shared == "anyone" and "another player's effect is treated like your own."
+                    or "the icon only looks for your own effect."), out)
+        end
+        top = top - GROUP_STEP - 13
+
+        rest:ClearAllPoints()
+        rest:SetPoint("TOPLEFT", pane, "TOPLEFT", 0, top)
+        rest.Tell("How long an effect lasts, how high it stacks and which enemies are immune to it are different "
+            .. "for every skill. Click a skill in the list to change those.")
+
+        local changed = 0
+        for i = 1, count do
+            if ns.db.spells[members[i].name] then
+                changed = changed + 1
+            end
+        end
+        Able(reset, changed > 0)
+        if Waiting("reset") then
+            resetNote.Tell("Answer the question below.", WARN)
+        elseif changed > 0 then
+            resetNote.Tell("You have changed " .. changed .. " of these skills.")
+        else
+            resetNote.Tell("You have not changed any of them.")
+        end
+    end
+
+    pane.title, pane.summary, pane.strip, pane.faces, pane.more = title, summary, strip, faces, more
+    pane.show, pane.showNote, pane.showRow = showRow.buttons, showRow.note, showRow
+    pane.on, pane.onNote, pane.onRow = onRow.buttons, onRow.note, onRow
+    pane.shared, pane.sharedNote, pane.sharedRow = sharedRow.buttons, sharedRow.note, sharedRow
+    pane.rest, pane.reset, pane.resetNote = rest, reset, resetNote
+    return pane
+end
+
+--- The line at the bottom of the Skills tab: how many skills are on the bars,
+--- how many have an icon and how many carry a choice of yours.
+local function SkillsFoot(count, tracked, yours, more)
+    local text = (count == 1 and "1 skill is" or (count .. " skills are")) .. " on your bars. "
+    if tracked == 0 then
+        text = text .. "None has an icon"
+    else
+        text = text .. tracked .. (tracked == 1 and " has" or " have") .. " an icon"
+    end
+    if yours > 0 then
+        text = text .. " and you have changed " .. yours
+    end
+    return text .. "." .. (more and " Scroll for more." or "")
+end
+
 local function BuildSpells(view, page)
-    local list = { rows = {}, items = {}, offset = 0 }
+    local list = { rows = {}, groups = {}, items = {}, offset = 0 }
     view.spells = list
 
     local intro = Text(page, "GameFontHighlightSmall",
-        "The skills on your action bars. Pick one to see how the addon judges it, and to change what it got wrong.")
+        "Click a skill to see how the addon treats it and to change that. Click a group at the top of the list "
+            .. "to change all of its skills at once.")
     intro:SetPoint("TOPLEFT", page, "TOPLEFT", L.left, -8)
     intro:SetWidth(L.right - L.left)
     FitLines(intro, L.right - L.left, 2) -- the list starts under its second line
     list.intro = intro
 
-    for index = 1, L.rows do
+    -- The two groups at the head of the list stay where they are; the skills under them scroll.
+    for index = 1, #GROUPS do
+        list.groups[GROUPS[index].key] = BuildGroupRow(view, page, index, GROUPS[index])
+    end
+    local divider = page:CreateTexture(nil, "ARTWORK")
+    divider:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft, L.listTop - L.groups * L.rowHeight)
+    divider:SetSize(L.listWidth, 1)
+    divider:SetColorTexture(0.4, 0.4, 0.45, 1)
+    for index = 1, L.rows - L.groups do
         list.rows[index] = BuildListRow(view, page, index)
     end
+    local shown = #list.rows
     local pane = BuildPane(view, page)
     view.pane = pane
+    local groupPane = BuildGroupPane(view, page)
+    view.groupPane = groupPane
 
-    local empty = Text(page, "GameFontDisable", "No skills found on your action bars yet.")
+    local empty = Text(page, "GameFontDisable", "The addon has not found any skills on your action bars yet.")
     empty:SetPoint("TOPLEFT", page, "TOPLEFT", L.left, L.listTop - 8)
     Fit(empty, L.right - L.left)
     empty:Hide()
@@ -2699,8 +3219,8 @@ local function BuildSpells(view, page)
     -- A scroll bar of its own: the list is short, and this one cannot go missing.
     local setting = false
     local bar = CreateFrame("Slider", nil, page)
-    bar:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft + L.listWidth + 4, L.listTop)
-    bar:SetSize(6, L.rows * L.rowHeight)
+    bar:SetPoint("TOPLEFT", page, "TOPLEFT", L.listLeft + L.listWidth + 4, L.listTop - L.groups * L.rowHeight)
+    bar:SetSize(6, shown * L.rowHeight)
     bar:EnableMouse(true)
     bar:SetOrientation("VERTICAL")
     bar:SetMinMaxValues(0, 0)
@@ -2716,7 +3236,7 @@ local function BuildSpells(view, page)
     bar:Hide()
     list.bar = bar
 
-    --- The spell that is picked: the one last clicked while it is still on the
+    --- The skill that is picked: the one last clicked while it is still on the
     --- bars, or else the first of the list.
     local function Selected()
         local items = list.items
@@ -2731,14 +3251,44 @@ local function BuildSpells(view, page)
 
     local function Draw()
         local items = list.items
-        local last = max(0, #items - L.rows)
+        local last = max(0, #items - shown)
         list.offset = max(0, min(last, list.offset))
-        local selected = Selected()
-        for index = 1, L.rows do
-            local info = items[list.offset + index]
-            list.rows[index].Bind(info, info ~= nil and info == selected)
+
+        -- Which group each skill falls into. A group that is picked stays picked
+        -- while it has skills to change at once.
+        local members = {}
+        for i = 1, #GROUPS do
+            members[GROUPS[i].key] = {}
         end
-        pane.Bind(selected)
+        for i = 1, #items do
+            local into = members[Skill.Group(items[i])]
+            into[#into + 1] = items[i]
+        end
+        if list.group and #members[list.group] < 2 then
+            list.group = nil
+        end
+        local group = list.group
+
+        local selected = Selected()
+        for index = 1, shown do
+            local info = items[list.offset + index]
+            list.rows[index].Bind(info, not group and info ~= nil and info == selected,
+                group ~= nil and info ~= nil and Skill.Group(info) == group)
+        end
+        -- With no skills at all there is nothing to group: the list is empty, and says so.
+        for i = 1, #GROUPS do
+            local key = GROUPS[i].key
+            list.groups[key].Bind(members[key], key == group)
+            Shown(list.groups[key], #items > 0)
+        end
+        Shown(divider, #items > 0)
+        if group then
+            pane.Bind(nil)
+            groupPane.Bind(group, members[group])
+        else
+            groupPane.Bind(nil)
+            pane.Bind(selected)
+        end
 
         local tracked, yours = 0, 0
         for i = 1, #items do
@@ -2756,13 +3306,7 @@ local function BuildSpells(view, page)
         bar:SetValue(list.offset)
         setting = false
 
-        if #items == 0 then
-            view.Foot("")
-        else
-            view.Foot((#items == 1 and "1 skill" or (#items .. " skills")) .. " on your bars, " .. tracked
-                .. " with an icon" .. (yours > 0 and (", " .. yours .. " changed by you.") or ".")
-                .. (last > 0 and " Scroll the list for more." or ""))
-        end
+        view.Foot(#items == 0 and "" or SkillsFoot(#items, tracked, yours, last > 0))
     end
 
     --- Moves the list by a number of rows.
@@ -2773,10 +3317,19 @@ local function BuildSpells(view, page)
         return list.offset ~= before
     end
 
-    --- Picks a spell by name: the pane then shows it.
+    --- Picks a skill by name: the pane then shows it.
     function view.Select(name)
-        list.selected = name
+        list.selected, list.group = name, nil
         Draw()
+    end
+
+    --- Picks one of the two groups: the pane then shows what can be changed for
+    --- all of its skills at once.
+    function view.SelectGroup(key)
+        if GROUP_BY_KEY[key] then
+            list.group = key
+            Draw()
+        end
     end
 
     bar:SetScript("OnValueChanged", function(_, value)
@@ -2792,7 +3345,7 @@ local function BuildSpells(view, page)
         end
     end)
 
-    --- Reads the bars again. The spells keep their places while the tab is open,
+    --- Reads the bars again. The skills keep their places while the tab is open,
     --- so that a line does not jump away under the mouse: those with an icon are
     --- only sorted to the top when the tab opens (`resort`) or the bars change.
     function view.RefreshSpells(resort)
@@ -2818,12 +3371,12 @@ local function BuildSpells(view, page)
             end
             list.items = items
             if resort then
-                -- The list opens with the spell that is picked in sight.
+                -- The list opens with the skill that is picked in sight.
                 local _, at = Selected()
-                list.offset = max(0, (at or 1) - L.rows)
+                list.offset = max(0, (at or 1) - shown)
             end
         else
-            -- The same spells, though the client may have described them afresh.
+            -- The same skills, though the client may have described them afresh.
             for i = 1, #list.items do
                 list.items[i] = byName[list.items[i].name] or list.items[i]
             end
@@ -2850,7 +3403,7 @@ end
 local TABS = {
     { key = "display", label = "Display", ask = "Put everything on the Display tab back to how it started?" },
     { key = "icons", label = "Icons", ask = "Put the three icons back to how they started?" },
-    { key = "spells", label = "Skills", ask = "Forget your own choices for every skill?" },
+    { key = "spells", label = "Skills", ask = "Undo every change you made to your skills?" },
 }
 local TAB_WIDTH = 84
 
@@ -2998,16 +3551,18 @@ local function Build(host, chrome)
     -- Defaults, where the game's own pages have theirs. It asks first.
     local defaults = PushButton(chrome.tabsOn, DEFAULTS_WIDTH, chrome.defaultsHeight, "Defaults")
     defaults:SetPoint("TOPLEFT", chrome.tabsOn, "TOPLEFT", chrome.defaultsX, chrome.defaultsY)
-    Tip(defaults, "Defaults", "Puts the tab that is open back to how it started. It asks first.")
+    Tip(defaults, "Defaults", "Puts every setting on the open tab back to how it started. You are asked to confirm first.")
     OnClick(defaults, function()
         local reset = RESETS[view.tab]
         view.Ask(view.tab, asks[view.tab], "Reset", function()
             view.editing = nil
             Change(reset)
         end)
+        view.Refresh() -- a row that was waiting for another answer no longer is
     end)
     OnClick(no, function()
         view.Unask()
+        view.Refresh() -- a row that was waiting for the answer says what it said before
     end)
     OnClick(yes, function()
         local action = pending
@@ -3272,9 +3827,8 @@ function Options.Open(tab)
         local frame, problem = BuildSafely(BuildWindow)
         if not frame then
             -- Not even the addon's own drawing could be made: the commands are what is left.
-            ns.Print("the settings window could not be built on this client. The same settings work as "
-                .. "commands: /se on, /se when, /se usable, /se corner, /se size, /se icon and /se track. ("
-                .. problem .. ")")
+            ns.Print("The settings window could not be built in this game client. You can change the same "
+                .. "settings with chat commands: type /se help to see them. (" .. problem .. ")")
             return false
         end
         window = frame
@@ -3400,8 +3954,8 @@ function Options.Register()
                 else
                     -- Not even the addon's own drawing could be made here.
                     Options.problem = reason
-                    ns.Print("the settings panel could not be drawn here. /se options opens it in a window "
-                        .. "of its own. (" .. reason .. ")")
+                    ns.Print("The settings panel could not be drawn here. Type /se options to open it in a "
+                        .. "window of its own. (" .. reason .. ")")
                 end
             end
             if view then
