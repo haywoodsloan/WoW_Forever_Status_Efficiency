@@ -9365,6 +9365,212 @@ panel("picking on which skills the icons appear", function(options)
     Clean(w)
 end)
 
+--------------------------------------------------------------------------------
+-- The settings panel: what the addon does when enemy nameplates are off
+--------------------------------------------------------------------------------
+
+local PLATES_READ = "The addon reads the enemies near you from their nameplates."
+local PLATES_NEEDED = "Without enemy nameplates, the icons see fewer enemies."
+local PLATES_MISSED = "Enemy nameplates are off, so the icons see fewer enemies."
+local PLATES_LATER = "The addon turns enemy nameplates on when your fight ends."
+
+panel("If nameplates are off: three choices, the same setting as /se nameplates, and a line that says what is so now",
+    function(options)
+        local w, ns = Simple(options)
+        local view = w:openSettings().view
+        w:slash("options")
+        local window = w.env.StatusEfficiencyOptions.view
+        eq(ns.db.nameplates, "on", "a new install turns them back on and says so")
+        eq(view.plates.picked, "on")
+        eq(view.plates.buttons.on.picked, true)
+        eq(view.platesNote:GetText(), PLATES_READ, "under the choices: why the addon cares")
+        local title, lines = w:hover(view.platesLabel)
+        eq(title, "If nameplates are off")
+        eq(lines[1], "The addon reads the enemies around you from their nameplates. While enemy nameplates are off, a "
+            .. "skill that hits every enemy around you is only checked on your target, your focus, the enemy under your "
+            .. "mouse, the enemy the game picks for you and your party's targets. Choose what the addon does when it "
+            .. "finds them off.")
+        w:unhover(view.platesLabel)
+
+        -- The choices are the ones the addon knows, in its order, and each says what it does.
+        local choices = ns.Options.PLATES_CHOICES
+        eq(#choices, #ns.NAMEPLATE_CHOICES, "as many choices as the addon has")
+        for i = 1, #choices do
+            eq(choices[i].key, ns.NAMEPLATE_CHOICES[i], "choice " .. i)
+            check(view.plates.buttons[choices[i].key], "a button for " .. choices[i].key)
+        end
+        eq(view.plates.buttons.on.label:GetText(), "Turn them on and tell me")
+        eq(view.plates.buttons.tell.label:GetText(), "Only tell me")
+        eq(view.plates.buttons.off.label:GetText(), "Do nothing")
+        title, lines = w:hover(view.plates.buttons.on)
+        eq(title, "Turn them on and tell me")
+        eq(lines[1], "The addon switches enemy nameplates back on and says so in chat. The game does not allow that "
+            .. "during a fight, so then the addon does it when the fight ends.")
+        w:unhover(view.plates.buttons.on)
+        title, lines = w:hover(view.plates.buttons.tell)
+        eq(title, "Only tell me")
+        eq(lines[1], "The addon says in chat that enemy nameplates are off, and leaves them off.")
+        w:unhover(view.plates.buttons.tell)
+        title, lines = w:hover(view.plates.buttons.off)
+        eq(title, "Do nothing")
+        eq(lines[1], "The addon leaves enemy nameplates off, and says nothing in chat.")
+        w:unhover(view.plates.buttons.off)
+
+        -- The row stands in the column of the other settings, its line under it, all inside the page.
+        local row, note = view.plates.frame, view.platesNote
+        eq(row.point[4], view.appear.frame.point[4], "the choices start where the lists above them do")
+        check(row.point[4] + row:GetWidth() <= 624.01, "and end inside the page")
+        eq(note.point[4], row.point[4], "the line starts under the choices")
+        check(note.point[5] <= row.point[5] - 20, "below them")
+        check(note.point[4] + note.fitRoom <= 624.01, "and ends inside the page")
+
+        -- The tab is full. From the row down nothing lies on what stands above it, and the
+        -- pretend buttons, which close the tab, end above its foot.
+        local heading, grid, slider = view.sizeHeading, view.grid.frame, view.size.slider.frame
+        local slot, page = view.previews.none.slot, view.pages.display
+        eq(heading:GetText(), "Position and size")
+        check(heading.point[5] <= note.point[5] - 13 - 6, "the next heading stands clear of the line")
+        check(grid.point[5] <= heading.point[5] - 16 - 6, "the nine squares stand clear of the heading")
+        check(slider.point[5] <= grid.point[5] - grid:GetHeight() - 6, "the slider stands clear of the squares")
+        check(view.sizeNote.point[5] <= slider.point[5] - 20, "its line is under the slider")
+        check(slot.point[5] <= view.sizeNote.point[5] - 13 - 6, "the pretend buttons stand clear of that line")
+        check(slot.point[5] - slot:GetHeight() >= -page:GetHeight() + 6, "and end above the foot of the tab")
+
+        -- "Do nothing" leaves the game's setting as it finds it.
+        w:click(view.plates.buttons.off)
+        eq(ns.db.nameplates, "off")
+        eq(view.plates.picked, "off")
+        eq(view.plates.buttons.on.picked, false)
+        eq(window.plates.picked, "off", "the other copy follows")
+        eq(w:platesShown(), true, "the choice never turns the nameplates off")
+        eq(view.platesNote:GetText(), PLATES_NEEDED, "the line says what the nameplates are for")
+        w:setPlates(false)
+        w:advance(0.6)
+        eq(w:platesShown(), false, "you can turn them off yourself, and they stay off")
+        eq(view.platesNote:GetText(), PLATES_MISSED,
+            "the row follows the game's setting while the tab is open, and says what it costs")
+        eq(window.platesNote:GetText(), PLATES_MISSED)
+
+        -- "Only tell me" leaves them off as well.
+        w:click(window.plates.buttons.tell)
+        eq(ns.db.nameplates, "tell")
+        eq(w:platesShown(), false)
+        eq(view.plates.picked, "tell")
+        eq(view.platesNote:GetText(), PLATES_MISSED)
+        w:setPlates(true)
+        w:advance(0.6)
+        eq(view.platesNote:GetText(), PLATES_NEEDED)
+
+        -- "Turn them on and tell me", picked while they are off, brings them back at once.
+        w:setPlates(false)
+        w:advance(0.6)
+        w:click(view.plates.buttons.on)
+        eq(ns.db.nameplates, "on")
+        eq(w:platesShown(), true, "picking it turns them on")
+        eq(view.plates.picked, "on")
+        eq(view.platesNote:GetText(), PLATES_READ)
+
+        -- The chat command and the row are one setting, and chat puts it in the words of the choices.
+        local byKey = {}
+        for i = 1, #choices do
+            byKey[choices[i].key] = choices[i]
+        end
+        for _, key in ipairs({ "off", "tell", "on" }) do
+            local said = Answer(w, "nameplates " .. key)
+            check(said:find("When enemy nameplates are off, the addon now " .. byKey[key].words .. ".", 1, true),
+                "/se nameplates " .. key .. " says it in the row's words: " .. said)
+            eq(ns.db.nameplates, key)
+            eq(view.plates.picked, key, "/se nameplates " .. key .. " moves the row")
+            eq(window.plates.picked, key, "in both copies")
+        end
+        check(Answer(w, "nameplates"):find("When enemy nameplates are off, the addon " .. byKey.on.words .. ".", 1, true),
+            "/se nameplates alone says which choice is set, in the same words")
+
+        -- With the icons turned off the addon does nothing by itself, so the row is greyed and says why.
+        w:click(view.enable.frame)
+        eq(ns.db.enabled, false)
+        eq(view.plates.enabled, false, "greyed while the icons are off, like the two rows above it")
+        eq(view.platesNote:GetText(), "While the icons are off, the addon leaves nameplates alone.")
+        w:click(view.plates.buttons.off)
+        eq(ns.db.nameplates, "on", "and it takes no clicks")
+        w:click(view.enable.frame)
+        eq(view.plates.enabled, true)
+        eq(view.platesNote:GetText(), PLATES_READ)
+        w:drain()
+        Clean(w)
+    end)
+
+panel("If nameplates are off: in a fight the row says that they come back when it ends", function(options)
+    local w, ns = Simple(options)
+    local view = w:openSettings().view
+    w:enterCombat()
+    w:setPlates(false) -- a slip of the finger in the middle of a fight
+    w:advance(0.6)
+    eq(w:platesShown(), false, "the game lets no addon change this in a fight")
+    eq(w.platesBlocked or 0, 0, "so the addon does not try")
+    eq(view.plates.picked, "on")
+    eq(view.platesNote:GetText(), PLATES_LATER)
+
+    -- Another choice and back again in the fight: nothing is tried then either.
+    w:click(view.plates.buttons.off)
+    eq(view.platesNote:GetText(), PLATES_MISSED)
+    w:click(view.plates.buttons.on)
+    eq(ns.db.nameplates, "on")
+    eq(w.platesBlocked or 0, 0, "a choice made in a fight waits for its end as well")
+    eq(view.platesNote:GetText(), PLATES_LATER)
+
+    w:leaveCombat()
+    w:advance(0.6)
+    eq(w:platesShown(), true, "the fight is over, and they are back")
+    eq(view.platesNote:GetText(), PLATES_READ)
+    Clean(w)
+end)
+
+panel("If nameplates are off: where the game will not let the addon turn them on, the row says so", function(options)
+    options.plates = false
+    options.platesLocked = true
+    local w, ns = Simple(options)
+    w:advance(2.5)
+    local view = w:openSettings().view
+    eq(w:platesShown(), false)
+    eq(view.plates.picked, "on", "the choice is still what you asked for")
+    eq(view.platesNote:GetText(), "The game did not let the addon turn enemy nameplates on.")
+    w:click(view.plates.buttons.off)
+    eq(ns.db.nameplates, "off")
+    eq(view.platesNote:GetText(), PLATES_MISSED, "left alone, the row says what nameplates that are off cost")
+    Clean(w)
+end)
+
+panel("If nameplates are off: in a game that does not announce the change, the row says that they come back in a moment",
+    function(options)
+        options.settingEvents = false
+        local w = Simple(options)
+        local view = w:openSettings().view
+        w:setPlates(false)
+        w:advance(0.6)
+        eq(w:platesShown(), false, "the addon has not looked at the game's setting yet")
+        eq(view.platesNote:GetText(), "The addon turns enemy nameplates on in a moment.")
+        w:advance(2)
+        eq(w:platesShown(), true, "the addon looked, and turned them on")
+        w:advance(0.6)
+        eq(view.platesNote:GetText(), PLATES_READ)
+        Clean(w)
+    end)
+
+panel("If nameplates are off: where the game's setting cannot be read, the row still says what the choice does",
+    function(options)
+        options.noCVars = true
+        local w, ns = Simple(options)
+        local view = w:openSettings().view
+        eq(ns.EnemyPlates(), nil, "the addon cannot tell whether they are on")
+        eq(view.plates.picked, "on")
+        eq(view.platesNote:GetText(), PLATES_READ)
+        w:click(view.plates.buttons.tell)
+        eq(ns.db.nameplates, "tell")
+        eq(view.platesNote:GetText(), PLATES_NEEDED)
+        Clean(w)
+    end)
+
 panel("sample icons show on the real buttons while the Display or the Icons tab is open", function(options)
     local w = World(options)
     w:addButton("ActionButton1", 1, REND)
@@ -9986,11 +10192,17 @@ panel("Defaults asks first, and puts back the tab that is open and nothing else"
 
     -- On the Display tab it is about everything on that tab.
     w:click(view.tabs.display)
+    w:click(view.plates.buttons.off)
+    eq(ns.db.nameplates, "off")
+    w:setPlates(false)
     w:click(view.enable.frame)
     eq(ns.db.enabled, false)
     w:click(view.defaults)
     eq(view.question:GetText(), "Put everything on the Display tab back to how it started?")
     w:click(view.confirm.yes)
+    eq(ns.db.nameplates, "on", "the addon turns the nameplates on again")
+    eq(view.plates.picked, "on")
+    eq(w:platesShown(), true, "and they are back at once")
     eq(ns.db.corner, "TOPLEFT")
     eq(ns.db.size, 0)
     eq(ns.db.appear, "group")
@@ -10028,7 +10240,7 @@ test("settings: what Defaults puts back on the Display tab is what a new install
         count = count + 1
         eq(ns.db[key], value, "a new install's " .. key)
     end
-    eq(count, 5, "whether, when, on which skills, where and how large")
+    eq(count, 6, "whether, when, on which skills, the nameplates, where and how large")
     Clean(w)
 end)
 

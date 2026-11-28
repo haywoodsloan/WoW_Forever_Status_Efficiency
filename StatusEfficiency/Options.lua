@@ -148,6 +148,22 @@ local USABLE_CHOICES = {
 }
 Options.USABLE_CHOICES = USABLE_CHOICES
 
+-- What the addon does when it finds enemy nameplates switched off, which it
+-- reads the enemies around you from: the three of ns.NAMEPLATE_CHOICES.
+-- `words` ends the sentence "When enemy nameplates are off, the addon ...",
+-- for chat.
+local PLATES_CHOICES = {
+    { key = "on", label = "Turn them on and tell me", width = 172, words = "turns them back on and says so in chat",
+        tip = "Turn them on and tell me",
+        body = "The addon switches enemy nameplates back on and says so in chat. The game does not allow that "
+            .. "during a fight, so then the addon does it when the fight ends." },
+    { key = "tell", label = "Only tell me", width = 92, words = "only says so in chat", tip = "Only tell me",
+        body = "The addon says in chat that enemy nameplates are off, and leaves them off." },
+    { key = "off", label = "Do nothing", width = 80, words = "does nothing", tip = "Do nothing",
+        body = "The addon leaves enemy nameplates off, and says nothing in chat." },
+}
+Options.PLATES_CHOICES = PLATES_CHOICES
+
 local views = {} -- every copy of the panel that has been built
 Options.views = views
 
@@ -1388,13 +1404,32 @@ local function BuildDisplay(view, page)
     usableNote:SetPoint("TOPLEFT", page, "TOPLEFT", L.control + 24, -189)
     view.usableNote = usableNote
 
-    Heading(page, "Position and size", -224)
+    -- Enemy nameplates: the addon reads the enemies around you from them. One
+    -- setting says what it does when they are off, the same as /se nameplates,
+    -- and the sentence under it says what is so right now.
+    view.platesLabel = RowLabel(page, "If nameplates are off", L.label, -224, labelRoom,
+        "The addon reads the enemies around you from their nameplates. While enemy nameplates are off, a skill "
+            .. "that hits every enemy around you is only checked on your target, your focus, the enemy under your "
+            .. "mouse, the enemy the game picks for you and your party's targets. Choose what the addon does when it "
+            .. "finds them off.")
+    local plates = Segmented(page, PLATES_CHOICES)
+    plates.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -224)
+    plates.onPick = function(key)
+        ns.SetNameplates(key)
+        Options.RefreshAll()
+    end
+    view.plates = plates
+    local platesNote = Note(page, wide)
+    platesNote:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -224 - NOTE_DROP)
+    view.platesNote = platesNote
+
+    view.sizeHeading = Heading(page, "Position and size", -270)
 
     -- Where on a button: nine squares, laid out like the button itself.
     local grid = PositionGrid(page)
-    grid.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -252)
+    grid.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -294)
     local gridHeight = 3 * GRID_CELL + 2 * GRID_GAP
-    RowLabel(page, "Position", L.label, -252 - (gridHeight - 20) / 2, labelRoom,
+    RowLabel(page, "Position", L.label, -294 - (gridHeight - 20) / 2, labelRoom,
         "This is where the icon sits on each action button. Click one of the nine squares to move it.")
     local where = Text(page, "GameFontHighlight")
     where:SetJustifyV("MIDDLE")
@@ -1402,10 +1437,10 @@ local function BuildDisplay(view, page)
     view.grid, view.zones, view.where = grid, grid.zones, where
 
     -- How large: a slider, or follow the button.
-    RowLabel(page, "Size", L.label, -328, labelRoom, "This is how big the icon is, from " .. ns.SIZE_MIN .. " to "
+    RowLabel(page, "Size", L.label, -366, labelRoom, "This is how big the icon is, from " .. ns.SIZE_MIN .. " to "
         .. ns.SIZE_MAX .. ". Tick Auto to let the addon pick a size that suits each action button.")
     local slider = NumberSlider(page, 200, ns.SIZE_MIN, ns.SIZE_MAX)
-    slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -328)
+    slider.frame:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -366)
     slider.onChange = function(value)
         Change(function()
             ns.db.size = value
@@ -1430,14 +1465,14 @@ local function BuildDisplay(view, page)
     view.size = { slider = slider, readout = readout, auto = auto }
 
     local sizeNote = Note(page, wide)
-    sizeNote:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -352)
+    sizeNote:SetPoint("TOPLEFT", page, "TOPLEFT", L.control, -390)
     view.sizeNote = sizeNote
 
-    -- A pretend button for each result.
-    Heading(page, "Preview", -380)
+    -- A pretend button for each result, which shows the place and the size
+    -- chosen above. They close the section, with no heading of their own.
     for index = 1, #Icons.STATES do
         local state = Icons.STATES[index]
-        view.previews[state.key] = BuildPreview(view, page, index, state, -406)
+        view.previews[state.key] = BuildPreview(view, page, index, state, -410)
     end
 
     --- The pretend buttons wear pictures of skills on your own bars.
@@ -1448,13 +1483,47 @@ local function BuildDisplay(view, page)
         end
     end
 
-    -- The bars may only have been read a moment after the panel opened.
+    --- The row for enemy nameplates: the choice, and what is so right now. With
+    --- `again` it only speaks when something changed since it last did.
+    local platesSeen
+    local function RefreshPlates(again)
+        local choice, state, shown = ns.db.nameplates, ns.KeepsNameplates(), ns.EnemyPlates()
+        local on, fighting = ns.db.enabled and true or false, ns.InCombat() and true or false
+        local seen = concat({ tostring(choice), tostring(state), tostring(shown), tostring(on),
+            tostring(fighting) }, "/")
+        if again and seen == platesSeen then
+            return
+        end
+        platesSeen = seen
+        plates.Set(choice)
+        plates.Enable(on)
+        if not on then
+            -- With the icons turned off the addon does nothing by itself.
+            platesNote.Tell("While the icons are off, the addon leaves nameplates alone.")
+        elseif state == "later" then
+            -- The game lets no addon change this in a fight.
+            platesNote.Tell("The addon turns enemy nameplates on "
+                .. (fighting and "when your fight ends." or "in a moment."), WARN)
+        elseif state == "refused" then
+            platesNote.Tell("The game did not let the addon turn enemy nameplates on.", WARN)
+        elseif shown == false then
+            platesNote.Tell("Enemy nameplates are off, so the icons see fewer enemies.", WARN)
+        elseif state == "on" then
+            platesNote.Tell("The addon reads the enemies near you from their nameplates.")
+        else
+            platesNote.Tell("Without enemy nameplates, the icons see fewer enemies.")
+        end
+    end
+
+    -- The bars may only have been read a moment after the panel opened, and the
+    -- game's setting for nameplates can change behind it: a key, a fight ending.
     local waited = 0
     page:SetScript("OnUpdate", function(_, elapsed)
         waited = waited + (type(elapsed) == "number" and elapsed or 0)
         if waited >= 0.5 then
             waited = 0
             ns.Guard(RefreshFaces)
+            ns.Guard(RefreshPlates, true)
         end
     end)
 
@@ -1470,6 +1539,7 @@ local function BuildDisplay(view, page)
         usableNote.Tell(ns.db.usableOnly
             and "A skill that is only waiting for rage, mana, energy or its cooldown keeps its icon." or "")
         Dim(usableNote, not on)
+        RefreshPlates()
 
         local corner = ns.db.corner
         grid.Set(corner)
@@ -3448,7 +3518,14 @@ local TAB_KEYS = { display = "display", appearance = "display", icons = "icons",
 Options.TAB_KEYS = TAB_KEYS
 
 -- How the Display tab starts out. (The same values as a new player's settings.)
-local DEFAULTS = { enabled = true, appear = "group", usableOnly = true, corner = "TOPLEFT", size = 0 }
+local DEFAULTS = {
+    enabled = true,
+    appear = "group",
+    usableOnly = true,
+    nameplates = "on",
+    corner = "TOPLEFT",
+    size = 0,
+}
 Options.DEFAULTS = DEFAULTS
 
 -- What the Defaults button does on each tab.
@@ -3457,6 +3534,7 @@ local RESETS = {
         ns.SetEnabled(DEFAULTS.enabled)
         ns.SetAppear(DEFAULTS.appear)
         ns.SetUsableOnly(DEFAULTS.usableOnly)
+        ns.SetNameplates(DEFAULTS.nameplates)
         ns.db.corner = DEFAULTS.corner
         ns.db.size = DEFAULTS.size
     end,

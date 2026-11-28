@@ -153,8 +153,8 @@ started, and asks first.
 The **Display** tab is about whether the icons show, and where:
 
 - **Show status icons** turns the icons on and off, like `/se on` and `/se off`.
-  While they are off the next two rows are greyed out, since neither changes
-  anything then.
+  While they are off the next three rows are greyed out, since none of them
+  changes anything then.
 - **When to show them**:
   - **Always**: whenever there is something to judge, which is a buff at any
     time and a debuff whenever there is an enemy to check, and all through a
@@ -172,14 +172,29 @@ The **Display** tab is about whether the icons show, and where:
   (the default), which leaves a skill bare while you cannot use it: too close
   or too far, in the wrong stance and the like. Being short of rage, mana or
   energy does not count, and neither does a cooldown.
+- **If nameplates are off**: what the addon does when it finds enemy nameplates
+  switched off, the same setting as `/se nameplates`. It reads the enemies
+  around you from them
+  (see [Without enemy nameplates](#without-enemy-nameplates)).
+  - **Turn them on and tell me** (the default): the addon switches them back
+    on and says so in chat. The game does not allow that during a fight, so
+    then the addon does it when the fight ends.
+  - **Only tell me**: the addon says in chat that they are off, and leaves
+    them off.
+  - **Do nothing**: the addon leaves them off and says nothing.
+
+  The line under the three says what is so right now: that the addon reads the
+  enemies near you from their nameplates, that it turns them on when your
+  fight ends, that the game did not let it, or that they are off and the icons
+  see fewer enemies.
 - **Position.** Nine squares laid out like a button: the four corners, the four
   edges and the middle. Click one to put the icon there.
 - **Size.** A slider from 8 to 48. **Auto** sizes the icon from the button it
   sits on, at about a third of the button's width, which is 16 on a standard
   button.
-- **Preview.** Three pretend buttons, one for each result, wearing skills from
-  your own bars and drawn as large as your action buttons, with the icon where
-  and as big as it is on the bars. While this tab or the Icons tab is open and
+- **Three pretend buttons** close the tab, one for each result, wearing skills
+  from your own bars and drawn as large as your action buttons, with the icon
+  where and as big as it is on the bars. While this tab or the Icons tab is open and
   you are out of combat, your real action buttons show sample icons as well.
 
 The **Icons** tab is about which icon stands for which result:
