@@ -794,7 +794,7 @@ end)
 
 test("reports: what is heard about you says nothing about what is reported for a target", function()
     local w, ns = Simple()
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.15)
     w:applyBuff("Blessing", 60, false) -- someone buffs you in the fight
     w:advance(3)
@@ -1030,7 +1030,7 @@ test("reports: an ending reported a moment early is still known for what it is",
     w:advance(2.5)
     w:cast(REND)
     w:advance(20.5)
-    w:cast(MORTAL, { miss = true })
+    w:cast(MORTAL, SILENT_MISS)
     w:advance(0.45)
     w:removeAura(boar, "Rend") -- a twentieth of a second before the books expect it
     w:advance(1)
@@ -1071,7 +1071,7 @@ test("reports: a renewed effect running out is known for what it is, and proves 
     w:cast(REND) -- renewed: 21 seconds from here
     w:advance(20.5)
     eq(w:icon("ActionButton1"), "cross", "still on, 31 seconds after the first cast")
-    w:cast(MORTAL, { miss = true }) -- still waiting to be judged when the Rend runs out
+    w:cast(MORTAL, SILENT_MISS) -- still waiting to be judged when the Rend runs out
     w:advance(1)
     eq(w:icon("ActionButton1"), "check", "the Rend is over")
     eq(w:icon("ActionButton2"), "check", "and the change on the boar was that, not the Mortal Strike landing")
@@ -1089,7 +1089,7 @@ test("reports: a renewed effect running out is known for what it is, and proves 
     -- later than its length says, which is not held against the spell.
     w:cast(REND)
     w:advance(10)
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:applyAura(boar, "Rend", 26) -- renewed, and given five seconds on top
     w:advance(30)
     eq(w:icon("ActionButton1"), "check")
@@ -2023,7 +2023,7 @@ test("reports: a spell used at arm's length is given less time once it has been 
     end
     check(Wait(ns, REND) >= 0.85 and Wait(ns, REND) <= 1.05, "twice what it took and half a second: " .. Wait(ns, REND))
 
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(1.2)
     w:applyAura(boar, "Sunder Armor", 30, false) -- something else, a good second after the miss
     w:advance(0.3)
@@ -2068,7 +2068,7 @@ end)
 
 test("reports: a change after the wait is over is not put down to the cast", function()
     local w, _, boar = Simple({ saved = Proven() })
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(2)
     w:applyAura(boar, "Sunder Armor", 30, false)
     w:advance(0.5)
@@ -2101,7 +2101,7 @@ test("reports: a skill whose casts show in the very frame they are announced is 
 
     -- What used to pass for a hit: something else changing on the boar a
     -- moment after a miss.
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.1)
     w:applyAura(boar, "Thorns", 30, false)
     w:advance(0.3)
@@ -2148,7 +2148,7 @@ test("reports: what came too late for a skill held to its frame is kept in the s
     local late = ns.db.report.late
     eq(#late, 0, "nothing while every cast shows in its frame")
 
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.4)
     w:applyAura(boar, "Thorns", 30, false)
     w:advance(0.3)
@@ -2160,7 +2160,7 @@ test("reports: what came too late for a skill held to its frame is kept in the s
 
     -- Not a change that comes when the cast is long over.
     w:advance(2)
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.8)
     w:applyAura(boar, "Thorns", 30, false)
     w:advance(0.3)
@@ -2179,7 +2179,7 @@ test("reports: what came too late for a skill held to its frame is kept in the s
         w:advance(22)
         w:cast(REND)
         w:advance(22)
-        w:cast(REND, { miss = true })
+        w:cast(REND, SILENT_MISS)
         w:advance(0.2)
         w:applyAura(boar, "Thorns", 30, false)
         w:advance(0.3)
@@ -2222,7 +2222,7 @@ test("reports: only the first change after a cast held to its frame is kept, and
 
     -- A change on another enemy says nothing of the cast, and does not use up
     -- the one line it can leave. Then two changes on the boar: one line.
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.2)
     w:applyAura(wolf, "Thorns", 30, false)
     w:advance(0.1)
@@ -2272,7 +2272,7 @@ test("reports: only the first change after a cast held to its frame is kept, and
     w:advance(2)
     ns.MarkBarsDirty()
     w:advance(0.3)
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.2)
     ns.db.interval = 5
     w:advance(0.7)
@@ -2300,7 +2300,7 @@ test("reports: a skill whose casts keep showing a moment after they are announce
     check(not Sharp(ns, REND))
 
     -- Something else changing on the boar less than half a second after a miss.
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.4)
     w:applyAura(boar, "Thorns", 30, false)
     w:advance(0.3)
@@ -2372,7 +2372,7 @@ test("reports: a change that comes when the wait is over counts for nothing, eve
         w:advance(22)
     end
     eq(Wait(ns, REND), 0.25)
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     -- One long frame: the addon does not get to look at the cast between the
     -- end of its wait and the change.
     w.effects[#w.effects + 1] = { at = w.clock + 0.3, run = function()
@@ -2427,7 +2427,7 @@ test("reports: switching target while a cast is still in the air", function()
     eq(w:icon("ActionButton1"), "cross", "the boar's nameplate reported the change")
 
     w:advance(22)
-    w:cast(REND, { travel = 0.5, miss = true })
+    w:cast(REND, { travel = 0.5, miss = true, word = false })
     w:target(wolf)
     w:advance(1)
     w:target(boar)
@@ -5565,7 +5565,7 @@ test("stacks: a skill whose landings mostly show in the frame of its cast is not
     check(not ns.Spells:ShowsLate("Sunder Armor"), "two in three showed in the frame")
     local before = Stacks(ns, "Sunder Armor")
     -- A miss, and something else changing on the boar three tenths later.
-    w:cast(SUNDER, { miss = true })
+    w:cast(SUNDER, SILENT_MISS)
     w:advance(0.3)
     w:applyAura(boar, "Thorns", 30, false)
     w:advance(1.2)
@@ -6165,7 +6165,7 @@ test("others: a change that comes in another moment than their cast is not put d
     -- And a change in the moment of their cast is theirs, not that of a cast
     -- of yours that has been waiting.
     w:advance(30)
-    w:cast(REND, { miss = true })
+    w:cast(REND, SILENT_MISS)
     w:advance(0.2)
     w:partyCast(warrior, DEMO)
     w:advance(0.3)
@@ -8202,6 +8202,30 @@ test("miss words: the word is the cast's answer just before the cast is announce
         eq(ns.db.report.verdicts.missed, nil, order)
         Clean(w)
     end
+end)
+
+test("miss words: what changes on the enemy after a miss the game named is still kept in the saved report", function()
+    -- For a skill held to the frame of its cast, the record keeps a line for
+    -- a change that came too late to be the cast. It does so after a miss
+    -- the game named as well: should the word have been somebody else's and
+    -- the landing slow, the line is what shows it afterwards.
+    local w, ns, boar = Simple({ saved = Proven() })
+    for _ = 1, 3 do
+        w:cast(REND)
+        w:advance(22)
+    end
+    check(Sharp(ns, REND))
+    local late = ns.db.report.late
+    w:cast(REND, { miss = true, word = "PARRY" })
+    w:advance(0.4)
+    w:applyAura(boar, "Thorns", 30, false)
+    w:advance(0.3)
+    eq(w:icon("ActionButton1"), "check")
+    eq(#late, 1)
+    check(late[1]:find("Rend: nothing in the moment of the cast, then a change 0.40s after it", 1, true), late[1])
+    check(Last(ns.db.report.casts):find("missed; the game said PARRY", 1, true), Last(ns.db.report.casts))
+    check(Sharp(ns, REND), "and none of it is held against the skill")
+    Clean(w)
 end)
 
 test("miss words: a block or a blow soaked up is no miss, and neither is a word the game keeps to itself", function()
